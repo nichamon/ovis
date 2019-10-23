@@ -340,10 +340,6 @@ static struct request_handler_entry request_handler[] = {
 		LDMSD_UPDTR_STATUS_REQ, updtr_status_handler,
 		XALL | LDMSD_PERM_FAILOVER_ALLOWED
 	},
-	[LDMSD_UPDTR_TASK_REQ] = {
-		LDMSD_UPDTR_TASK_REQ, updtr_task_status_handler,
-		XALL | LDMSD_PERM_FAILOVER_ALLOWED
-	},
 
 	/* PLUGN */
 	[LDMSD_PLUGN_STATUS_REQ] = {
