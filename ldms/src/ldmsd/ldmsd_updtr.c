@@ -646,12 +646,11 @@ int prdcr_ref_cmp(void *a, const void *b)
 }
 
 ldmsd_updtr_t
-ldmsd_updtr_new_with_auth(const char *name, char *interval_str, char *offset_str,
+ldmsd_updtr_new_with_auth(const char *name, long interval_us, long offset_us,
 					int push_flags, int is_auto_task,
 					uid_t uid, gid_t gid, int perm)
 {
 	struct ldmsd_updtr *updtr;
-	long interval_us = 2000000, offset_us = LDMSD_UPDT_HINT_OFFSET_NONE;
 	ev_worker_t worker;
 	ev_t start_ev, stop_ev;
 	char worker_name[PATH_MAX];
@@ -690,15 +689,6 @@ ldmsd_updtr_new_with_auth(const char *name, char *interval_str, char *offset_str
 
 	updtr->state = LDMSD_UPDTR_STATE_STOPPED;
 	updtr->is_auto_task = is_auto_task;
-	if (interval_str) {
-		interval_us = strtol(interval_str, NULL, 0);
-		if (offset_str) {
-			/* Make it a hint offset */
-			offset_us = strtol(offset_str, NULL, 0);
-		} else {
-			offset_us = LDMSD_UPDT_HINT_OFFSET_NONE;
-		}
-	}
 	updtr->sched.intrvl_us = interval_us;
 	updtr->sched.offset_us = offset_us;
 	updtr->sched.offset_skew = updtr_sched_offset_skew_get();
@@ -721,14 +711,14 @@ ldmsd_updtr_new_with_auth(const char *name, char *interval_str, char *offset_str
 }
 
 ldmsd_updtr_t
-ldmsd_updtr_new(const char *name, char *interval_str,
-		char *offset_str, int push_flags,
+ldmsd_updtr_new(const char *name, long interval_us,
+		long offset_us, int push_flags,
 		int is_auto_interval)
 {
 	struct ldmsd_sec_ctxt sctxt;
 	ldmsd_sec_ctxt_get(&sctxt);
 	return ldmsd_updtr_new_with_auth(name,
-				interval_str, offset_str,
+				interval_us, offset_us,
 				push_flags, is_auto_interval,
 				sctxt.crd.uid, sctxt.crd.gid, 0777);
 }

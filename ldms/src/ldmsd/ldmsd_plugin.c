@@ -896,8 +896,8 @@ ldmsd_deffered_pi_config_next(struct ldmsd_deferred_pi_config *cfg)
 void ldmsd_deferred_pi_config_free(ldmsd_deferred_pi_config_t cfg)
 {
 	TAILQ_REMOVE(&deferred_pi_config_q, cfg, entry);
-	if (cfg->d)
-		json_entity_free(cfg->d);
+	if (cfg->config)
+		json_entity_free(cfg->config);
 	if (cfg->name)
 		free(cfg->name);
 	if (cfg->buf)
@@ -922,8 +922,8 @@ ldmsd_deferred_pi_config_new(const char *name, json_entity_t d,
 	cfg->name = strdup(name);
 	if (!cfg->name)
 		goto err1;
-	cfg->d = json_entity_copy(d);
-	if (!cfg->d)
+	cfg->config = json_entity_copy(d);
+	if (!cfg->config)
 		goto err1;
 	cfg->msg_no = msg_no;
 	/*
