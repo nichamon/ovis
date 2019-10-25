@@ -89,6 +89,12 @@ pthread_mutex_t setgrp_tree_lock = PTHREAD_MUTEX_INITIALIZER;
 struct rbt auth_tree = RBT_INITIALIZER(cfgobj_cmp);
 pthread_mutex_t auth_tree_lock = PTHREAD_MUTEX_INITIALIZER;
 
+struct rbt env_tree = RBT_INITIALIZER(cfgobj_cmp);
+pthread_mutex_t env_tree_lock = PTHREAD_MUTEX_INITIALIZER;
+
+struct rbt daemon_tree = RBT_INITIALIZER(cfgobj_cmp);
+pthread_mutex_t daemon_tree_lock = PTHREAD_MUTEX_INITIALIZER;
+
 pthread_mutex_t *cfgobj_locks[] = {
 	[LDMSD_CFGOBJ_PRDCR] = &prdcr_tree_lock,
 	[LDMSD_CFGOBJ_UPDTR] = &updtr_tree_lock,
@@ -97,6 +103,8 @@ pthread_mutex_t *cfgobj_locks[] = {
 	[LDMSD_CFGOBJ_LISTEN] = &listen_tree_lock,
 	[LDMSD_CFGOBJ_SETGRP] = &setgrp_tree_lock,
 	[LDMSD_CFGOBJ_AUTH]   = &auth_tree_lock,
+	[LDMSD_CFGOBJ_ENV]   = &env_tree_lock,
+	[LDMSD_CFGOBJ_DAEMON] = &daemon_tree_lock,
 };
 
 struct rbt *cfgobj_trees[] = {
@@ -107,6 +115,8 @@ struct rbt *cfgobj_trees[] = {
 	[LDMSD_CFGOBJ_LISTEN] = &listen_tree,
 	[LDMSD_CFGOBJ_SETGRP] = &setgrp_tree,
 	[LDMSD_CFGOBJ_AUTH]   = &auth_tree,
+	[LDMSD_CFGOBJ_ENV]   = &env_tree,
+	[LDMSD_CFGOBJ_DAEMON] = &daemon_tree,
 };
 
 void ldmsd_cfgobj_init(void)
@@ -118,10 +128,70 @@ void ldmsd_cfgobj_init(void)
 	rbt_init(&listen_tree, cfgobj_cmp);
 	rbt_init(&setgrp_tree, cfgobj_cmp);
 	rbt_init(&auth_tree,   cfgobj_cmp);
+	rbt_init(&env_tree, cfgobj_cmp);
+	rbt_init(&daemon_tree, cfgobj_cmp);
+}
+
+struct cfgobj_type_entry {
+	const char *s;
+	enum ldmsd_cfgobj_type e;
+};
+
+static int cfgobj_type_entry_comp(const void *a, const void *b)
+{
+	struct cfgobj_type_entry *a_, *b_;
+	a_ = (struct cfgobj_type_entry *)a;
+	b_ = (struct cfgobj_type_entry *)b;
+	return strcmp(a_->s, b_->s);
+}
+
+const char *ldmsd_cfgobj_types[] = {
+		[LDMSD_CFGOBJ_PRDCR]	= "prdcr",
+		[LDMSD_CFGOBJ_UPDTR]	= "updtr",
+		[LDMSD_CFGOBJ_STRGP]	= "strgp",
+		[LDMSD_CFGOBJ_SMPLR]	= "smplr",
+		[LDMSD_CFGOBJ_LISTEN]	= "listen",
+		[LDMSD_CFGOBJ_SETGRP]	= "setgrp",
+		[LDMSD_CFGOBJ_AUTH]	= "auth",
+		[LDMSD_CFGOBJ_ENV]	= "env",
+		[LDMSD_CFGOBJ_DAEMON]	= "daemon",
+		NULL,
+};
+
+static struct cfgobj_type_entry cfgobj_type_tbl[] = {
+		{ "auth",	LDMSD_CFGOBJ_AUTH },
+		{ "daemon",	LDMSD_CFGOBJ_DAEMON },
+		{ "env",	LDMSD_CFGOBJ_ENV },
+		{ "listen",	LDMSD_CFGOBJ_LISTEN },
+//		{ "plugin_instance", LDMSD_CFGOBJ_PLUGIN_INST },
+		{ "prdcr",	LDMSD_CFGOBJ_PRDCR },
+		{ "setgrp",	LDMSD_CFGOBJ_SETGRP },
+		{ "smplr",	LDMSD_CFGOBJ_SMPLR },
+		{ "strgp",	LDMSD_CFGOBJ_STRGP },
+		{ "updtr",	LDMSD_CFGOBJ_UPDTR },
+//		{ "stream",	LDMSD_CFGOBJ_STREAM },
+};
+
+enum ldmsd_cfgobj_type ldmsd_cfgobj_type_str2enum(const char *s)
+{
+	struct cfgobj_type_entry *entry;
+
+	entry = bsearch(&s, cfgobj_type_tbl, ARRAY_SIZE(cfgobj_type_tbl),
+				sizeof(*entry), cfgobj_type_entry_comp);
+	if (!entry)
+		return -1;
+	return entry->e;
+}
+
+const char *ldmsd_cfgobj_type2str(enum ldmsd_cfgobj_type type)
+{
+	return ldmsd_cfgobj_types[type];
 }
 
 void ldmsd_cfgobj___del(ldmsd_cfgobj_t obj)
 {
+	ev_put(obj->enabled_ev);
+	ev_put(obj->disabled_ev);
 	free(obj->name);
 	free(obj);
 }
@@ -146,13 +216,29 @@ void ldmsd_cfgobj_unlock(ldmsd_cfgobj_t obj)
 	pthread_mutex_unlock(&obj->lock);
 }
 
-ldmsd_cfgobj_t ldmsd_cfgobj_new_with_auth(const char *name,
-					  ldmsd_cfgobj_type_t type,
-					  size_t obj_size,
-					  ldmsd_cfgobj_del_fn_t __del,
-					  uid_t uid,
-					  gid_t gid,
-					  int perm)
+ldmsd_cfgobj_t ldmsd_cfgobj_new_with_auth(const char *name, ldmsd_cfgobj_type_t type,
+					size_t obj_size, ldmsd_cfgobj_del_fn_t __del,
+					uid_t uid, gid_t gid, int perm)
+{
+	return NULL;
+}
+
+/**
+ * A configuration object with the same name and type must not already
+ * exist. On success, the object is returned locked.
+ */
+ldmsd_cfgobj_t ldmsd_cfgobj_new(const char *name, ldmsd_cfgobj_type_t type,
+				size_t obj_size, ldmsd_cfgobj_del_fn_t __del,
+				ldmsd_cfgobj_update_fn_t update,
+				ldmsd_cfgobj_delete_fn_t delete,
+				ldmsd_cfgobj_query_fn_t query,
+				ldmsd_cfgobj_export_fn_t export,
+				ldmsd_cfgobj_enable_fn_t enable,
+				ldmsd_cfgobj_disable_fn_t disable,
+				uid_t uid,
+				gid_t gid,
+				int perm,
+				short enabled)
 {
 	ldmsd_cfgobj_t obj = NULL;
 
@@ -171,22 +257,39 @@ ldmsd_cfgobj_t ldmsd_cfgobj_new_with_auth(const char *name,
 	if (!obj->name)
 		goto out_2;
 
+	obj->enabled_ev = ev_new(cfgobj_enabled_type);
+	if (!obj->enabled_ev)
+		goto out_3;
+	EV_DATA(obj->enabled_ev, struct start_data)->entity = obj;
+	obj->disabled_ev = ev_new(cfgobj_disabled_type);
+	if (!obj->disabled_ev)
+		goto out_4;
+	EV_DATA(obj->disabled_ev, struct stop_data)->entity = obj;
+	obj->perm = perm;
+	obj->enabled = enabled;
+	obj->update = update;
+	obj->delete = delete;
+	obj->query = query;
+	obj->export = export;
+	obj->enable = enable;
+	obj->disable = disable;
 	obj->type = type;
 	obj->ref_count = 1; /* for obj->rbn inserting into the tree */
 	if (__del)
 		obj->__del = __del;
 	else
 		obj->__del = ldmsd_cfgobj___del;
-	obj->uid = uid;
-	obj->gid = gid;
-	obj->perm = perm;
 
 	pthread_mutex_init(&obj->lock, NULL);
 	pthread_mutex_lock(&obj->lock);
 	rbn_init(&obj->rbn, obj->name);
 	rbt_ins(cfgobj_trees[type], &obj->rbn);
+	errno = 0;
 	goto out_1;
-
+out_4:
+	free(obj->enabled_ev);
+out_3:
+	free(obj->name);
 out_2:
 	free(obj);
 	obj = NULL;
@@ -194,18 +297,6 @@ out_2:
 out_1:
 	pthread_mutex_unlock(cfgobj_locks[type]);
 	return obj;
-}
-
-/**
- * Allocate a configuration object of the requested size. A
- * configuration object with the same name and type must not already
- * exist. On success, the object is returned locked.
- */
-ldmsd_cfgobj_t ldmsd_cfgobj_new(const char *name, ldmsd_cfgobj_type_t type,
-				size_t obj_size, ldmsd_cfgobj_del_fn_t __del)
-{
-	return ldmsd_cfgobj_new_with_auth(name, type, obj_size, __del,
-					  getuid(), getgid(), 0777);
 }
 
 ldmsd_cfgobj_t ldmsd_cfgobj_get(ldmsd_cfgobj_t obj)
@@ -293,4 +384,74 @@ ldmsd_cfgobj_t ldmsd_cfgobj_next(ldmsd_cfgobj_t obj)
 out:
 	ldmsd_cfgobj_put(obj);	/* Drop the next reference */
 	return nobj;
+}
+
+/*
+ * *** Must be called with `cfgobj_locks[type]` held.
+ */
+ldmsd_cfgobj_t ldmsd_cfgobj_next_re(ldmsd_cfgobj_t obj, regex_t regex)
+{
+	int rc;
+	for ( ; obj; obj = ldmsd_cfgobj_next(obj)) {
+		rc = regexec(&regex, obj->name, 0, NULL, 0);
+		if (!rc)
+			break;
+	}
+	return obj;
+}
+
+/*
+ * *** Must be called with `cfgobj_locks[type]` held.
+ */
+ldmsd_cfgobj_t ldmsd_cfgobj_first_re(ldmsd_cfgobj_type_t type, regex_t regex)
+{
+	ldmsd_cfgobj_t obj = ldmsd_cfgobj_first(type);
+	if (!obj)
+		return NULL;
+	return ldmsd_cfgobj_next_re(obj, regex);
+}
+
+json_entity_t ldmsd_cfgobj_query_result_new(ldmsd_cfgobj_t obj)
+{
+	char perm_s[16];
+	snprintf(perm_s, 16, "%o", obj->perm);
+	return json_dict_build(NULL,
+			JSON_STRING_VALUE, "schema", ldmsd_cfgobj_types[obj->type],
+			JSON_BOOL_VALUE, "enabled", obj->enabled,
+			JSON_STRING_VALUE, "perm", perm_s,
+			-1);
+}
+
+/*
+ * The caller must hold the cfgobj tree lock.
+ */
+json_entity_t ldmsd_cfgobj_delete(ldmsd_cfgobj_t obj)
+{
+	if (obj->enabled)
+		return ldmsd_result_new(EBUSY, 0, NULL);
+	rbt_del(cfgobj_trees[obj->type], &obj->rbn);
+	ldmsd_cfgobj_put(obj);
+	return ldmsd_result_new(0, NULL, NULL);
+}
+
+int cfgobj_enabled_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t ev)
+{
+	int rc = 0;
+	ldmsd_cfgobj_t obj = (ldmsd_cfgobj_t)EV_DATA(ev, struct start_data)->entity;
+	ldmsd_cfgobj_lock(obj);
+	if (obj->enable)
+		rc = obj->enable(obj);
+	ldmsd_cfgobj_unlock(obj);
+	return rc;
+}
+
+int cfgobj_disabled_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t ev)
+{
+	int rc = 0;
+	ldmsd_cfgobj_t obj = (ldmsd_cfgobj_t)EV_DATA(ev, struct start_data)->entity;
+	ldmsd_cfgobj_lock(obj);
+	if (obj->disable)
+		rc = obj->disable(obj);
+	ldmsd_cfgobj_unlock(obj);
+	return rc;
 }

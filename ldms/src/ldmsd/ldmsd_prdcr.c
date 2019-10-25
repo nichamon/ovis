@@ -351,35 +351,35 @@ static void prdcr_dir_cb(ldms_t xprt, int status, ldms_dir_t dir, void *arg)
 	ldms_xprt_dir_free(xprt, dir);
 }
 
-static int __on_subs_resp(ldmsd_req_cmd_t rcmd)
-{
-	return 0;
-}
+//static int __on_subs_resp(ldmsd_req_cmd_t rcmd)
+//{
+//	return 0;
+//}
 
 /* Send subscribe request to peer */
 static int __prdcr_subscribe(ldmsd_prdcr_t prdcr)
 {
-	ldmsd_req_cmd_t rcmd;
-	int rc;
-	ldmsd_prdcr_stream_t s;
-	LIST_FOREACH(s, &prdcr->stream_list, entry) {
-		rcmd = ldmsd_req_cmd_new(prdcr->xprt, LDMSD_STREAM_SUBSCRIBE_REQ,
-					 NULL, __on_subs_resp, prdcr);
-		rc = errno;
-		if (!rcmd)
-			goto err_0;
-		rc = ldmsd_req_cmd_attr_append_str(rcmd, LDMSD_ATTR_NAME, s->name);
-		if (rc)
-			goto err_1;
-		rc = ldmsd_req_cmd_attr_term(rcmd);
-		if (rc)
-			goto err_1;
-	}
+//	ldmsd_req_cmd_t rcmd;
+//	int rc;
+//	ldmsd_prdcr_stream_t s;
+//	LIST_FOREACH(s, &prdcr->stream_list, entry) {
+//		rcmd = ldmsd_req_cmd_new(prdcr->xprt, LDMSD_STREAM_SUBSCRIBE_REQ,
+//					 NULL, __on_subs_resp, prdcr);
+//		rc = errno;
+//		if (!rcmd)
+//			goto err_0;
+//		rc = ldmsd_req_cmd_attr_append_str(rcmd, LDMSD_ATTR_NAME, s->name);
+//		if (rc)
+//			goto err_1;
+//		rc = ldmsd_req_cmd_attr_term(rcmd);
+//		if (rc)
+//			goto err_1;
+//	}
 	return 0;
- err_1:
-	ldmsd_req_cmd_free(rcmd);
- err_0:
-	return rc;
+// err_1:
+//	ldmsd_req_cmd_free(rcmd);
+// err_0:
+//	return rc;
 }
 
 static void prdcr_connect_cb(ldms_t x, ldms_xprt_event_t e, void *cb_arg)
@@ -454,15 +454,20 @@ static void prdcr_connect(ldmsd_prdcr_t prdcr)
 {
 	int ret;
 	struct timespec to;
-
+	ldmsd_auth_t auth_dom;
 	assert(prdcr->xprt == NULL);
 	switch (prdcr->type) {
 	case LDMSD_PRDCR_TYPE_ACTIVE:
+		/* The authentication domain must exist because
+		 * its reference got taken when the producer was created.
+		 */
+		auth_dom = ldmsd_auth_find(prdcr->conn_auth);
 		prdcr->conn_state = LDMSD_PRDCR_STATE_CONNECTING;
 		prdcr->xprt = ldms_xprt_new_with_auth(prdcr->xprt_name,
 						      ldmsd_linfo,
-						      prdcr->conn_auth,
-						      prdcr->conn_auth_args);
+						      auth_dom->plugin,
+						      auth_dom->attrs);
+		ldmsd_cfgobj_put(&auth_dom->obj); /* Put the 'find' reference back */
 		if (prdcr->xprt) {
 			ret  = ldms_xprt_connect(prdcr->xprt,
 						 (struct sockaddr *)&prdcr->ss,
@@ -562,16 +567,14 @@ ldmsd_prdcr_new_with_auth(const char *name, const char *xprt_name,
 	if (!auth)
 		auth = DEFAULT_AUTH;
 	auth_dom = ldmsd_auth_find(auth);
-	if (!auth_dom)
+	if (!auth_dom) {
+		errno = ENOENT;
 		goto err_2;
-
-	au = strdup(auth_dom->plugin);
-	if (!au)
+	}
+	au = strdup(auth);
+	if (!au) {
+		errno = ENOMEM;
 		goto err_3;
-	if (auth_dom->attrs) {
-		au_opts = av_copy(auth_dom->attrs);
-		if (!au_opts)
-			goto err_3;
 	}
 
 	ldmsd_log(LDMSD_LDEBUG,
@@ -601,7 +604,6 @@ ldmsd_prdcr_new_with_auth(const char *name, const char *xprt_name,
 	 * the whole information.
 	 */
 	prdcr->conn_auth = au;
-	prdcr->conn_auth_args = au_opts;
 
 	if (prdcr_resolve(host_name, port_no, &prdcr->ss, &prdcr->ss_len)) {
 		errno = EAFNOSUPPORT;

@@ -668,9 +668,9 @@ int sappendf(char **buff, int *off, int *alen, const char *fmt, ...);
  */
 typedef struct ldmsd_deferred_pi_config {
 	char *name;
+	json_entity_t config;
 	uint32_t msg_no; /* To be converted to line number in a config file */
 	char *config_file; /* Path of the config file */
-	json_entity_t d;
 	size_t buflen;
 	char *buf;
 	TAILQ_ENTRY(ldmsd_deferred_pi_config) entry;
@@ -691,6 +691,6 @@ struct ldmsd_deferred_pi_config *ldmsd_deferred_pi_config_first();
 /**
  * Configure the plugin instances according to the deferred plugin config requests
  */
-int ldmsd_handle_deferred_plugin_config();
+int ldmsd_handle_plugin_config();
 
 #endif /* __LDMSD_PLUGIN_H__ */

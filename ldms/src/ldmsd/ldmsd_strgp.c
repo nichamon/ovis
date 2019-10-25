@@ -111,29 +111,51 @@ int store_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t ev)
 }
 
 ldmsd_strgp_t
-ldmsd_strgp_new_with_auth(const char *name, uid_t uid, gid_t gid, int perm)
+ldmsd_strgp_new_with_auth(const char *name, const char *container,
+		const char *schema, uid_t uid, gid_t gid, int perm)
 {
 	struct ldmsd_strgp *strgp;
+	char *schema_name;
+	ldmsd_plugin_inst_t inst;
 
-	ev_worker_t worker;
+	ev_worker_t worker = NULL;
 	ev_t start_ev, stop_ev;
+	start_ev = stop_ev = NULL;
 	char worker_name[PATH_MAX];
 
-	snprintf(worker_name, PATH_MAX, "strgp:%s", name);
-	worker = ev_worker_new(worker_name, store_actor);
-	if (!worker) {
-		ldmsd_log(LDMSD_LERROR,
-			  "%s: error %d creating new worker %s\n",
-			  __func__, errno, worker_name);
+	/* Find the store plugin instance */
+	inst = ldmsd_plugin_inst_find(container);
+	if (!inst) {
+		errno = ENOENT;
 		return NULL;
 	}
+
+	errno = ENOMEM;
+	schema_name = strdup(schema);
+	if (!schema_name)
+		goto err0;
+
+	strgp = (struct ldmsd_strgp *)
+		ldmsd_cfgobj_new_with_auth(name, LDMSD_CFGOBJ_STRGP,
+				 sizeof *strgp, ldmsd_strgp___del,
+				 uid, gid, perm);
+	if (!strgp) {
+		free(schema_name);
+		goto err0;
+	}
+	strgp->schema = schema_name;
+
+	strgp->state = LDMSD_STRGP_STATE_STOPPED;
+	strgp->update_fn = strgp_update_fn;
+	LIST_INIT(&strgp->prdcr_list);
+	TAILQ_INIT(&strgp->metric_list);
 
 	start_ev = ev_new(strgp_start_type);
 	if (!start_ev) {
 		ldmsd_log(LDMSD_LERROR,
 			  "%s: error %d creating %s event\n",
 			  __func__, errno, ev_type_name(strgp_start_type));
-		return NULL;
+		goto err1;
 	}
 
 	stop_ev = ev_new(strgp_stop_type);
@@ -141,37 +163,50 @@ ldmsd_strgp_new_with_auth(const char *name, uid_t uid, gid_t gid, int perm)
 		ldmsd_log(LDMSD_LERROR,
 			  "%s: error %d creating %s event\n",
 			  __func__, errno, ev_type_name(strgp_stop_type));
-		return NULL;
+		goto err2;
 	}
 
-	strgp = (struct ldmsd_strgp *)
-		ldmsd_cfgobj_new_with_auth(name, LDMSD_CFGOBJ_STRGP,
-				 sizeof *strgp, ldmsd_strgp___del,
-				 uid, gid, perm);
-	if (!strgp)
-		return NULL;
-
-	strgp->state = LDMSD_STRGP_STATE_STOPPED;
-	strgp->update_fn = strgp_update_fn;
-	LIST_INIT(&strgp->prdcr_list);
-	TAILQ_INIT(&strgp->metric_list);
+	snprintf(worker_name, PATH_MAX, "strgp:%s", name);
+	worker = ev_worker_get(worker_name);
+	if (!worker) {
+		worker = ev_worker_new(worker_name, store_actor);
+		if (!worker) {
+			ldmsd_log(LDMSD_LERROR,
+				  "%s: error %d creating new worker %s\n",
+				  __func__, errno, worker_name);
+			goto err2;
+		}
+	}
 
 	strgp->worker = worker;
 	strgp->start_ev = start_ev;
 	strgp->stop_ev = stop_ev;
 	EV_DATA(strgp->start_ev, struct start_data)->entity = strgp;
 	EV_DATA(strgp->stop_ev, struct start_data)->entity = strgp;
+	strgp->inst = inst;
 
-	ldmsd_cfgobj_unlock(&strgp->obj);
+	ldmsd_strgp_unlock(strgp);
 	return strgp;
+err2:
+	if (start_ev)
+		ev_put(start_ev);
+	if (stop_ev)
+		ev_put(stop_ev);
+err1:
+	ldmsd_strgp_unlock(strgp);
+	ldmsd_strgp_put(strgp);
+err0:
+	ldmsd_plugin_inst_put(inst); /* put down ref from `find` */
+	return NULL;
 }
 
 ldmsd_strgp_t
-ldmsd_strgp_new(const char *name)
+ldmsd_strgp_new(const char *name, const char *container, const char *schema)
 {
 	struct ldmsd_sec_ctxt sctxt;
 	ldmsd_sec_ctxt_get(&sctxt);
-	return ldmsd_strgp_new_with_auth(name, sctxt.crd.uid, sctxt.crd.gid, 0777);
+	return ldmsd_strgp_new_with_auth(name, container, schema,
+					sctxt.crd.uid, sctxt.crd.gid, 0777);
 }
 
 ldmsd_strgp_t ldmsd_strgp_first()

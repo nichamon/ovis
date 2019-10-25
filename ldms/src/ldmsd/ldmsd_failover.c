@@ -1709,14 +1709,14 @@ int failover_status_handler(ldmsd_req_ctxt_t req)
 	sz = (void*)s - buff + 1;
 	attr->attr_len = sz - sizeof(*attr);
 	ldmsd_hton_req_attr(attr);
-	rc = ldmsd_append_reply(req, buff, sz, LDMSD_REQ_SOM_F);
+	rc = ldmsd_append_reply(req, buff, sz, LDMSD_REC_SOM_F);
 	if (rc) {
 		errmsg = "append reply error";
 		goto err;
 	}
 	term = 0;
 	rc = ldmsd_append_reply(req, (void*)&term, sizeof(term),
-				LDMSD_REQ_EOM_F);
+				LDMSD_REC_EOM_F);
 	if (rc) {
 		errmsg = "append reply error";
 		goto err;
@@ -2274,11 +2274,11 @@ int failover_ping_handler(ldmsd_req_ctxt_t req)
 	__failover_unlock(f);
 	req->errcode = 0;
 	ldmsd_append_reply(req, (void*)&attr, sizeof(attr),
-			   LDMSD_REQ_SOM_F);
+			   LDMSD_REC_SOM_F);
 	ldmsd_append_reply(req, (void*)&data, sizeof(data), 0);
 	attr.discrim = 0;
 	ldmsd_append_reply(req, (char *)&attr.discrim, sizeof(uint32_t),
-			   LDMSD_REQ_EOM_F);
+			   LDMSD_REC_EOM_F);
 	return rc;
 err:
 	__failover_unlock(f);
