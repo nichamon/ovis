@@ -63,6 +63,7 @@ import re
 from ldmsd import ldmsd_config, ldmsd_util, ldmsd_request
 from ldmsd.ldmsd_request import LDMSD_Request, LDMSD_Req_Attr
 from ldmsd.ldmsd_request import LDMSD_Req_Attr
+from ldmsd.ldmsd_msg import LDMSD_Message
 import errno
 
 LDMSD_REQ_SOM_F=1
@@ -181,6 +182,38 @@ class LdmsdCmdParser(cmd.Cmd):
             return ''
         return line
 
+    def cmd_obj(self, name):
+        return {'type': "cmd_obj",
+               'cmd': name}
+        
+
+    def attr2dict(self, args):
+        d = {}
+        for attr_str in args.split():
+            name = None
+            value = None
+            try:
+                [name, value] = attr_str.split("=")
+                d[name] = value
+            except ValueError:
+                # keyword
+                [name] = attr_str.split("=")
+                d[name] = True
+            except:
+                raise
+        return d
+
+    def json_handle(self, obj):
+        req = LDMSD_Message(self.ctrl)
+        req.send(LDMSD_Message.LDMSD_MSG_TYPE_REQ, obj, None)
+        rsp = LDMSD_Message(self.ctrl)
+        rsp.receive()
+        if rsp.json_ent['type'] in ["err", "rec_adv"]:
+            print("Error {0}: {1}".format(rsp.json_ent['errcode'], rsp.json_ent['msg']))
+            return None
+        else:
+            return rsp.json_ent
+
     def handle(self, verb, args):
         if args and not self.__check_command_syntax(args):
             print("Syntax error, there are attributes for which no value is given.")
@@ -259,6 +292,13 @@ class LdmsdCmdParser(cmd.Cmd):
     def read_none_tty(self, fin):
         for cmd in fin:
             self.onecmd(cmd)
+
+    def do_json(self, arg):
+        req = LDMSD_Message(self.ctrl)
+        req.send(LDMSD_Message.LDMSD_MSG_TYPE_REQ, None, arg)
+        rsp = LDMSD_Message(self.ctrl)
+        rsp.receive()
+        print(json.dumps(rsp.json_ent, indent=2)) 
 
     def do_source(self, arg):
         """
@@ -966,28 +1006,33 @@ class LdmsdCmdParser(cmd.Cmd):
         Parameters:
         name=     The smplr name
         """
-        resp = self.handle('smplr_status', arg)
-        if resp['errcode'] == 0:
-            samplers = json.loads(resp['msg'])
+        obj = self.cmd_obj("smplr_status")
+        if arg:
+            obj['spec'] = self.attr2dict(arg)
+        rsp = self.json_handle(obj)
+        if rsp:
+            samplers = rsp['info']
+        else:
+            return
 
-            print("{0:16} {1:16} {2:16} {3:>10} {4:>7} {5:>10} {6:>8} {7}".format("Name", "Plugin Instance", "Plugin", "Interval", "Offset", "Sync State", "State", "Sets"))
-            print("--------------- ---------------- ---------------- ---------- -------- ----------- ------- --------------------")
-            for smplr in samplers:
-                print("{0:16} {1:16} {2:16} {3:>10} {4:>7} {5:>10} {6:>8}".format(smplr['name'],
-                             smplr['instance'],
-                             smplr['plugin'],
-                             smplr['interval_us'],
-                             smplr['offset_us'],
-                             "true" if smplr['synchronous'] else "false",
-                             smplr['state']), end='')
-                cnt = 0
-                for s in smplr['sets']:
-                    if cnt == 0:
-                        print(" " + s, end='')
-                    else:
-                        print("," + s, end='')
-                    cnt += 1
-                print("")
+        print("{0:16} {1:16} {2:16} {3:>10} {4:>7} {5:>10} {6:>8} {7}".format("Name", "Plugin Instance", "Plugin", "Interval", "Offset", "Sync State", "State", "Sets"))
+        print("--------------- ---------------- ---------------- ---------- -------- ----------- ------- --------------------")
+        for smplr in samplers:
+            print("{0:16} {1:16} {2:16} {3:>10} {4:>7} {5:>10} {6:>8}".format(smplr['name'],
+                         smplr['instance'],
+                         smplr['plugin'],
+                         smplr['interval_us'],
+                         smplr['offset_us'],
+                         "true" if smplr['synchronous'] else "false",
+                         smplr['state']), end='')
+            cnt = 0
+            for s in smplr['sets']:
+                if cnt == 0:
+                    print(" " + s, end='')
+                else:
+                    print("," + s, end='')
+                cnt += 1
+            print("")
 
     def complete_smplr_status(self, text, line, begidx, endidx):
         return self.__complete_attr_list('smplr_status', text)
