@@ -294,6 +294,31 @@ static void test_json_dict_build()
 	assert(is_same_entity(j[JSON_ATTR_VALUE], json_value_find(d, "attr")));
 }
 
+void test_json_list_apis()
+{
+	json_entity_t l, item, exp;
+
+	printf(" ---- test_json_list_apis() ----- \n");
+
+	l = json_entity_new(JSON_LIST_VALUE);
+	exp = json_entity_new(JSON_INT_VALUE, 1);
+	json_item_add(l, exp);
+	assert(1 == json_list_len(l));
+	item = json_item_first(l);
+	assert(is_same_entity(exp, item));
+	exp = json_entity_new(JSON_STRING_VALUE, "str");
+	json_item_add(l, exp);
+	assert(2 == json_list_len(l));
+	item = json_item_pop(l, 1);
+	assert(is_same_entity(exp, item));
+	assert(1 == json_list_len(l));
+	exp = json_entity_new(JSON_FLOAT_VALUE, 1.1);
+	json_item_add(l, exp);
+	item = json_item_next(json_item_first(l));
+	assert(is_same_entity(exp, item));
+	json_entity_free(l);
+}
+
 #define LEN 3
 static void test_apis() {
 	json_entity_t jsons[JSON_NULL_VALUE];
@@ -348,6 +373,8 @@ static void test_apis() {
 	test_json_entity_dump(jsons);
 
 	test_json_dict_build();
+
+	test_json_list_apis();
 }
 
 int main(int argc, char **argv) {
