@@ -374,58 +374,6 @@ err:
 	return;
 }
 
-static void __listen_connect_cb(ldms_t x, ldms_xprt_event_t e, void *cb_arg)
-{
-	switch (e->type) {
-	case LDMS_XPRT_EVENT_CONNECTED:
-		break;
-	case LDMS_XPRT_EVENT_DISCONNECTED:
-	case LDMS_XPRT_EVENT_REJECTED:
-	case LDMS_XPRT_EVENT_ERROR:
-		/* TODO: cleanup all resources referenced to this endpoint */
-		ldms_xprt_put(x);
-		break;
-	case LDMS_XPRT_EVENT_RECV:
-		ldmsd_recv_msg(x, e->data, e->data_len);
-		break;
-	default:
-		assert(0);
-		break;
-	}
-}
-
-int listen_on_ldms_xprt(ldmsd_listen_t listen)
-{
-	int ret;
-	struct addrinfo ai_hints = { .ai_family = AF_INET, .ai_flags = AI_PASSIVE };
-	struct addrinfo *ai;
-	char *ip;       /* for info print */
-	char port[8];
-
-	snprintf(port, sizeof(port), "%u", listen->port_no);
-
-	ret = getaddrinfo(listen->host, port, &ai_hints, &ai);
-	if (ret)
-		return ret;
-	ip = (char*)&((struct sockaddr_in *)ai->ai_addr)->sin_addr;
-	ret = ldms_xprt_listen(listen->x, ai->ai_addr, ai->ai_addrlen,
-			       __listen_connect_cb, NULL);
-	if (ret) {
-		ldmsd_log(LDMSD_LERROR, "Error %d listening on the '%s' "
-				"transport addr: %hhu.%hhu.%hhu.%hhu:%hu.\n",
-				ret, listen->xprt, ip[0], ip[1], ip[2], ip[3],
-				listen->port_no);
-		freeaddrinfo(ai);
-		return 7; /* legacy error code */
-	}
-	ldmsd_log(LDMSD_LINFO,  "Listening on transport %s, "
-				"addr: %hhu.%hhu.%hhu.%hhu:%hu\n",
-				listen->xprt, ip[0], ip[1], ip[2], ip[3],
-				listen->port_no);
-	freeaddrinfo(ai);
-	return 0;
-}
-
 ldmsd_cfg_xprt_t ldmsd_cfg_xprt_new()
 {
 	ldmsd_cfg_xprt_t xprt = calloc(1, sizeof(*xprt));
