@@ -950,46 +950,6 @@ err:
 	return;
 }
 
-static void __listen_connect_cb(ldms_t x, ldms_xprt_event_t e, void *cb_arg)
-{
-	switch (e->type) {
-	case LDMS_XPRT_EVENT_CONNECTED:
-		break;
-	case LDMS_XPRT_EVENT_DISCONNECTED:
-	case LDMS_XPRT_EVENT_REJECTED:
-	case LDMS_XPRT_EVENT_ERROR:
-		/* TODO: cleanup all resources referenced to this endpoint */
-		ldms_xprt_put(x);
-		break;
-	case LDMS_XPRT_EVENT_RECV:
-		ldmsd_recv_msg(x, e->data, e->data_len);
-		break;
-	default:
-		assert(0);
-		break;
-	}
-}
-
-int listen_on_ldms_xprt(ldmsd_listen_t listen)
-{
-	int ret;
-	struct sockaddr_in sin;
-
-	sin.sin_family = AF_INET;
-	sin.sin_addr.s_addr = 0;
-	sin.sin_port = htons(listen->port_no);
-	ret = ldms_xprt_listen(listen->x, (struct sockaddr *)&sin, sizeof(sin),
-			       __listen_connect_cb, NULL);
-	if (ret) {
-		ldmsd_log(LDMSD_LERROR, "Error %d listening on the '%s' "
-				"transport.\n", ret, listen->xprt);
-		return 7; /* legacy error code */
-	}
-	ldmsd_log(LDMSD_LINFO, "Listening on transport %s:%hu\n",
-			listen->xprt, listen->port_no);
-	return 0;
-}
-
 int ldmsd_handle_plugin_config()
 {
 	struct ldmsd_deferred_pi_config *cfg, *nxt_cfg;

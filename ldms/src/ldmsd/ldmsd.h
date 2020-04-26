@@ -1558,19 +1558,6 @@ int ldmsd_auth_opt_add(struct attr_value_list *auth_attrs, char *name, char *val
 struct attr_value_list *ldmsd_auth_opts_str2avl(const char *auth_args_s);
 
 /**
- * \brief Create a listening endpoint
- *
- * \param xprt   transport name
- * \param port   port
- * \param host   hostname
- * \param auth   authentication domain name
- *
- * \return a listen cfgobj
- */
-ldmsd_listen_t ldmsd_listen_new(char *xprt, unsigned short port, char *host, char *auth);
-
-
-/**
  * LDMSD Authentication Domain Configuration Object
  */
 typedef struct ldmsd_auth {
