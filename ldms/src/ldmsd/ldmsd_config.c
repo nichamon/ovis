@@ -100,24 +100,6 @@ void ldmsd_cfg_xprt_ldms_cleanup(ldmsd_cfg_xprt_t xprt)
 	ldmsd_cfg_xprt_cleanup(xprt);
 }
 
-const char *prdcr_state_str(enum ldmsd_prdcr_state state)
-{
-	switch (state) {
-	case LDMSD_PRDCR_STATE_STOPPED:
-		return "STOPPED";
-	case LDMSD_PRDCR_STATE_DISCONNECTED:
-		return "DISCONNECTED";
-	case LDMSD_PRDCR_STATE_CONNECTING:
-		return "CONNECTING";
-	case LDMSD_PRDCR_STATE_CONNECTED:
-		return "CONNECTED";
-	case LDMSD_PRDCR_STATE_STOPPING:
-		return "STOPPING";
-	}
-	return "BAD STATE";
-}
-
-
 const char *match_selector_str(enum ldmsd_name_match_sel sel)
 {
 	switch (sel) {

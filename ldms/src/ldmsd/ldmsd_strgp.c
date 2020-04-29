@@ -589,7 +589,7 @@ int __ldmsd_strgp_start(ldmsd_strgp_t strgp, ldmsd_sec_ctxt_t ctxt)
 	strgp->state = LDMSD_STRGP_STATE_RUNNING;
 	strgp->obj.perm |= LDMSD_PERM_DSTART;
 	/* Update all the producers of our changed state */
-	ldmsd_prdcr_update(strgp);
+	ldmsd_prdcr_strgp_update(strgp);
 	return rc;
 }
 
@@ -625,7 +625,7 @@ int __ldmsd_strgp_stop(ldmsd_strgp_t strgp, ldmsd_sec_ctxt_t ctxt)
 		strgp_close(strgp);
 	strgp->state = LDMSD_STRGP_STATE_STOPPED;
 	strgp->obj.perm &= ~LDMSD_PERM_DSTART;
-	ldmsd_prdcr_update(strgp);
+	ldmsd_prdcr_strgp_update(strgp);
 out:
 	ldmsd_strgp_unlock(strgp);
 	return rc;
