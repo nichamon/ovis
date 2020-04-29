@@ -108,6 +108,13 @@ typedef struct ldmsd_str_ent {
 } *ldmsd_str_ent_t;
 LIST_HEAD(ldmsd_str_list, ldmsd_str_ent);
 
+typedef struct ldmsd_regex_ent {
+	char *regex_str;
+	regex_t regex;
+	LIST_ENTRY(ldmsd_regex_ent) entry;
+} *ldmsd_regex_ent_t;
+LIST_HEAD(ldmsd_regex_list, ldmsd_regex_ent);
+
 #define LDMSD_STR_WRAP(NAME) #NAME
 #define LDMSD_LWRAP(NAME) LDMSD_L ## NAME
 #define TOSTRING(x) LDMSD_STR_WRAP(x)
@@ -336,10 +343,6 @@ typedef struct ldmsd_smplr {
 
 } *ldmsd_smplr_t;
 
-typedef struct ldmsd_prdcr_stream_s {
-	const char *name;
-	LIST_ENTRY(ldmsd_prdcr_stream_s) entry;
-} *ldmsd_prdcr_stream_t;
 /*
  * The maximum number of authentication options
  */
@@ -404,7 +407,7 @@ typedef struct ldmsd_prdcr {
 	/**
 	 * list of subscribed streams from this producer
 	 */
-	LIST_HEAD(,ldmsd_prdcr_stream_s) stream_list;
+	LIST_HEAD(ldmsd_prdcr_stream_list,ldmsd_str_ent) *stream_list;
 
 	/**
 	 * Maintains a tree of all metric sets available from this
@@ -922,18 +925,7 @@ int ldmsd_smplr_stop(const char *name, ldmsd_sec_ctxt_t sctxt);
 /** Producer configuration object management */
 int ldmsd_prdcr_str2type(const char *type);
 const char *ldmsd_prdcr_type2str(enum ldmsd_prdcr_type type);
-ldmsd_prdcr_t
-ldmsd_prdcr_new(const char *name, const char *xprt_name,
-		const char *host_name, const unsigned short port_no,
-		enum ldmsd_prdcr_type type, int conn_intrvl_us,
-		char *auth);
-ldmsd_prdcr_t
-ldmsd_prdcr_new_with_auth(const char *name, const char *xprt_name,
-		const char *host_name, const unsigned short port_no,
-		enum ldmsd_prdcr_type type, int conn_intrvl_us,
-		const char *auth,
-		uid_t uid, gid_t gid, int perm);
-int ldmsd_prdcr_del(const char *prdcr_name, ldmsd_sec_ctxt_t ctxt);
+const char *ldmsd_prdcr_state2str(enum ldmsd_prdcr_state state);
 static inline ldmsd_prdcr_t ldmsd_prdcr_first()
 {
 	return (ldmsd_prdcr_t)ldmsd_cfgobj_first(LDMSD_CFGOBJ_PRDCR);
@@ -982,14 +974,6 @@ static inline const char *ldmsd_prdcr_set_state_str(enum ldmsd_prdcr_set_state s
 	}
 	return "BAD STATE";
 }
-int ldmsd_prdcr_start(const char *name, const char *interval_str,
-		      ldmsd_sec_ctxt_t ctxt, int flags);
-int ldmsd_prdcr_start_regex(const char *prdcr_regex, const char *interval_str,
-			    char *rep_buf, size_t rep_len,
-			    ldmsd_sec_ctxt_t ctxt, int flags);
-int ldmsd_prdcr_stop(const char *name, ldmsd_sec_ctxt_t ctxt);
-int ldmsd_prdcr_stop_regex(const char *prdcr_regex,
-			char *rep_buf, size_t rep_len, ldmsd_sec_ctxt_t ctxt);
 int ldmsd_prdcr_subscribe(ldmsd_prdcr_t prdcr, const char *stream);
 int ldmsd_prdcr_subscribe_regex(const char *prdcr_regex, char *stream_name,
 				char *rep_buf, size_t rep_len,
@@ -1102,7 +1086,7 @@ int __ldmsd_strgp_stop(ldmsd_strgp_t strgp, ldmsd_sec_ctxt_t ctxt);
 
 
 /* Function to update inter-dependent configuration objects */
-void ldmsd_prdcr_update(ldmsd_strgp_t strgp);
+void ldmsd_prdcr_strgp_update(ldmsd_strgp_t strgp);
 void ldmsd_strgp_update(ldmsd_prdcr_set_t prd_set);
 int ldmsd_strgp_update_prdcr_set(ldmsd_strgp_t strgp, ldmsd_prdcr_set_t prd_set);
 int ldmsd_strgp_prdcr_add(const char *strgp_name, const char *regex_str,
