@@ -1,8 +1,8 @@
 /* -*- c-basic-offset: 8 -*-
- * Copyright (c) 2015-2018 National Technology & Engineering Solutions
+ * Copyright (c) 2015-2018,2020 National Technology & Engineering Solutions
  * of Sandia, LLC (NTESS). Under the terms of Contract DE-NA0003525 with
  * NTESS, the U.S. Government retains certain rights in this software.
- * Copyright (c) 2015-2018 Open Grid Computing, Inc. All rights reserved.
+ * Copyright (c) 2015-2018,2020 Open Grid Computing, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -97,6 +97,9 @@ struct test_sampler_set {
 	ldms_set_t set;
 	int push;
 	int skip_push;
+	int alive_dur; /* Set alives for alive_dur */
+	int resurrect_dur; /* Set will be resurrected in resurrect_dur */
+	int counter;
 	LIST_ENTRY(test_sampler_set) entry;
 };
 LIST_HEAD(test_sampler_set_list, test_sampler_set);
@@ -285,6 +288,7 @@ void __schema_metric_destroy(struct test_sampler_metric *metric)
 
 static struct test_sampler_set *__create_test_sampler_set(ldms_set_t set,
 					char *instance_name, int push,
+					char *alive, char *resurrect,
 				struct test_sampler_schema *ts_schema)
 {
 	struct test_sampler_set *ts_set = malloc(sizeof(*ts_set));
@@ -297,13 +301,16 @@ static struct test_sampler_set *__create_test_sampler_set(ldms_set_t set,
 	ts_set->ts_schema = ts_schema;
 	ts_set->push = push;
 	ts_set->skip_push = 1;
+	ts_set->alive_dur = (!alive)?-1:strtoull(alive, NULL, 0);
+	ts_set->resurrect_dur = (!resurrect)?-1:strtoull(resurrect, NULL, 0);
+	ts_set->counter = 0;
 	LIST_INSERT_HEAD(&set_list, ts_set, entry);
 	ldms_set_publish(set);
 	ldmsd_set_register(set, "test_sampler");
 	return ts_set;
 }
 
-static int create_metric_set(const char *schema_name, int push)
+static int create_metric_set(const char *schema_name, int push, char *alive, char *resurrect)
 {
 	int rc, i, j;
 	ldms_set_t set;
@@ -358,7 +365,7 @@ static int create_metric_set(const char *schema_name, int push)
 		}
 		set_array[i] = set;
 		ts_set = __create_test_sampler_set(set, instance_name,
-						push, ts_schema);
+						push, alive, resurrect, ts_schema);
 		if (!ts_set)
 			goto free_sets;
 	}
@@ -562,6 +569,9 @@ static int config_add_set(struct attr_value_list *avl)
 	if (push_s)
 		push = atoi(push_s);
 
+	char *alive = av_value(avl, "alive");
+	char *resurrect = av_value(avl, "resurrect");
+
 	struct test_sampler_set *ts_set;
 	ts_set = __set_find(&set_list, set_name);
 	if (ts_set) {
@@ -576,7 +586,7 @@ static int config_add_set(struct attr_value_list *avl)
 				"set '%s'\n", set_name);
 		return ENOMEM;
 	}
-	ts_set = __create_test_sampler_set(set, set_name, push, ts_schema);
+	ts_set = __create_test_sampler_set(set, set_name, push, alive, resurrect, ts_schema);
 	if (!ts_set) {
 		rc = ENOMEM;
 		goto err0;
@@ -681,7 +691,10 @@ static int config_add_default(struct attr_value_list *avl)
 	else
 		push = 0;
 
-	rc = create_metric_set(sname, push);
+	char *alive = av_value(avl, "alive");
+	char *resurrect = av_value(avl, "resurrect");
+
+	rc = create_metric_set(sname, push, alive, resurrect);
 	if (rc) {
 		msglog(LDMSD_LERROR, "test_sampler: failed to create metric sets.\n");
 		return rc;
@@ -867,6 +880,22 @@ static int sample(struct ldmsd_sampler *self)
 	struct test_sampler_set *ts_set;
 	struct test_sampler_metric *metric;
 	LIST_FOREACH(ts_set, &set_list, entry) {
+
+		if ((ts_set->alive_dur > 0) && !ts_set->set) {
+			if (ts_set->resurrect_dur != ts_set->counter) {
+				ts_set->counter++;
+				continue;
+			}
+			ts_set->set = ldms_set_new(ts_set->name, ts_set->ts_schema->schema);
+			if (!ts_set->set) {
+				msglog(LDMSD_LERROR, "test_sampler: failed to create set '%s'. "
+						"Out of memory\n", ts_set->name);
+				return ENOMEM;
+			}
+			ldms_set_publish(ts_set->set);
+			ts_set->counter = 1;
+		}
+
 		set = ts_set->set;
 		ldms_transaction_begin(set);
 		TAILQ_FOREACH(metric, &ts_set->ts_schema->list, entry) {
@@ -886,6 +915,17 @@ static int sample(struct ldmsd_sampler *self)
 				ts_set->skip_push = 1;
 			} else {
 				ts_set->skip_push++;
+			}
+		}
+
+		if (ts_set->alive_dur > 0) {
+			if (ts_set->alive_dur == ts_set->counter) {
+				ldms_set_unpublish(ts_set->set);
+				ldms_set_delete(ts_set->set);
+				ts_set->set = NULL;
+				ts_set->counter = 1;
+			} else {
+				ts_set->counter++;
 			}
 		}
 	}
@@ -971,7 +1011,7 @@ static const char *usage(struct ldmsd_plugin *self)
 		"config name=test_sampler action=add_set instance=<set_name>\n"
 		"       schema=<schema_name>\n"
 		"       [producer=<producer>] [component_id=<compid>] [jobid=<jobid>]\n"
-		"       [push=<push>]\n"
+		"       [push=<push>] [alive=<alive_dur>] [resurrect=<res_dur>]\n"
 		"\n"
 		"    <set name>      The set name\n"
 		"    <schema name>   The schema name\n"
@@ -983,6 +1023,17 @@ static const char *usage(struct ldmsd_plugin *self)
 		"                    2 means the sampler will push every other update,\n"
 		"                    3 means the sampler will push every third updates,\n"
 		"                    and so on.\n"
+		"    <alive_dur>     The duration that the set will be alive and then terminated.\n"
+		"                    The unit is a multiple of the sample interval, starting from 1.\n"
+		"                    For example, alive_dur = 2. The set will be "
+		"                    terminated right after it is sampled the second time.\n"
+		"                    The default is the set lives forever.\n"
+		"    <res_dur>       The duration that the set will be resurrected after it has been terminated.\n"
+		"                    The unit is a multiple of the sample interval, starting from 1.\n"
+		"                    For example, alive_dur = 1 and res_dur = 1.\n"
+		"                    The set will be terminated right after it is sampled the first time\n"
+		"                    and it will be resurrected at the next sample.\n"
+		"                    The default is the set will never be resurrected if it has been terminated.\n"
 		"\n"
 		"config name=test_sampler action=default [base=<base>] [schema=<sname>]\n"
 		"       [num_sets=<nsets>] [num_metrics=<nmetrics>] [push=<push>]\n"
@@ -996,6 +1047,17 @@ static const char *usage(struct ldmsd_plugin *self)
 		"                 2 means the sampler will push every other update,\n"
 		"                 3 means the sampler will push every third updates,\n"
 		"                 and so on.\n"
+		"    <alive_dur>     The duration that the set will be alive and then terminated.\n"
+		"                    The unit is a multiple of the sample interval, starting from 1.\n"
+		"                    For example, alive_dur = 2. The set will be "
+		"                    terminated right after it is sampled the second time.\n"
+		"                    The default is the set lives forever.\n"
+		"    <res_dur>       The duration that the set will be resurrected after it has been terminated.\n"
+		"                    The unit is a multiple of the sample interval, starting from 1.\n"
+		"                    For example, alive_dur = 1 and res_dur = 1.\n"
+		"                    The set will be terminated right after it is sampled the first time\n"
+		"                    and it will be resurrected at the next sample.\n"
+		"                    The default is the set will never be resurrected if it has been terminated.\n"
 		"\n"
 		"config name=test_sampler [producer=<prod_name>] [component_id=<comp_id>] [jobid=<jobid>]\n"
 		"    <prod_name>  The producer name\n"
