@@ -2877,7 +2877,7 @@ static int updtr_add_handler(ldmsd_req_ctxt_t reqc)
 		}
 		is_auto_task = 0;
 	}
-	ldmsd_updtr_t updtr = ldmsd_updtr_new_with_auth(name, interval_str,
+	ldmsd_updtr_t updtr = __updtr_new(name, interval_str,
 							offset_str ? offset_str : "0",
 							push_flags,
 							is_auto_task,

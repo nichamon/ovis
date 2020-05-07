@@ -570,31 +570,12 @@ typedef struct ldmsd_updtr {
 	 * For quick search when query for updater that updates a prdcr_set.
 	 */
 	struct rbt prdcr_tree;
-	/*
-	 * The list contains the regex strings given at
-	 * the updtr_prdcr_add line. The list is used
-	 * in exporting producer configuration.
-	 */
-	struct ldmsd_str_list added_prdcr_regex_list;
-	/*
-	 * The list contains the regex strings given at
-	 * the updtr_prdcr_del line. The list is used
-	 * in exporting producer configuration.
-	 *
-	 * When updtr_prdcr_del line is given, the regex string
-	 * may not matched any strings in the added_prdcr_regex_list.
-	 *
-	 * Producers that are matched the regex in the add_prdcr_regex_list
-	 * but not matched the regex in the del_prdcr_regex_list
-	 * are those in prdcr_tree. This fact is used in exporting
-	 * the updater configuration.
-	 */
-	struct ldmsd_str_list del_prdcr_regex_list;
-	LIST_HEAD(updtr_match_list, ldmsd_name_match) match_list;
+	struct ldmsd_regex_list *prdcr_regex_list;
+	LIST_HEAD(updtr_match_list, ldmsd_name_match) *match_list;
 } *ldmsd_updtr_t;
 
 typedef struct ldmsd_name_match {
-	/** Regular expresion matching schema or instance name */
+	/** Regular expression matching schema or instance name */
 	char *regex_str;
 	regex_t regex;
 
@@ -987,10 +968,6 @@ ldmsd_updtr_t
 ldmsd_updtr_new(const char *name, long interval_us,
 		long offset_us, int push_flags,
 		int is_auto_interval);
-ldmsd_updtr_t
-ldmsd_updtr_new_with_auth(const char *name, long interval_us, long offset_us,
-					int push_flags, int is_auto_task,
-					uid_t uid, gid_t gid, int perm);
 int ldmsd_updtr_del(const char *updtr_name, ldmsd_sec_ctxt_t ctxt);
 ldmsd_updtr_t ldmsd_updtr_first();
 ldmsd_updtr_t ldmsd_updtr_next(struct ldmsd_updtr *updtr);
@@ -1028,18 +1005,6 @@ static inline const char *ldmsd_updtr_state_str(enum ldmsd_updtr_state state) {
 	}
 	return "BAD STATE";
 }
-int ldmsd_updtr_start(const char *updtr_name, const char *interval_str,
-		      const char *offset_str, const char *auto_interval,
-		      ldmsd_sec_ctxt_t ctxt, int flags);
-int ldmsd_updtr_stop(const char *updtr_name, ldmsd_sec_ctxt_t ctxt);
-int ldmsd_updtr_match_add(const char *updtr_name, const char *regex_str,
-		const char *selector_str, char *rep_buf, size_t rep_len,
-		ldmsd_sec_ctxt_t ctxt);
-int ldmsd_updtr_match_del(const char *updtr_name, const char *regex_str,
-			  const char *selector_str, ldmsd_sec_ctxt_t ctxt);
-
-int __ldmsd_updtr_start(ldmsd_updtr_t updtr, ldmsd_sec_ctxt_t ctxt);
-int __ldmsd_updtr_stop(ldmsd_updtr_t updtr, ldmsd_sec_ctxt_t ctxt);
 
 /* strgp */
 ldmsd_strgp_t ldmsd_strgp_new(const char *name, const char *container,

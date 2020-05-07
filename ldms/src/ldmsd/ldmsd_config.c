@@ -114,15 +114,15 @@ const char *match_selector_str(enum ldmsd_name_match_sel sel)
 int ldmsd_compile_regex(regex_t *regex, const char *regex_str,
 				char *errbuf, size_t errsz)
 {
+	size_t cnt;
 	memset(regex, 0, sizeof *regex);
 	int rc = regcomp(regex, regex_str, REG_EXTENDED | REG_NOSUB);
 	if (rc) {
-		snprintf(errbuf, errsz, "22");
+		cnt = snprintf(errbuf, errsz, "Failed to compile '%s'.", regex_str);
 		(void)regerror(rc,
 			       regex,
-			       &errbuf[2],
-			       errsz - 2);
-		strcat(errbuf, "\n");
+			       &errbuf[cnt],
+			       errsz - cnt);
 	}
 	return rc;
 }
