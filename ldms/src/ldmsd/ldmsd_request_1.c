@@ -2938,7 +2938,7 @@ static int __updtr_handler(ldmsd_req_ctxt_t reqc, json_entity_t spec,
 	name_s = json_value_str(name)->str;
 
 	/* Create an updater */
-	ldmsd_updtr_t updtr = ldmsd_updtr_new_with_auth(name_s, interval_us,
+	ldmsd_updtr_t updtr = __updtr_new(name_s, interval_us,
 							offset_us,
 							push_flags,
 							auto_interval,

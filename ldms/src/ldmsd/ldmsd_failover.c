@@ -2064,7 +2064,7 @@ int failover_cfgupdtr_handler(ldmsd_req_ctxt_t req)
 		srbn = str_rbn_new(name);
 		if (!srbn)
 			goto out;
-		u = ldmsd_updtr_new_with_auth(name, interval, offset,
+		u = __updtr_new(name, interval, offset,
 						push_flags, is_auto_interval,
 						_uid, _gid, _perm);
 		if (!u) {
