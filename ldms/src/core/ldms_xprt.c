@@ -438,7 +438,7 @@ void __ldms_xprt_resource_free(struct ldms_xprt *x)
 	struct ldms_rbuf_desc *rbd;
 	while ((rbn = rbt_min(&x->rbd_rbt))) {
 		rbd = RBN_RBD(rbn);
-		__ldms_free_rbd_no_lock(rbd);
+		__ldms_free_rbd_no_lock(rbd, __func__, __LINE__);
 	}
 	if (x->auth)
 		ldms_auth_free(x->auth);
@@ -868,7 +868,7 @@ static int __send_lookup_reply(struct ldms_xprt *x, struct ldms_set *set,
 	if (!rbd) {
 		rc = ENOMEM;
 		/* Allocate a new RBD for this set */
-		rbd = __ldms_alloc_rbd(x, set, LDMS_RBD_LOCAL);
+		rbd = __ldms_alloc_rbd(x, set, LDMS_RBD_LOCAL, "set_new");
 		if (!rbd)
 			goto err_0;
 	}
@@ -2106,7 +2106,7 @@ static void handle_rendezvous_lookup(zap_ep_t zep, zap_event_t ev,
 	}
 
 	/* Bind this set to a new RBD. We will initiate RDMA_READ */
-	rbd = __ldms_alloc_rbd(x, lset, LDMS_RBD_INITIATOR);
+	rbd = __ldms_alloc_rbd(x, lset, LDMS_RBD_INITIATOR, "set_new");
 	if (!rbd) {
 		rc = ENOMEM;
 		goto callback;
@@ -2147,6 +2147,7 @@ static void handle_rendezvous_lookup(zap_ep_t zep, zap_event_t ev,
 		pthread_mutex_unlock(&x->lock);
 		goto callback;
 	}
+	__ldms_free_ctxt(x, ctxt);
 	return;
 
  callback:
@@ -2163,19 +2164,16 @@ static void handle_rendezvous_lookup(zap_ep_t zep, zap_event_t ev,
 		ctxt->lu_req.cb(x, rc, 0, rbd, ctxt->lu_req.cb_arg);
 
 	zap_put_ep(x->zap_ep);	/* Taken in __ldms_remote_lookup() */
-	if (!lu->more) {
-		pthread_mutex_lock(&x->lock);
-		__ldms_free_ctxt(x, ctxt);
+	pthread_mutex_lock(&x->lock);
+	__ldms_free_ctxt(x, ctxt);
 #ifdef DEBUG
-		assert(x->active_lookup);
-		x->active_lookup--;
-		x->log("DEBUG: rendezvous error: put ref %p: "
-		       "active_lookup = %d\n",
-		       x->zap_ep, x->active_lookup);
+	assert(x->active_lookup);
+	x->active_lookup--;
+	x->log("DEBUG: rendezvous error: put ref %p: "
+	       "active_lookup = %d\n",
+	       x->zap_ep, x->active_lookup);
 #endif /* DEBUG */
-		pthread_mutex_unlock(&x->lock);
-	}
-	return;
+	pthread_mutex_unlock(&x->lock);
 }
 
 static void handle_rendezvous_push(zap_ep_t zep, zap_event_t ev,
@@ -2206,7 +2204,7 @@ static void handle_rendezvous_push(zap_ep_t zep, zap_event_t ev,
 	}
 
 	/* We will be the target of RDMA_WRITE */
-	push_rbd = __ldms_alloc_rbd(x, set, LDMS_RBD_TARGET);
+	push_rbd = __ldms_alloc_rbd(x, set, LDMS_RBD_TARGET, "set_new");
 	if (!push_rbd) {
 		struct ldms_xprt *x = zap_get_ucontext(zep);
 		x->log("handle_rendezvous_push: __ldms_alloc_rbd out of memory\n");
@@ -3235,7 +3233,8 @@ static void __destroy_rbd(void *v)
 }
 
 struct ldms_rbuf_desc *
-__ldms_alloc_rbd(struct ldms_xprt *x, struct ldms_set *s, enum ldms_rbd_type type)
+___ldms_alloc_rbd(struct ldms_xprt *x, struct ldms_set *s, enum ldms_rbd_type type,
+		  const char *name, const char *func, int line)
 {
 	zap_err_t zerr;
 	struct ldms_rbuf_desc *rbd = calloc(1, sizeof(*rbd));
@@ -3244,7 +3243,7 @@ __ldms_alloc_rbd(struct ldms_xprt *x, struct ldms_set *s, enum ldms_rbd_type typ
 
 	rbd->xprt = x;
 	rbd->set = s;
-	ref_init(&rbd->ref, __func__, __destroy_rbd, rbd);
+	_ref_init(&rbd->ref, name, __destroy_rbd, rbd, func, line);
 	rbn_init(&rbd->xprt_rbn, s);
 	size_t set_sz = __ldms_set_size_get(s);
 	if (x) {
@@ -3253,7 +3252,7 @@ __ldms_alloc_rbd(struct ldms_xprt *x, struct ldms_set *s, enum ldms_rbd_type typ
 		if (zerr)
 			goto err1;
 	}
-	ref_get(&s->ref, __func__);
+	ref_get(&s->ref, name);
 	rbd->type = type;
 	/* Add RBD to set list */
 	ref_get(&rbd->ref, "set_rbd_list");
@@ -3298,7 +3297,7 @@ static void __ldms_rbd_xprt_release(struct ldms_rbuf_desc *rbd)
 	rbd->xprt = NULL;
 }
 
-void __ldms_free_rbd_no_lock(struct ldms_rbuf_desc *rbd)
+void __ldms_free_rbd_no_lock(struct ldms_rbuf_desc *rbd, const char *func, int line)
 {
 	ref_dump(&rbd->ref, __func__);
 	if (rbd->xprt) {
@@ -3307,17 +3306,17 @@ void __ldms_free_rbd_no_lock(struct ldms_rbuf_desc *rbd)
 		rbd->xprt = NULL;
 	}
 	LIST_REMOVE(rbd, set_link);
-	ref_put(&rbd->set->ref, "__ldms_alloc_rbd");
-	ref_put(&rbd->ref, "set_rbd_list");
+	_ref_put(&rbd->set->ref, "__ldms_alloc_rbd", func, line);
+	_ref_put(&rbd->ref, "set_rbd_list", func, line);
 	ref_dump(&rbd->ref, __func__);
 }
 
-void __ldms_free_rbd(struct ldms_rbuf_desc *rbd)
+void ___ldms_free_rbd(struct ldms_rbuf_desc *rbd, const char *func, int line)
 {
 	struct ldms_xprt *x = rbd->xprt;
 	if (x)
 		pthread_mutex_lock(&x->lock);
-	__ldms_free_rbd_no_lock(rbd);
+	__ldms_free_rbd_no_lock(rbd, func, line);
 	if (x)
 		pthread_mutex_unlock(&x->lock);
 }

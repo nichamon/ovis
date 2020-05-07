@@ -106,10 +106,13 @@ struct ldms_set {
 #define roundup(_v,_s) ((_v + (_s - 1)) & ~(_s - 1))
 
 extern int __ldms_xprt_push(ldms_set_t s, int push_flags);
-extern struct ldms_rbuf_desc *__ldms_alloc_rbd(struct ldms_xprt *,
-		struct ldms_set *s, enum ldms_rbd_type type);
-extern void __ldms_free_rbd(struct ldms_rbuf_desc *rbd);
-extern void __ldms_free_rbd_no_lock(struct ldms_rbuf_desc *rbd);
+extern struct ldms_rbuf_desc *___ldms_alloc_rbd(struct ldms_xprt *,
+				struct ldms_set *s, enum ldms_rbd_type type,
+				const char *name, const char *func, int line);
+#define __ldms_alloc_rbd(_x_, _s_, _t_, _n_) ___ldms_alloc_rbd(_x_, _s_, _t_, _n_, __func__, __LINE__)
+extern void ___ldms_free_rbd(struct ldms_rbuf_desc *rbd, const char *func, int line);
+#define __ldms_free_rbd(_r_) ___ldms_free_rbd(_r_, __func__, __LINE__)
+extern void __ldms_free_rbd_no_lock(struct ldms_rbuf_desc *rbd, const char *func, int line);
 extern int __ldms_remote_lookup(ldms_t _x, const char *path,
 				enum ldms_lookup_flags flags,
 				ldms_lookup_cb_t cb, void *cb_arg);

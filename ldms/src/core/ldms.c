@@ -184,7 +184,7 @@ extern ldms_set_t ldms_set_by_name(const char *set_name)
         struct ldms_rbuf_desc *rbd;
         if (!set)
                 return NULL;
-        rbd = __ldms_alloc_rbd(NULL, set, LDMS_RBD_LOCAL);
+        rbd = __ldms_alloc_rbd(NULL, set, LDMS_RBD_LOCAL, __func__);
         if (rbd)
                 ref_get(&set->ref, __func__);
         ref_put(&set->ref, "__ldms_find_local_set");
@@ -466,7 +466,7 @@ __record_set(const char *instance_name,
 	set->data = __set_array_get(set, set->curr_idx);
 	set->flags = flags;
 
-    ref_init(&set->ref, __func__, __destroy_set, set);
+	ref_init(&set->ref, __func__, __destroy_set, set);
 	rbn_init(&set->rb_node, get_instance_name(set->meta)->name);
 	rbt_ins(&set_tree, &set->rb_node);
 	rbn_init(&set->id_node, (void *)set->set_id);
@@ -658,6 +658,7 @@ void ldms_set_delete(ldms_set_t s)
 		__ldms_free_rbd(rbd);
 	}
 
+	ref_put(&s->ref, "set_new");
 	ref_put(&set->ref, "__record_set");
 }
 
@@ -1061,7 +1062,7 @@ ldms_set_t ldms_set_new_with_auth(const char *instance_name,
 	struct ldms_set *set = __record_set(instance_name, meta, data_base, LDMS_SET_F_LOCAL);
 	if (!set)
 		goto err_1;
-	ldms_set_t rbd = __ldms_alloc_rbd(NULL, set, LDMS_RBD_LOCAL);
+	ldms_set_t rbd = __ldms_alloc_rbd(NULL, set, LDMS_RBD_LOCAL, "set_new");
 	if (!rbd)
 		goto err_2;
 	__ldms_set_tree_unlock();
@@ -1145,7 +1146,7 @@ int ldms_mmap_set(void *meta_addr, void *data_addr, ldms_set_t *ps)
 	int rc = __ldms_set_publish(set);
 	if (!rc) {
 		struct ldms_rbuf_desc *rbd;
-		rbd = __ldms_alloc_rbd(NULL, set, LDMS_RBD_LOCAL);
+		rbd = __ldms_alloc_rbd(NULL, set, LDMS_RBD_LOCAL, "set_new");
 		if (!rbd)
 			goto err;
 		*ps = rbd;
