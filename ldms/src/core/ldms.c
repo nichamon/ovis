@@ -638,7 +638,6 @@ void ldms_set_delete(ldms_set_t s)
 {
 	struct ldms_rbuf_desc *rbd;
 	struct ldms_set *set;
-	struct ldms_xprt *xprt;
 
  	if (!s)
 		assert(NULL == "The metric set passed in is NULL");
@@ -652,22 +651,10 @@ void ldms_set_delete(ldms_set_t s)
 
 	while (!LIST_EMPTY(&set->remote_rbd_list)) {
 		rbd = LIST_FIRST(&set->remote_rbd_list);
-		xprt = rbd->xprt;
-		if (xprt) {
-			pthread_mutex_lock(&xprt->lock);
-			__ldms_rbd_xprt_release(rbd);
-			pthread_mutex_unlock(&xprt->lock);
-		}
 		__ldms_free_rbd(rbd);
 	}
 	while (!LIST_EMPTY(&set->local_rbd_list)) {
 		rbd = LIST_FIRST(&set->local_rbd_list);
-		xprt = rbd->xprt;
-		if (xprt) {
-			pthread_mutex_lock(&xprt->lock);
-			__ldms_rbd_xprt_release(rbd);
-			pthread_mutex_unlock(&xprt->lock);
-		}
 		__ldms_free_rbd(rbd);
 	}
 
@@ -677,18 +664,12 @@ void ldms_set_delete(ldms_set_t s)
 void ldms_set_put(ldms_set_t s)
 {
 	struct ldms_set *set;
-	struct ldms_xprt *xprt;
 	if (!s)
 		return;
 	__ldms_set_tree_lock();
 	set = s->set;
 	pthread_mutex_lock(&set->lock);
-	xprt = s->xprt;
-	if (xprt)
-		pthread_mutex_lock(&xprt->lock);
 	__ldms_free_rbd(s); /* removes the RBD from the local/remote rbd list */
-	if (xprt)
-		pthread_mutex_unlock(&xprt->lock);
 	pthread_mutex_unlock(&set->lock);
 	ref_put(&set->ref, "ldms_set_by_name");
 	__ldms_set_tree_unlock();

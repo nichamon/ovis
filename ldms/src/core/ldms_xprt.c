@@ -438,10 +438,7 @@ void __ldms_xprt_resource_free(struct ldms_xprt *x)
 	struct ldms_rbuf_desc *rbd;
 	while ((rbn = rbt_min(&x->rbd_rbt))) {
 		rbd = RBN_RBD(rbn);
-		if (rbd->type == LDMS_RBD_LOCAL || rbd->type == LDMS_RBD_TARGET)
-			__ldms_free_rbd(rbd);
-		else
-			__ldms_rbd_xprt_release(rbd);
+		__ldms_free_rbd_no_lock(rbd);
 	}
 	if (x->auth)
 		ldms_auth_free(x->auth);
@@ -744,10 +741,7 @@ process_cancel_push_request(struct ldms_xprt *x, struct ldms_request *req)
 	 */
 	push_rbd->remote_set_id = 0;
 
-	struct ldms_xprt *xprt = push_rbd->xprt;
-	pthread_mutex_lock(&xprt->lock);
 	__ldms_free_rbd(push_rbd);
-	pthread_mutex_unlock(&xprt->lock);
 
 	LIST_FOREACH(r, &set->remote_rbd_list, set_link) {
 		if (r->push_flags & LDMS_RBD_F_PUSH_CHANGE)
@@ -3284,7 +3278,7 @@ out:
 	return rbd;
 }
 
-void __ldms_rbd_xprt_release(struct ldms_rbuf_desc *rbd)
+static void __ldms_rbd_xprt_release(struct ldms_rbuf_desc *rbd)
 {
 	if (rbd->lmap) {
 #ifdef DEBUG
@@ -3304,7 +3298,7 @@ void __ldms_rbd_xprt_release(struct ldms_rbuf_desc *rbd)
 	rbd->xprt = NULL;
 }
 
-void __ldms_free_rbd(struct ldms_rbuf_desc *rbd)
+void __ldms_free_rbd_no_lock(struct ldms_rbuf_desc *rbd)
 {
 	ref_dump(&rbd->ref, __func__);
 	if (rbd->xprt) {
@@ -3316,6 +3310,16 @@ void __ldms_free_rbd(struct ldms_rbuf_desc *rbd)
 	ref_put(&rbd->set->ref, "__ldms_alloc_rbd");
 	ref_put(&rbd->ref, "set_rbd_list");
 	ref_dump(&rbd->ref, __func__);
+}
+
+void __ldms_free_rbd(struct ldms_rbuf_desc *rbd)
+{
+	struct ldms_xprt *x = rbd->xprt;
+	if (x)
+		pthread_mutex_lock(&x->lock);
+	__ldms_free_rbd_no_lock(rbd);
+	if (x)
+		pthread_mutex_unlock(&x->lock);
 }
 
 static struct ldms_rbuf_desc *ldms_lookup_rbd(struct ldms_xprt *x,
