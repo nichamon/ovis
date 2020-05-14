@@ -607,10 +607,10 @@ struct ldmsd_strgp {
 	struct ldmsd_cfgobj obj;
 
 	/** A set of match strings to select a subset of all producers */
-	LIST_HEAD(ldmsd_strgp_prdcr_list, ldmsd_name_match) prdcr_list;
+	LIST_HEAD(ldmsd_strgp_prdcr_list, ldmsd_regex_ent) *prdcr_list;
 
 	/** A list of the names of the metrics in the set specified by schema */
-	TAILQ_HEAD(ldmsd_strgp_metric_list, ldmsd_strgp_metric) metric_list;
+	TAILQ_HEAD(ldmsd_strgp_metric_list, ldmsd_strgp_metric) *metric_list;
 	int metric_count;
 	int *metric_arry;	/* Array of metric ids */
 
@@ -1009,11 +1009,10 @@ static inline const char *ldmsd_updtr_state_str(enum ldmsd_updtr_state state) {
 /* strgp */
 ldmsd_strgp_t ldmsd_strgp_new(const char *name, const char *container,
 		const char *schema);
-int ldmsd_strgp_del(const char *strgp_name, ldmsd_sec_ctxt_t ctxt);
 ldmsd_strgp_t ldmsd_strgp_first();
 ldmsd_strgp_t ldmsd_strgp_next(struct ldmsd_strgp *strgp);
-ldmsd_name_match_t ldmsd_strgp_prdcr_first(ldmsd_strgp_t strgp);
-ldmsd_name_match_t ldmsd_strgp_prdcr_next(ldmsd_name_match_t match);
+ldmsd_regex_ent_t ldmsd_strgp_prdcr_first(ldmsd_strgp_t strgp);
+ldmsd_regex_ent_t ldmsd_strgp_prdcr_next(ldmsd_regex_ent_t match);
 ldmsd_strgp_metric_t ldmsd_strgp_metric_first(ldmsd_strgp_t strgp);
 ldmsd_strgp_metric_t ldmsd_strgp_metric_next(ldmsd_strgp_metric_t metric);
 static inline ldmsd_strgp_t ldmsd_strgp_get(ldmsd_strgp_t strgp) {
@@ -1043,25 +1042,11 @@ static inline const char *ldmsd_strgp_state_str(enum ldmsd_strgp_state state) {
 	}
 	return "BAD STATE";
 }
-int ldmsd_strgp_stop(const char *strgp_name, ldmsd_sec_ctxt_t ctxt);
-int ldmsd_strgp_start(const char *name, ldmsd_sec_ctxt_t ctxt, int flags);
-
-int __ldmsd_strgp_start(ldmsd_strgp_t strgp, ldmsd_sec_ctxt_t ctxt);
-int __ldmsd_strgp_stop(ldmsd_strgp_t strgp, ldmsd_sec_ctxt_t ctxt);
-
 
 /* Function to update inter-dependent configuration objects */
 void ldmsd_prdcr_strgp_update(ldmsd_strgp_t strgp);
-void ldmsd_strgp_update(ldmsd_prdcr_set_t prd_set);
+void ldmsd_strgp_prdset_update(ldmsd_prdcr_set_t prd_set);
 int ldmsd_strgp_update_prdcr_set(ldmsd_strgp_t strgp, ldmsd_prdcr_set_t prd_set);
-int ldmsd_strgp_prdcr_add(const char *strgp_name, const char *regex_str,
-			  char *rep_buf, size_t rep_len, ldmsd_sec_ctxt_t ctxt);
-int ldmsd_strgp_prdcr_del(const char *strgp_name, const char *regex_str,
-			ldmsd_sec_ctxt_t ctxt);
-int ldmsd_strgp_metric_del(const char *strgp_name, const char *metric_name,
-			   ldmsd_sec_ctxt_t ctxt);
-int ldmsd_strgp_metric_add(const char *strgp_name, const char *metric_name,
-			   ldmsd_sec_ctxt_t ctxt);
 int ldmsd_updtr_prdcr_add(const char *updtr_name, const char *prdcr_regex,
 			  char *rep_buf, size_t rep_len, ldmsd_sec_ctxt_t ctxt);
 int ldmsd_updtr_prdcr_del(const char *updtr_name, const char *prdcr_regex,
