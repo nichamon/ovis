@@ -203,6 +203,7 @@ typedef enum ldmsd_cfgobj_type {
 	LDMSD_CFGOBJ_AUTH,
 	LDMSD_CFGOBJ_ENV,
 	LDMSD_CFGOBJ_DAEMON,
+	LDMSD_CFGOBJ_PLUGIN,
 	LDMSD_CFGOBJ_LAST,
 } ldmsd_cfgobj_type_t;
 
@@ -803,7 +804,19 @@ const char *ldmsd_get_max_mem_sz_str();
 enum ldmsd_cfgobj_type ldmsd_cfgobj_type_str2enum(const char *s);
 const char *ldmsd_cfgobj_type2str(enum ldmsd_cfgobj_type type);
 void ldmsd_cfgobj___del(ldmsd_cfgobj_t obj);
-void ldmsd_cfgobj_init(void);
+int ldmsd_cfgobj_init(ldmsd_cfgobj_t obj, const char *name,
+				ldmsd_cfgobj_type_t type,
+				ldmsd_cfgobj_del_fn_t __del,
+				ldmsd_cfgobj_update_fn_t update,
+				ldmsd_cfgobj_delete_fn_t delete,
+				ldmsd_cfgobj_query_fn_t query,
+				ldmsd_cfgobj_export_fn_t export,
+				ldmsd_cfgobj_enable_fn_t enable,
+				ldmsd_cfgobj_disable_fn_t disable,
+				uid_t uid,
+				gid_t gid,
+				int perm,
+				short enabled);
 void ldmsd_cfg_lock(ldmsd_cfgobj_type_t type);
 void ldmsd_cfg_unlock(ldmsd_cfgobj_type_t type);
 void ldmsd_cfgobj_lock(ldmsd_cfgobj_t obj);

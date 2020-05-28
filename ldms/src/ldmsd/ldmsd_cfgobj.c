@@ -95,6 +95,9 @@ pthread_mutex_t env_tree_lock = PTHREAD_MUTEX_INITIALIZER;
 struct rbt daemon_tree = RBT_INITIALIZER(cfgobj_cmp);
 pthread_mutex_t daemon_tree_lock = PTHREAD_MUTEX_INITIALIZER;
 
+struct rbt plugin_tree = RBT_INITIALIZER(cfgobj_cmp);
+pthread_mutex_t plugin_tree_lock = PTHREAD_MUTEX_INITIALIZER;
+
 pthread_mutex_t *cfgobj_locks[] = {
 	[LDMSD_CFGOBJ_PRDCR] = &prdcr_tree_lock,
 	[LDMSD_CFGOBJ_UPDTR] = &updtr_tree_lock,
@@ -105,6 +108,7 @@ pthread_mutex_t *cfgobj_locks[] = {
 	[LDMSD_CFGOBJ_AUTH]   = &auth_tree_lock,
 	[LDMSD_CFGOBJ_ENV]   = &env_tree_lock,
 	[LDMSD_CFGOBJ_DAEMON] = &daemon_tree_lock,
+	[LDMSD_CFGOBJ_PLUGIN] = &plugin_tree_lock,
 };
 
 struct rbt *cfgobj_trees[] = {
@@ -117,20 +121,8 @@ struct rbt *cfgobj_trees[] = {
 	[LDMSD_CFGOBJ_AUTH]   = &auth_tree,
 	[LDMSD_CFGOBJ_ENV]   = &env_tree,
 	[LDMSD_CFGOBJ_DAEMON] = &daemon_tree,
+	[LDMSD_CFGOBJ_PLUGIN] = &plugin_tree,
 };
-
-void ldmsd_cfgobj_init(void)
-{
-	rbt_init(&prdcr_tree, cfgobj_cmp);
-	rbt_init(&updtr_tree, cfgobj_cmp);
-	rbt_init(&strgp_tree, cfgobj_cmp);
-	rbt_init(&smplr_tree, cfgobj_cmp);
-	rbt_init(&listen_tree, cfgobj_cmp);
-	rbt_init(&setgrp_tree, cfgobj_cmp);
-	rbt_init(&auth_tree,   cfgobj_cmp);
-	rbt_init(&env_tree, cfgobj_cmp);
-	rbt_init(&daemon_tree, cfgobj_cmp);
-}
 
 struct cfgobj_type_entry {
 	const char *s;
@@ -155,6 +147,7 @@ const char *ldmsd_cfgobj_types[] = {
 		[LDMSD_CFGOBJ_AUTH]	= "auth",
 		[LDMSD_CFGOBJ_ENV]	= "env",
 		[LDMSD_CFGOBJ_DAEMON]	= "daemon",
+		[LDMSD_CFGOBJ_PLUGIN]	= "plugin",
 		NULL,
 };
 
@@ -163,7 +156,7 @@ static struct cfgobj_type_entry cfgobj_type_tbl[] = {
 		{ "daemon",	LDMSD_CFGOBJ_DAEMON },
 		{ "env",	LDMSD_CFGOBJ_ENV },
 		{ "listen",	LDMSD_CFGOBJ_LISTEN },
-//		{ "plugin_instance", LDMSD_CFGOBJ_PLUGIN_INST },
+		{ "plugin",	LDMSD_CFGOBJ_PLUGIN },
 		{ "prdcr",	LDMSD_CFGOBJ_PRDCR },
 		{ "setgrp",	LDMSD_CFGOBJ_SETGRP },
 		{ "smplr",	LDMSD_CFGOBJ_SMPLR },
@@ -223,12 +216,9 @@ ldmsd_cfgobj_t ldmsd_cfgobj_new_with_auth(const char *name, ldmsd_cfgobj_type_t 
 	return NULL;
 }
 
-/**
- * A configuration object with the same name and type must not already
- * exist. On success, the object is returned locked.
- */
-ldmsd_cfgobj_t ldmsd_cfgobj_new(const char *name, ldmsd_cfgobj_type_t type,
-				size_t obj_size, ldmsd_cfgobj_del_fn_t __del,
+int ldmsd_cfgobj_init(ldmsd_cfgobj_t obj, const char *name,
+				ldmsd_cfgobj_type_t type,
+				ldmsd_cfgobj_del_fn_t __del,
 				ldmsd_cfgobj_update_fn_t update,
 				ldmsd_cfgobj_delete_fn_t delete,
 				ldmsd_cfgobj_query_fn_t query,
@@ -240,30 +230,17 @@ ldmsd_cfgobj_t ldmsd_cfgobj_new(const char *name, ldmsd_cfgobj_type_t type,
 				int perm,
 				short enabled)
 {
-	ldmsd_cfgobj_t obj = NULL;
-
-	pthread_mutex_lock(cfgobj_locks[type]);
-
-	errno = EEXIST;
-	struct rbn *n = rbt_find(cfgobj_trees[type], name);
-	if (n)
-		goto out_1;
-
-	errno = ENOMEM;
-	obj = calloc(1, obj_size);
-	if (!obj)
-		goto out_1;
 	obj->name = strdup(name);
 	if (!obj->name)
-		goto out_2;
+		goto err0;
 
 	obj->enabled_ev = ev_new(cfgobj_enabled_type);
 	if (!obj->enabled_ev)
-		goto out_3;
+		goto err1;
 	EV_DATA(obj->enabled_ev, struct start_data)->entity = obj;
 	obj->disabled_ev = ev_new(cfgobj_disabled_type);
 	if (!obj->disabled_ev)
-		goto out_4;
+		goto err2;
 	EV_DATA(obj->disabled_ev, struct stop_data)->entity = obj;
 	obj->perm = perm;
 	obj->enabled = enabled;
@@ -281,22 +258,67 @@ ldmsd_cfgobj_t ldmsd_cfgobj_new(const char *name, ldmsd_cfgobj_type_t type,
 		obj->__del = ldmsd_cfgobj___del;
 
 	pthread_mutex_init(&obj->lock, NULL);
-	pthread_mutex_lock(&obj->lock);
+	ldmsd_cfg_lock(LDMSD_CFGOBJ_PLUGIN);
+	ldmsd_cfgobj_lock(obj);
 	rbn_init(&obj->rbn, obj->name);
 	rbt_ins(cfgobj_trees[type], &obj->rbn);
-	errno = 0;
-	goto out_1;
-out_4:
-	free(obj->enabled_ev);
-out_3:
+	ldmsd_cfgobj_unlock(obj);
+	ldmsd_cfg_unlock(LDMSD_CFGOBJ_PLUGIN);
+	return 0;
+err2:
+	ev_put(obj->enabled_ev);
+err1:
 	free(obj->name);
-out_2:
-	free(obj);
-	obj = NULL;
+err0:
+	return ENOMEM;
+}
 
-out_1:
-	pthread_mutex_unlock(cfgobj_locks[type]);
+/**
+ * A configuration object with the same name and type must not already
+ * exist. On success, the object is returned locked.
+ */
+ldmsd_cfgobj_t ldmsd_cfgobj_new(const char *name, ldmsd_cfgobj_type_t type,
+				size_t obj_size, ldmsd_cfgobj_del_fn_t __del,
+				ldmsd_cfgobj_update_fn_t update,
+				ldmsd_cfgobj_delete_fn_t delete,
+				ldmsd_cfgobj_query_fn_t query,
+				ldmsd_cfgobj_export_fn_t export,
+				ldmsd_cfgobj_enable_fn_t enable,
+				ldmsd_cfgobj_disable_fn_t disable,
+				uid_t uid,
+				gid_t gid,
+				int perm,
+				short enabled)
+{
+	int rc;
+	ldmsd_cfgobj_t obj = NULL;
+	ldmsd_cfg_lock(LDMSD_CFGOBJ_PLUGIN);
+
+	errno = EEXIST;
+	struct rbn *n = rbt_find(cfgobj_trees[type], name);
+	if (n) {
+		ldmsd_cfg_unlock(LDMSD_CFGOBJ_PLUGIN);
+		return NULL;
+	}
+	ldmsd_cfg_unlock(LDMSD_CFGOBJ_PLUGIN);
+
+	errno = ENOMEM;
+	obj = calloc(1, obj_size);
+	if (!obj)
+		return NULL;
+
+	rc = ldmsd_cfgobj_init(obj, name, type, __del,
+				update, delete, query, export,
+				enable, disable, uid, gid,
+				perm, enabled);
+	if (rc) {
+		errno = rc;
+		free(obj);
+		obj = NULL;
+	}
+	errno = 0;
 	return obj;
+
 }
 
 ldmsd_cfgobj_t ldmsd_cfgobj_get(ldmsd_cfgobj_t obj)
