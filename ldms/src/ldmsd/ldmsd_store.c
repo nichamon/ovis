@@ -133,38 +133,12 @@ const char *ldmsd_store_help()
 
 json_entity_t ldmsd_store_query(ldmsd_plugin_inst_t inst, const char *q)
 {
-	ldmsd_store_type_t store = (void*)inst->base;
-	json_entity_t result;
-	int rc;
-
-	/* call `super` query first -- to handle the common plugin part */
-	result = ldmsd_plugin_query(inst, q);
-	if (!result) {
-		/*
-		 * No query result found.
-		 */
-		goto out;
-	}
-
-	if (0 != strcmp(q, "status")) {
-		/*
-		 * No additional attribute to add to the query result.
-		 */
-		goto out;
-	}
-
-	/* currently, store_query only handle `status` */
-	char perm[8];
-	sprintf(perm, "%#o", store->perm);
-	struct ldmsd_plugin_qjson_attrs bulk[] = {
-		{ "perm" , JSON_STRING_VALUE , {.s = perm} },
-		{0},
-	};
-	rc = ldmsd_plugin_qjson_attrs_add(result, bulk);
-	if (rc)
-		ldmsd_plugin_qjson_err_set(result, ENOMEM, "Out of memory");
-out:
-	return result;
+	/*
+	 * Call `super` query.
+	 *
+	 * No additional attributes to add.
+	 */
+	return ldmsd_plugin_inst_query(inst, q);
 }
 struct ldmsd_store_type_s __store = {
 	.base = {

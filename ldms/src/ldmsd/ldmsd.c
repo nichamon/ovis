@@ -900,7 +900,7 @@ int handle_cfgobjs()
 	enum ldmsd_cfgobj_type orders[] = {
 			LDMSD_CFGOBJ_AUTH,
 			LDMSD_CFGOBJ_LISTEN,
-//			LDMSD_CFGOBJ_PLUGIN_INSTANCE,
+			LDMSD_CFGOBJ_PLUGIN,
 			LDMSD_CFGOBJ_SMPLR,
 			LDMSD_CFGOBJ_PRDCR,
 			LDMSD_CFGOBJ_UPDTR,

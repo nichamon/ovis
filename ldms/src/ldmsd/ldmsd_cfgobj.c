@@ -95,6 +95,9 @@ pthread_mutex_t env_tree_lock = PTHREAD_MUTEX_INITIALIZER;
 struct rbt daemon_tree = RBT_INITIALIZER(cfgobj_cmp);
 pthread_mutex_t daemon_tree_lock = PTHREAD_MUTEX_INITIALIZER;
 
+struct rbt plugin_tree = RBT_INITIALIZER(cfgobj_cmp);
+pthread_mutex_t plugin_tree_lock = PTHREAD_MUTEX_INITIALIZER;
+
 pthread_mutex_t *cfgobj_locks[] = {
 	[LDMSD_CFGOBJ_PRDCR] = &prdcr_tree_lock,
 	[LDMSD_CFGOBJ_UPDTR] = &updtr_tree_lock,
@@ -105,6 +108,7 @@ pthread_mutex_t *cfgobj_locks[] = {
 	[LDMSD_CFGOBJ_AUTH]   = &auth_tree_lock,
 	[LDMSD_CFGOBJ_ENV]   = &env_tree_lock,
 	[LDMSD_CFGOBJ_DAEMON] = &daemon_tree_lock,
+	[LDMSD_CFGOBJ_PLUGIN] = &plugin_tree_lock,
 };
 
 struct rbt *cfgobj_trees[] = {
@@ -117,20 +121,8 @@ struct rbt *cfgobj_trees[] = {
 	[LDMSD_CFGOBJ_AUTH]   = &auth_tree,
 	[LDMSD_CFGOBJ_ENV]   = &env_tree,
 	[LDMSD_CFGOBJ_DAEMON] = &daemon_tree,
+	[LDMSD_CFGOBJ_PLUGIN] = &plugin_tree,
 };
-
-void ldmsd_cfgobj_init(void)
-{
-	rbt_init(&prdcr_tree, cfgobj_cmp);
-	rbt_init(&updtr_tree, cfgobj_cmp);
-	rbt_init(&strgp_tree, cfgobj_cmp);
-	rbt_init(&smplr_tree, cfgobj_cmp);
-	rbt_init(&listen_tree, cfgobj_cmp);
-	rbt_init(&setgrp_tree, cfgobj_cmp);
-	rbt_init(&auth_tree,   cfgobj_cmp);
-	rbt_init(&env_tree, cfgobj_cmp);
-	rbt_init(&daemon_tree, cfgobj_cmp);
-}
 
 struct cfgobj_type_entry {
 	const char *s;
@@ -155,6 +147,7 @@ const char *ldmsd_cfgobj_types[] = {
 		[LDMSD_CFGOBJ_AUTH]	= "auth",
 		[LDMSD_CFGOBJ_ENV]	= "env",
 		[LDMSD_CFGOBJ_DAEMON]	= "daemon",
+		[LDMSD_CFGOBJ_PLUGIN]	= "plugin",
 		NULL,
 };
 
@@ -163,7 +156,7 @@ static struct cfgobj_type_entry cfgobj_type_tbl[] = {
 		{ "daemon",	LDMSD_CFGOBJ_DAEMON },
 		{ "env",	LDMSD_CFGOBJ_ENV },
 		{ "listen",	LDMSD_CFGOBJ_LISTEN },
-//		{ "plugin_instance", LDMSD_CFGOBJ_PLUGIN_INST },
+		{ "plugin",	LDMSD_CFGOBJ_PLUGIN },
 		{ "prdcr",	LDMSD_CFGOBJ_PRDCR },
 		{ "setgrp",	LDMSD_CFGOBJ_SETGRP },
 		{ "smplr",	LDMSD_CFGOBJ_SMPLR },

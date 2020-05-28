@@ -127,42 +127,6 @@ int ldmsd_compile_regex(regex_t *regex, const char *regex_str,
 	return rc;
 }
 
-/*
- * Load a plugin
- */
-int ldmsd_load_plugin(const char *inst_name, const char *plugin_name,
-		      char *errstr, size_t errlen)
-{
-	ldmsd_plugin_inst_t inst = ldmsd_plugin_inst_load(inst_name,
-							  plugin_name,
-							  errstr,
-							  errlen);
-	if (!inst) {
-		if (errno == EEXIST) {
-			snprintf(errstr, errlen, "Plugin '%s' already loaded",
-				 inst_name);
-		} else {
-			snprintf(errstr, errlen, "Plugin '%s' load error: %d",
-				 inst_name, errno);
-		}
-		return errno;
-	}
-	return 0;
-}
-
-/*
- * Destroy and unload the plugin
- */
-int ldmsd_term_plugin(const char *inst_name)
-{
-	ldmsd_plugin_inst_t inst = ldmsd_plugin_inst_find(inst_name);
-	if (!inst)
-		return ENOENT;
-	ldmsd_plugin_inst_del(inst);
-	ldmsd_plugin_inst_put(inst); /* put ref from find */
-	return 0;
-}
-
 int _ldmsd_set_udata(ldms_set_t set, char *metric_name, uint64_t udata,
 						char err_str[LEN_ERRSTR])
 {
@@ -571,7 +535,10 @@ static int ldmsd_plugins_usage_dir(const char *path, const char *plugname)
 			printf("=========================\n");
  next:
 			if (inst) {
-				ldmsd_plugin_inst_del(inst);
+				/* TODO: Should we call ldmsd_plugin_inst_put()
+				 *
+				 */
+				ldmsd_plugin_inst_put(inst);
 				inst = NULL;
 			}
 			free(tmp);
