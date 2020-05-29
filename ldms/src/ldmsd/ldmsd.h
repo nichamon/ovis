@@ -1210,7 +1210,7 @@ typedef struct ldmsd_setgrp {
 	char *producer;
 	long interval_us;
 	long offset_us;
-	struct ldmsd_str_list member_list;
+	struct ldmsd_str_list *member_list;
 	ldms_set_t set;
 } *ldmsd_setgrp_t;
 
