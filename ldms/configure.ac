@@ -208,6 +208,10 @@ if test -z "$ENABLE_INFLUX_TRUE"; then
 	CFLAGS="$TMPCFLAGS"
 fi
 
+dnl Options for translator
+OPTION_DEFAULT_ENABLE([translator], [ENABLE_TRANSLATOR])
+OPTION_DEFAULT_ENABLE([scripting_translator], [ENABLE_SCRIPTING_TRANSLATOR])
+dnl End of translator plugins
 
 OPTION_DEFAULT_ENABLE([ldmsd], [ENABLE_LDMSD])
 
@@ -596,6 +600,7 @@ AC_CONFIG_FILES([Makefile src/Makefile src/core/Makefile
 		 src/ldmsd-stores/store_test/Makefile
 		 src/ldmsd-stores/store_influx/Makefile
 		 src/ldmsd-stores/store_app/Makefile
+		 src/ldmsd-translators/Makefile
 		 scripts/Makefile
 		 src/test/Makefile
 		 etc/Makefile
