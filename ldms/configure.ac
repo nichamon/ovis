@@ -601,6 +601,7 @@ AC_CONFIG_FILES([Makefile src/Makefile src/core/Makefile
 		 src/ldmsd-stores/store_influx/Makefile
 		 src/ldmsd-stores/store_app/Makefile
 		 src/ldmsd-translators/Makefile
+		 src/ldmsd-translators/scripting/Makefile
 		 scripts/Makefile
 		 src/test/Makefile
 		 etc/Makefile
