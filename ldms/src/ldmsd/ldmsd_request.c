@@ -65,7 +65,7 @@
 #include "ldmsd_sampler.h"
 #include "ldmsd_store.h"
 #include "ldmsd_request.h"
-//#include "ldmsd_stream.h"
+#include "ldmsd_stream.h"
 #include "ldms_xprt.h"
 
 /*
@@ -1173,6 +1173,9 @@ int ldmsd_process_config_response(ldmsd_cfg_xprt_t xprt, ldmsd_req_hdr_t respons
 		rc = EINVAL;
 		goto out;
 	}
+	free(reqc->recv_buf->buf);
+	reqc->recv_buf->buf = str_repl;
+	reqc->recv_buf->len = reqc->recv_buf->off = strlen(reqc->recv_buf->buf) + 1;
 
 	__dlog("processing response %d:%lu\n", key.msg_no, key.conn_id);
 

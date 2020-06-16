@@ -359,27 +359,47 @@ static void prdcr_dir_cb(ldms_t xprt, int status, ldms_dir_t dir, void *arg)
 /* Send subscribe request to peer */
 static int __prdcr_subscribe(ldmsd_prdcr_t prdcr)
 {
-//	ldmsd_req_cmd_t rcmd;
-//	int rc;
-//	ldmsd_prdcr_stream_t s;
-//	LIST_FOREACH(s, &prdcr->stream_list, entry) {
-//		rcmd = ldmsd_req_cmd_new(prdcr->xprt, LDMSD_STREAM_SUBSCRIBE_REQ,
-//					 NULL, __on_subs_resp, prdcr);
-//		rc = errno;
-//		if (!rcmd)
-//			goto err_0;
-//		rc = ldmsd_req_cmd_attr_append_str(rcmd, LDMSD_ATTR_NAME, s->name);
-//		if (rc)
-//			goto err_1;
-//		rc = ldmsd_req_cmd_attr_term(rcmd);
-//		if (rc)
-//			goto err_1;
-//	}
-	return 0;
-// err_1:
-//	ldmsd_req_cmd_free(rcmd);
-// err_0:
-//	return rc;
+	ldmsd_req_ctxt_t reqc;
+	struct ldmsd_msg_key key;
+	ldmsd_cfg_xprt_t cfg_xprt;
+	int rc, cnt;
+	ldmsd_prdcr_stream_t s;
+
+	cfg_xprt = ldmsd_cfg_xprt_ldms_new(prdcr->xprt);
+	if (!cfg_xprt) {
+		ldmsd_log(LDMSD_LCRITICAL, "Out of memory\n");
+		return ENOMEM;
+	}
+	ldmsd_msg_key_get(prdcr->xprt, &key);
+	reqc = ldmsd_req_ctxt_alloc(&key, cfg_xprt);
+	if (!reqc) {
+		ldmsd_log(LDMSD_LCRITICAL, "Out of memory\n");
+		return ENOMEM;
+	}
+
+	rc = ldmsd_append_cmd_obj_hdr(reqc, "stream_subscribe");
+	if (rc)
+		return rc;
+
+	rc = ldmsd_append_request_va(reqc, 0, "%s", ",\"spec\":{\"names\":[");
+	if (rc)
+		return rc;
+
+	cnt = 0;
+	LIST_FOREACH(s, &prdcr->stream_list, entry) {
+		if (cnt) {
+			rc = ldmsd_append_request(reqc, 0, ",", 1);
+			if (rc)
+				return rc;
+		}
+
+		rc = ldmsd_append_request_va(reqc, 0, "\"%s\"", s->name);
+		if (rc)
+			return rc;
+		cnt++;
+	}
+
+	return ldmsd_append_request(reqc, LDMSD_REC_EOM_F, "]}}", 3);
 }
 
 static void prdcr_connect_cb(ldms_t x, ldms_xprt_event_t e, void *cb_arg)
