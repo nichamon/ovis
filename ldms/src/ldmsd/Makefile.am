@@ -51,7 +51,8 @@ ldmsd_SOURCES = ldmsd.c ldmsd_config.c \
 	ldmsd_cfgobj.c ldmsd_prdcr.c ldmsd_updtr.c ldmsd_strgp.c \
 	ldmsd_smplr.c \
 	ldmsd_plugin.c ldmsd_plugin.h ldmsd_group.c ldmsd_auth.c \
-	ldmsd_daemon.c
+	ldmsd_daemon.c \
+	ldmsd_env.c
 #	ldmsd_failover.c ldmsd_group.c
 ldmsd_CFLAGS = $(AM_CFLAGS) -rdynamic
 ldmsd_LDADD = $(CORE)/libldms.la librequest.la libldmsd_stream.la libsampler.la libstore.la libtranslator.la
