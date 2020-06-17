@@ -191,9 +191,9 @@ struct cfgobj_type_handler_entry {
 extern json_entity_t ldmsd_auth_create(const char *name, short enabled,
 					json_entity_t dft, json_entity_t spc,
 					uid_t uid, gid_t gid);
-//extern json_entity_t ldmsd_env_create(const char *name, short enabled,
-//					json_entity_t dft, json_entity_t spc,
-//					uid_t uid, gid_t gid);
+extern json_entity_t ldmsd_env_create(const char *name, short enabled,
+					json_entity_t dft, json_entity_t spc,
+					uid_t uid, gid_t gid);
 //extern json_entity_t ldmsd_listen_create(const char *name, short enabled,
 //					json_entity_t dft, json_entity_t spc,
 //					uid_t uid, gid_t gid);
@@ -214,7 +214,7 @@ extern json_entity_t ldmsd_auth_create(const char *name, short enabled,
 //					uid_t uid, gid_t gid);
 static struct cfgobj_type_handler_entry cfgobj_type_handler_tbl[] = {
 		[LDMSD_CFGOBJ_AUTH]	= { ldmsd_auth_create },
-//		[LDMSD_CFGOBJ_ENV]	= { ldmsd_env_create },
+		[LDMSD_CFGOBJ_ENV]	= { ldmsd_env_create },
 //		[LDMSD_CFGOBJ_LISTEN]	= { ldmsd_listen_create },
 //		[LDMSD_CFGOBJ_PRDCR]	= { ldmsd_prdcr_create },
 //		[LDMSD_CFGOBJ_UPDTR]	= { ldmsd_updtr_create },
