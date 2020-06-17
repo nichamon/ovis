@@ -251,6 +251,13 @@ extern void json_item_add(json_entity_t a, json_entity_t e);
  */
 extern void json_attr_add(json_entity_t d, json_entity_t a);
 /**
+ * \brief Append \c src to \c dst
+ *
+ * The attribute value in \c src will replace the value in \c dst,
+ * if the attribute presents in both dictionaries.
+ */
+extern int json_dict_append(json_entity_t dst, json_entity_t src);
+/**
  * Modify an attribute value in a dictionary.
  *
  * If the attribute value type is list or dictionary,
