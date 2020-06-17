@@ -864,12 +864,17 @@ int __ldmsd_reply_result_add(json_entity_t reply, const char *key, int errcode,
 			(obj) = ldmsd_cfgobj_next(obj))
 
 /** Sampler configuration object management */
-ldmsd_smplr_t
-ldmsd_smplr_new_with_auth(const char *name,
-			  ldmsd_plugin_inst_t pi,
-			  long interval_us, long offset_us,
-			  uid_t uid, gid_t gid, int perm);
-int ldmsd_smplr_del(const char *smplr_name, ldmsd_sec_ctxt_t ctxt);
+static inline const char *ldmsd_smplr_state_str(enum ldmsd_smplr_state state)
+{
+	switch (state) {
+	case LDMSD_SMPLR_STATE_RUNNING:
+		return "RUNNING";
+	case LDMSD_SMPLR_STATE_STOPPED:
+		return "STOPPED";
+	}
+	return "UNKNOWN STATE";
+}
+
 static inline void ldmsd_smplr_lock(ldmsd_smplr_t smplr) {
 	ldmsd_cfgobj_lock(&smplr->obj);
 }
