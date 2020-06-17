@@ -855,6 +855,17 @@ int __ldmsd_reply_result_add(json_entity_t reply, const char *key, int errcode,
 			(obj) = ldmsd_cfgobj_next(obj))
 
 /** Sampler configuration object management */
+static inline const char *ldmsd_smplr_state_str(enum ldmsd_smplr_state state)
+{
+	switch (state) {
+	case LDMSD_SMPLR_STATE_RUNNING:
+		return "RUNNING";
+	case LDMSD_SMPLR_STATE_STOPPED:
+		return "STOPPED";
+	}
+	return "UNKNOWN STATE";
+}
+
 ldmsd_smplr_t
 ldmsd_smplr_new_with_auth(const char *name,
 			  ldmsd_plugin_inst_t pi,

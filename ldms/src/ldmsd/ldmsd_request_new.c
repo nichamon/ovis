@@ -206,9 +206,9 @@ extern json_entity_t ldmsd_updtr_create(const char *name, short enabled,
 extern json_entity_t ldmsd_strgp_create(const char *name, short enabled,
 					json_entity_t dft, json_entity_t spc,
 					uid_t uid, gid_t gid);
-//extern json_entity_t ldmsd_smplr_create(const char *name, short enabled,
-//					json_entity_t dft, json_entity_t spc,
-//					uid_t uid, gid_t gid);
+extern json_entity_t ldmsd_smplr_create(const char *name, short enabled,
+					json_entity_t dft, json_entity_t spc,
+					uid_t uid, gid_t gid);
 //extern json_entity_t ldmsd_plugin_create(const char *name, short enabled,
 //					json_entity_t dft, json_entity_t spc,
 //					uid_t uid, gid_t gid);
@@ -219,7 +219,7 @@ static struct cfgobj_type_handler_entry cfgobj_type_handler_tbl[] = {
 		[LDMSD_CFGOBJ_PRDCR]	= { ldmsd_prdcr_create },
 		[LDMSD_CFGOBJ_UPDTR]	= { ldmsd_updtr_create },
 		[LDMSD_CFGOBJ_STRGP]	= { ldmsd_strgp_create },
-//		[LDMSD_CFGOBJ_SMPLR]	= { ldmsd_smplr_create },
+		[LDMSD_CFGOBJ_SMPLR]	= { ldmsd_smplr_create },
 //		[LDMSD_CFGOBJ_PLUGIN]	= { ldmsd_plugin_create },
 //		[LDMSD_CFGOBJ_SETGRP]	= { ldmsd_setgrp_create },
 };
