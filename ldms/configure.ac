@@ -211,6 +211,7 @@ fi
 dnl Options for translator
 OPTION_DEFAULT_ENABLE([translator], [ENABLE_TRANSLATOR])
 OPTION_DEFAULT_ENABLE([scripting_translator], [ENABLE_SCRIPTING_TRANSLATOR])
+OPTION_DEFAULT_ENABLE([json_translator], [ENABLE_JSON_TRANSLATOR])
 dnl End of translator plugins
 
 OPTION_DEFAULT_ENABLE([ldmsd], [ENABLE_LDMSD])
@@ -602,6 +603,7 @@ AC_CONFIG_FILES([Makefile src/Makefile src/core/Makefile
 		 src/ldmsd-stores/store_app/Makefile
 		 src/ldmsd-translators/Makefile
 		 src/ldmsd-translators/scripting/Makefile
+		 src/ldmsd-translators/json-translator/Makefile
 		 scripts/Makefile
 		 src/test/Makefile
 		 etc/Makefile
