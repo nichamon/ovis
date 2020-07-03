@@ -150,43 +150,6 @@ oom:
 	return NULL;
 }
 
-ldmsd_auth_t
-ldmsd_auth_new_with_auth(const char *name, const char *plugin,
-			 struct attr_value_list *attrs,
-			 uid_t uid, gid_t gid, int perm)
-{
-	ldmsd_auth_t auth = NULL;
-
-	if (!plugin) {
-		errno = EINVAL;
-		goto err;
-	}
-
-	auth = (ldmsd_auth_t) ldmsd_cfgobj_new_with_auth(name,
-					LDMSD_CFGOBJ_AUTH,
-					sizeof(struct ldmsd_auth),
-					__ldmsd_auth_del, uid, gid, perm);
-	if (!auth)
-		goto err;
-	auth->plugin = strdup(plugin);
-	if (!auth->plugin)
-		goto err;
-	if (attrs) {
-		auth->attrs = av_copy(attrs);
-		if (!auth->attrs)
-			goto err;
-	}
-	ldmsd_cfgobj_unlock(&auth->obj);
-	return auth;
-
- err:
-	if (auth) {
-		ldmsd_cfgobj_unlock(&auth->obj);
-		ldmsd_cfgobj_put(&auth->obj);
-	}
-	return NULL;
-}
-
 ldmsd_cfgobj_t __cfgobj_find(const char *name, ldmsd_cfgobj_type_t type);
 struct rbt **cfgobj_trees;
 
@@ -210,50 +173,6 @@ int ldmsd_auth_del(const char *name, ldmsd_sec_ctxt_t ctxt)
 	ldmsd_cfg_unlock(LDMSD_CFGOBJ_AUTH);
 	if (auth) /* put ref back from `find` */
 		ldmsd_cfgobj_put(&auth->obj);
-	return rc;
-}
-
-ldmsd_auth_t ldmsd_auth_default_get()
-{
-	return ldmsd_auth_find(DEFAULT_AUTH);
-}
-
-int ldmsd_auth_default_set(const char *plugin, struct attr_value_list *attrs)
-{
-	ldmsd_auth_t d = ldmsd_auth_default_get();
-	int rc;
-	if (!d) {
-		/* default auth domain has not been created yet */
-		d = ldmsd_auth_new_with_auth(DEFAULT_AUTH, plugin, attrs,
-				geteuid(), getegid(), 0600);
-		if (d)
-			return 0;
-		else
-			return errno;
-	}
-	if (d->plugin) {
-		free(d->plugin);
-		d->plugin = NULL;
-	}
-	if (d->attrs) {
-		av_free(d->attrs);
-		d->attrs = NULL;
-	}
-	d->plugin = strdup(plugin);
-	if (!d->plugin) {
-		rc = ENOMEM;
-		goto out;
-	}
-	if (attrs) {
-		d->attrs = av_copy(attrs);
-		if (!d->attrs) {
-			rc = ENOMEM;
-			goto out;
-		}
-	}
-	rc = 0;
- out:
-	ldmsd_cfgobj_put(&d->obj);
 	return rc;
 }
 

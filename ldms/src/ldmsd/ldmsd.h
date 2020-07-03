@@ -305,12 +305,6 @@ typedef struct ldmsd_cfgobj {
 } *ldmsd_cfgobj_t;
 
 /*
- * TODO: (remove this)
- *
- * What are the use case of env request?
- * - in V4 environment variables are used as variables in configuration files.
- * - ????
- *
  * Environment variables shouldn't be used as variables in configuration files anymore.
  */
 typedef struct ldmsd_env {
@@ -842,13 +836,6 @@ ldmsd_cfgobj_t ldmsd_cfgobj_new(const char *name, ldmsd_cfgobj_type_t type,
 				gid_t gid,
 				int perm,
 				short enabled);
-ldmsd_cfgobj_t ldmsd_cfgobj_new_with_auth(const char *name,
-					  ldmsd_cfgobj_type_t type,
-					  size_t obj_size,
-					  ldmsd_cfgobj_del_fn_t __del,
-					  uid_t uid,
-					  gid_t gid,
-					  int perm);
 ldmsd_cfgobj_t ldmsd_cfgobj_get(ldmsd_cfgobj_t obj);
 void ldmsd_cfgobj_put(ldmsd_cfgobj_t obj);
 int ldmsd_cfgobj_refcount(ldmsd_cfgobj_t obj);
@@ -1268,26 +1255,6 @@ ldmsd_group_new_with_auth(const char *name, uid_t uid, gid_t gid, mode_t perm);
 ldms_set_t ldmsd_group_new(const char *name);
 #pragma weak ldmsd_group_new
 
-/**
- * \brief Create a cfgobj of setgroup
- *
- * \param grp_name     The name of the group.
- * \param producer     The name of the producer
- * \param interval_us  The interval for update hint
- * \param offset_us    The offset for update hint
- * \param uid          UID of the cfgobj
- * \param gid          GID of the cfgobj
- * \param perm         permission of the cfgobj
- *
- * \retval grp  If success, the LDMS set handle that represents the group.
- * \retval NULL If failed.
- */
-ldmsd_setgrp_t
-ldmsd_setgrp_new_with_auth(const char *name, const char *producer,
-				long interval_us, long offset_us,
-				uid_t uid, gid_t gid, mode_t perm, int flags);
-#pragma weak ldmsd_setgrp_new_with_auth
-
 int ldmsd_setgrp_start(const char *name, ldmsd_sec_ctxt_t ctxt);
 
 /*
@@ -1516,15 +1483,9 @@ typedef struct ldmsd_auth {
 #define DEFAULT_AUTH " _DEFAULT_AUTH_ "
 
 ldmsd_auth_t
-ldmsd_auth_new_with_auth(const char *name, const char *plugin,
-			 struct attr_value_list *attrs,
-			 uid_t uid, gid_t gid, int perm);
-ldmsd_auth_t
 ldmsd_auth_new(const char *name, const char *plugin, json_entity_t attrs,
 		uid_t uid, gid_t gid, int perm, short enabled);
 int ldmsd_auth_del(const char *name, ldmsd_sec_ctxt_t ctxt);
-ldmsd_auth_t ldmsd_auth_default_get();
-int ldmsd_auth_default_set(const char *plugin, struct attr_value_list *attrs);
 
 static inline
 ldmsd_auth_t ldmsd_auth_find(const char *name)

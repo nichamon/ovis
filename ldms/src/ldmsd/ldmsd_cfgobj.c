@@ -162,7 +162,6 @@ static struct cfgobj_type_entry cfgobj_type_tbl[] = {
 		{ "smplr",	LDMSD_CFGOBJ_SMPLR },
 		{ "strgp",	LDMSD_CFGOBJ_STRGP },
 		{ "updtr",	LDMSD_CFGOBJ_UPDTR },
-//		{ "stream",	LDMSD_CFGOBJ_STREAM },
 };
 
 enum ldmsd_cfgobj_type ldmsd_cfgobj_type_str2enum(const char *s)
@@ -207,13 +206,6 @@ void ldmsd_cfgobj_lock(ldmsd_cfgobj_t obj)
 void ldmsd_cfgobj_unlock(ldmsd_cfgobj_t obj)
 {
 	pthread_mutex_unlock(&obj->lock);
-}
-
-ldmsd_cfgobj_t ldmsd_cfgobj_new_with_auth(const char *name, ldmsd_cfgobj_type_t type,
-					size_t obj_size, ldmsd_cfgobj_del_fn_t __del,
-					uid_t uid, gid_t gid, int perm)
-{
-	return NULL;
 }
 
 int ldmsd_cfgobj_init(ldmsd_cfgobj_t obj, const char *name,

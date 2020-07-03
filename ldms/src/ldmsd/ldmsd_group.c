@@ -170,39 +170,6 @@ ldms_set_t ldmsd_group_new(const char *name)
 	return ldmsd_group_new_with_auth(name, sctxt.crd.uid, sctxt.crd.gid, 0777);
 }
 
-ldmsd_setgrp_t
-ldmsd_setgrp_new_with_auth(const char *name, const char *producer,
-				long interval_us, long offset_us,
-				uid_t uid, gid_t gid, mode_t perm, int flags)
-{
-	ldmsd_setgrp_t grp;
-
-	grp = (ldmsd_setgrp_t)ldmsd_cfgobj_new_with_auth(name,
-			LDMSD_CFGOBJ_SETGRP, sizeof(*grp),
-			ldmsd_setgrp___del, uid, gid, perm);
-	if (!grp)
-		return NULL;
-
-	if (producer) {
-		grp->producer = strdup(producer);
-		if (!grp->producer)
-			goto err1;
-	}
-	grp->interval_us = interval_us;
-	grp->offset_us = offset_us;
-	LIST_INIT(grp->member_list);
-	if (flags & LDMSD_PERM_DSTART) {
-		grp->obj.perm |= LDMSD_PERM_DSTART;
-	}
-
-	ldmsd_setgrp_unlock(grp);
-	return grp;
-err1:
-	ldmsd_setgrp_unlock(grp);
-	ldmsd_setgrp_put(grp);
-	return NULL;
-}
-
 extern struct rbt *cfgobj_trees[];
 ldmsd_cfgobj_t __cfgobj_find(const char *name, ldmsd_cfgobj_type_t type);
 
