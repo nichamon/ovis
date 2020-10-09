@@ -148,7 +148,7 @@ static void dlog_(const char *func, int line, char *fmt, ...)
 #define __deliver_disconnected(_REP) _deliver_disconnected(_REP)
 #endif
 
-#ifdef CTXT_DEBUG
+#if defined(CTXT_DEBUG) || defined(EP_DEBUG)
 #define __flush_io_q( _REP ) do { \
 	(_REP)->ep.z->log_fn("TMP_DEBUG: %s() flush_io_q %p, state %s\n", \
 			__func__, _REP, __zap_ep_state_str(_REP->ep.state)); \
@@ -159,7 +159,7 @@ static void dlog_(const char *func, int line, char *fmt, ...)
 	_context_alloc(_REP, _CTXT, _OP); \
 })
 #define __context_free( _CTXT ) ({ \
-	(_CTXT)->ep->z->log_fn("TMP_DEBUG: %s(), context_free\n", __func__); \
+	(_CTXT)->ep->ep.z->log_fn("TMP_DEBUG: %s(), context_free %p\n", __func__, _CTXT); \
 	_context_free(_CTXT); \
 })
 #else
@@ -694,7 +694,6 @@ static void flush_io_q(struct z_fi_ep *rep)
 	struct zap_event ev = {
 		.status = ZAP_ERR_FLUSH,
 	};
-
 	while (!TAILQ_EMPTY(&rep->io_q)) {
 		ctxt = TAILQ_FIRST(&rep->io_q);
 		TAILQ_REMOVE(&rep->io_q, ctxt, pending_link);
@@ -1416,11 +1415,13 @@ static void *cq_thread_proc(void *arg)
 
 	while (1) {
 		n = epoll_wait(g.cq_fd, cq_events, 16, -1);
-		DLOG("got %d events\n", n);
 		if (n < 0) {
+			DLOG("got %d events with errno %d\n", n, errno);
 			if (errno == EINTR)
 				continue;
 			break;
+		} else {
+			DLOG("got %d events\n", n);
 		}
 		for (i = 0; i < n; i++) {
 			rep = cq_events[i].data.ptr;
@@ -1786,11 +1787,13 @@ static void *cm_thread_proc(void *arg)
 
 	while (1) {
 		n = epoll_wait(g.cm_fd, cm_events, 16, -1);
-		DLOG("got %d events\n", n);
 		if (n < 0) {
+			DLOG("got %d events with errno %d\n", n, errno);
 			if (errno == EINTR)
 				continue;
 			break;
+		} else {
+			DLOG("got %d events\n", n);
 		}
 		for (i = 0; i < n; ++i)
 			scrub_eq(cm_events[i].data.ptr);
