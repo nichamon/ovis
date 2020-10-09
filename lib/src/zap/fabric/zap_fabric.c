@@ -1575,6 +1575,7 @@ static void handle_rejected(struct z_fi_ep *rep, struct fi_eq_err_entry *entry)
 {
 	struct z_fi_reject_msg *rej_msg = NULL;
 	struct zap_event zev = {0};
+	struct z_fi_context *ctxt, *nxt_ctxt;
 	zev.status = ZAP_ERR_CONNECT;
 
 	/* State before being rejected is CONNECTING, but
@@ -1583,6 +1584,20 @@ static void handle_rejected(struct z_fi_ep *rep, struct fi_eq_err_entry *entry)
 	assert(rep->ep.state == ZAP_EP_CONNECTING ||
 			rep->ep.state == ZAP_EP_ERROR ||
 			rep->ep.state == ZAP_EP_ACCEPTING);
+
+	/*
+	 * The connection has not been established yet.
+	 * All active contexts are recv contexts (credits).
+	 */
+	ctxt = LIST_FIRST(&rep->active_ctxt_list);
+	while (ctxt) {
+		nxt_ctxt = LIST_NEXT(ctxt, active_ctxt_link);
+		if (ctxt->op == ZAP_WC_RECV) {
+			__buffer_free(ctxt->u.recv.rb);
+			__context_free(ctxt);
+		}
+		ctxt = nxt_ctxt;
+	}
 
 	if (rep->ep.state == ZAP_EP_ACCEPTING) {
 		/* passive side. No need to look into the rejected message */
@@ -1609,7 +1624,7 @@ static void handle_rejected(struct z_fi_ep *rep, struct fi_eq_err_entry *entry)
 	zev.data = (uint8_t *)rej_msg->msg;
 	zev.type = ZAP_EVENT_REJECTED;
 
-	__enable_cq_events(rep);
+//	__enable_cq_events(rep);
 	rep->ep.state = ZAP_EP_ERROR;
 	rep->ep.cb(&rep->ep, &zev);
 	__zap_put_ep(&rep->ep, "CONNECT");
