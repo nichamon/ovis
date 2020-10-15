@@ -192,6 +192,11 @@ struct zap_test_mem {
 struct zap_test_mem mem;
 struct zap_mem_info meminfo = {.start = &mem, .len = sizeof(mem)};
 
+struct zap_test_write_ctxt {
+	zap_err_t exp_write_status;
+};
+int EXP_SERVER_EVENTS = SERVER_EVENTS;
+
 zap_map_t write_map = NULL; /* exporting write map */
 zap_map_t read_map = NULL; /* exporting read map */
 
@@ -245,6 +250,9 @@ void do_send_mapped(zap_ep_t ep, const char *message)
 void handle_recv(zap_ep_t ep, zap_event_t ev)
 {
 	int len = strlen((char*)ev->data) + 1;
+	struct zap_test_write_ctxt *ctxt;
+	struct zap_info *info;
+
 	printf("%s: len %zu '%s'.\n", __func__,
 	       ev->data_len, (char *)ev->data);
 	if (len != ev->data_len) {
@@ -285,10 +293,24 @@ void handle_recv(zap_ep_t ep, zap_event_t ev)
 		return;
 	}
 
+	ctxt = malloc(sizeof(*ctxt));
+	assert(ctxt);
+
+	info = zap_get_info(ep);
+	assert(info);
+
+	ctxt->exp_write_status = ZAP_ERR_REMOTE_MAP;
+	if ((0 == strcmp(info->info, "iWARP")) ||
+		(strstr(info->info, "iWARP")) ||
+		(0 == strcmp(transport, "ugni"))) {
+			ctxt->exp_write_status = ZAP_ERR_OK;
+			EXP_SERVER_EVENTS &= ~SERVER_WRITE_ERROR;
+	}
+
 	/* Perform an RDMA_WRITE to the map we just received */
 	err = zap_write(ep, src_write_map, zap_map_addr(src_write_map),
 			remote_map, zap_map_addr(remote_map),
-			zap_map_len(src_write_map), src_write_map);
+			zap_map_len(src_write_map), ctxt);
 	if (err) {
 		printf("Error %d for RDMA_WRITE to share.\n", err);
 		return;
@@ -300,6 +322,7 @@ void handle_rendezvous(zap_ep_t ep, zap_event_t ev)
 	zap_err_t err;
 	zap_map_t src_write_map;
 	zap_map_t dst_write_map;
+	struct zap_test_write_ctxt *ctxt;
 
 	ASSERT((server_events & SERVER_RENDEZVOUS) == 0);
 	server_events |= SERVER_RENDEZVOUS;
@@ -320,11 +343,15 @@ void handle_rendezvous(zap_ep_t ep, zap_event_t ev)
 		return;
 	}
 
+	ctxt = malloc(sizeof(*ctxt));
+	assert(ctxt);
+	ctxt->exp_write_status = ZAP_ERR_OK;
+
 	/* perform an rdma_write to the map we just received */
 	remote_map = dst_write_map = ev->map;
 	err = zap_write(ep, src_write_map, zap_map_addr(src_write_map),
 			dst_write_map, zap_map_addr(dst_write_map),
-			zap_map_len(src_write_map), src_write_map);
+			zap_map_len(src_write_map), ctxt);
 	if (err) {
 		printf("error %d for rdma_write to share.\n", err);
 		return;
@@ -348,14 +375,19 @@ void handle_rendezvous(zap_ep_t ep, zap_event_t ev)
 void do_write_complete(zap_ep_t ep, zap_event_t ev)
 {
 	zap_err_t err;
+	struct zap_test_write_ctxt *ctxt;
 	printf("Write complete with status: %s\n", zap_err_str(ev->status));
-	if (ZAP_ERR_OK != ev->status) {
-		ASSERT((server_events & SERVER_WRITE_ERROR) == 0);
-		server_events |= SERVER_WRITE_ERROR;
-	} else {
-		ASSERT((server_events & SERVER_WRITE_SUCCESS) == 0);
+
+	ctxt = (struct zap_test_write_ctxt *)ev->context;
+
+	assert(ctxt->exp_write_status == ev->status);
+	if (ctxt->exp_write_status == ZAP_ERR_OK) {
 		server_events |= SERVER_WRITE_SUCCESS;
+	} else {
+		server_events |= SERVER_WRITE_ERROR;
 	}
+	free(ctxt);
+
 	zap_map_t write_src_map = (void *)(unsigned long)ev->context;
 	printf("Unmapping write map %p.\n", write_src_map);
 	err = zap_unmap(ep, write_src_map);
@@ -710,11 +742,7 @@ void do_server(zap_t zap, struct sockaddr_in *sin)
 	while (!done)
 		pthread_cond_wait(&done_cv, &done_lock);
 	pthread_mutex_unlock(&done_lock);
-	if (strcmp(transport, "ugni") == 0) {
-		ASSERT(server_events == (SERVER_EVENTS & (~SERVER_WRITE_ERROR)));
-	} else {
-		ASSERT(server_events == SERVER_EVENTS);
-	}
+	ASSERT(server_events == EXP_SERVER_EVENTS);
 	printf("zap_test server SUCCESS!\n");
 }
 
