@@ -236,6 +236,9 @@ struct zap {
 	zap_err_t (*get_name)(zap_ep_t ep, struct sockaddr *local_sa,
 			      struct sockaddr *remote_sa, socklen_t *sa_len);
 
+	/** Get the transport information */
+	struct zap_info *(*get_info)(zap_ep_t ep);
+
 	/** Event interposer */
 	void (*event_interpose)(zap_ep_t ep, void *ctxt);
 

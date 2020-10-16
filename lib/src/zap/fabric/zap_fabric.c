@@ -2373,6 +2373,79 @@ out:
 	return rc;
 }
 
+#define CASETOSTR(VAR, ENUM) \
+	case ENUM: { VAR = #ENUM; break; }
+static struct zap_info *z_fabric_get_info(zap_ep_t ep)
+{
+	struct zap_info *info;
+	struct z_fi_ep *fep = (struct z_fi_ep *)ep;
+	char s[512];
+
+	info = malloc(sizeof(*info));
+	if (!info)
+		return NULL;
+
+	switch (fep->fi->ep_attr->protocol) {
+	case FI_PROTO_UNSPEC:
+		(void)snprintf(s, 511, "%s:Unspecified", fep->provider_name);
+		break;
+	case FI_PROTO_RDMA_CM_IB_RC:
+	case FI_PROTO_RDMA_CM_IB_XRC:
+	case FI_PROTO_IB_RDM:
+	case FI_PROTO_IB_UD:
+		(void)snprintf(s, 511, "%s:IB", fep->provider_name);
+		break;
+	case FI_PROTO_IWARP:
+	case FI_PROTO_IWARP_RDM:
+		(void)snprintf(s, 511, "%s:iWARP", fep->provider_name);
+		break;
+	case FI_PROTO_PSMX:
+	case FI_PROTO_PSMX2:
+		(void)snprintf(s, 511, "%s:PSMX", fep->provider_name);
+		break;
+	case FI_PROTO_UDP:
+		(void)snprintf(s, 511, "%s:UDP", fep->provider_name);
+		break;
+	case FI_PROTO_SOCK_TCP:
+		(void)snprintf(s, 511, "%s:sock_TCP", fep->provider_name);
+		break;
+	case FI_PROTO_GNI:
+		(void)snprintf(s, 511, "%s:GNI", fep->provider_name);
+		break;
+	case FI_PROTO_RXM:
+		(void)snprintf(s, 511, "%s:RXM", fep->provider_name);
+		break;
+	case FI_PROTO_RXD:
+		(void)snprintf(s, 511, "%s:RXD", fep->provider_name);
+		break;
+	case FI_PROTO_MXM:
+		(void)snprintf(s, 511, "%s:MXM", fep->provider_name);
+		break;
+	case FI_PROTO_MLX:
+		(void)snprintf(s, 511, "%s:MXL", fep->provider_name);
+		break;
+	case FI_PROTO_NETWORKDIRECT:
+		(void)snprintf(s, 511, "%s:NETWORKDIRECT", fep->provider_name);
+		break;
+	case FI_PROTO_SHM:
+		(void)snprintf(s, 511, "%s:SHM", fep->provider_name);
+		break;
+	case FI_PROTO_RSTREAM:
+		(void)snprintf(s, 511, "%s:RSTREAM", fep->provider_name);
+		break;
+	default:
+		(void)snprintf(s, 511, "%s:Unknown", fep->provider_name);
+		break;
+	}
+
+	info->info = strdup(s);
+	if (!info->info) {
+		free(info);
+		return NULL;
+	}
+	return info;
+}
+
 static pthread_t cm_thread, cq_thread;
 
 __attribute__((unused))
@@ -2467,6 +2540,7 @@ zap_err_t zap_transport_get(zap_t *pz, zap_log_fn_t log_fn,
 	z->unmap = z_fi_unmap;
 	z->share = z_fi_share;
 	z->get_name = z_get_name;
+	z->get_info = z_fabric_get_info;
 
 	*pz = z;
 	return ZAP_ERR_OK;

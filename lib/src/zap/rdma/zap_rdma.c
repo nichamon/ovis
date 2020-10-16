@@ -2289,6 +2289,26 @@ static zap_err_t z_rdma_read(zap_ep_t ep,
 	return rc;
 }
 
+static struct zap_info *z_rdma_get_info(zap_ep_t ep)
+{
+	struct zap_info *info;
+	struct z_rdma_ep *rep = (struct z_rdma_ep *)ep;
+
+	info = malloc(sizeof(*info));
+	if (!info)
+		return NULL;
+	if (rep->cm_id->verbs->device->transport_type == IBV_TRANSPORT_IWARP) {
+		info->info = strdup("iWARP");
+	} else if (rep->cm_id->verbs->device->transport_type == IBV_TRANSPORT_IB) {
+		info->info = strdup("IB");
+	}
+	if (!info->info) {
+		free(info);
+		return NULL;
+	}
+	return info;
+}
+
 static int init_complete = 0;
 static pthread_t cm_thread, cq_thread;
 
@@ -2369,6 +2389,7 @@ zap_err_t zap_transport_get(zap_t *pz, zap_log_fn_t log_fn,
 	z->unmap = z_rdma_unmap;
 	z->share = z_rdma_share;
 	z->get_name = z_get_name;
+	z->get_info = z_rdma_get_info;
 
 	*pz = z;
 	return ZAP_ERR_OK;

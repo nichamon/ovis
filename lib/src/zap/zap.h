@@ -93,6 +93,14 @@ typedef struct zap_map *zap_map_t;
 
 #define ZAP_EVENT_BAD -1
 
+enum zap_type {
+	ZAP_SOCK,
+	ZAP_RDMA,
+	ZAP_UGNI,
+	ZAP_FABRIC,
+	ZAP_LAST,
+};
+
 typedef enum zap_event_type {
 	/*! An incoming connect request is ready to be accepted or rejected. */
 	ZAP_EVENT_CONNECT_REQUEST = 1,
@@ -242,6 +250,11 @@ typedef struct zap_event {
 	/*! Application provided context */
 	void *context;
 } *zap_event_t;
+
+struct zap_info {
+	enum zap_type type;
+	char *info;
+};
 
 /**
  * Zap callback function.
@@ -713,5 +726,25 @@ const char* zap_event_str(enum zap_event_type e);
  * \retval ETIMEDOUT A timeout occurred before the threads terminated.
  */
 int zap_term(int timeout_sec);
+
+/**
+ * \brief Return the zap transport information, e.g., IB, iWARP
+ *
+ * \param ep	zap endpoint
+ *
+ * struct zap_info {
+ *   enum zap_type type;
+ *   char *info;
+ * }
+ *
+ * The following is the info string of each zap transport.
+ * zap_sock: "socket"
+ * zap_rdma: Either "IB" or "iWARP"
+ * zap_ugni: Either "aries" or "gemini"
+ * zap_fabric: <provider_name>:<Protocol name>
+ *
+ * \return A handle to struct zap_info. NULL is returned if ENOMEM.
+ */
+struct zap_info *zap_get_info(zap_ep_t ep);
 
 #endif

@@ -809,6 +809,11 @@ int zap_term(int timeout_sec)
 	return rc;
 }
 
+struct zap_info *zap_get_info(zap_ep_t ep)
+{
+	return ep->z->get_info(ep);
+}
+
 #ifdef NDEBUG
 #pragma GCC diagnostic ignored "-Wunused-but-set-variable"
 #endif

@@ -2846,6 +2846,25 @@ static zap_err_t z_ugni_write(zap_ep_t ep, zap_map_t src_map, char *src,
 	return ZAP_ERR_OK;
 }
 
+static struct zap_info *z_ugni_get_info(zap_ep_t ep)
+{
+	struct zap_info *info;
+	info = malloc(sizeof(*info));
+	if (!info)
+		return NULL;
+	if (_dom.type == ZAP_UGNI_TYPE_ARIES)
+		info->info = strdup("aries");
+	else if (_dom.type == ZAP_UGNI_TYPE_GEMINI)
+		info->info = strdup("gemini");
+	else
+		info->info = strdup("unknown");
+	if (!info->info) {
+		free(info);
+		return NULL;
+	}
+	return info;
+}
+
 zap_err_t zap_transport_get(zap_t *pz, zap_log_fn_t log_fn,
 			    zap_mem_info_fn_t mem_info_fn)
 {
@@ -2883,6 +2902,7 @@ zap_err_t zap_transport_get(zap_t *pz, zap_log_fn_t log_fn,
 	z->unmap = z_ugni_unmap;
 	z->share = z_ugni_share;
 	z->get_name = z_get_name;
+	z->get_info = z_ugni_get_info;
 
 	/* is it needed? */
 	z->mem_info_fn = mem_info_fn;

@@ -2055,6 +2055,16 @@ err0:
 	return zerr;
 }
 
+
+static struct zap_info *z_sock_get_info(zap_ep_t ep)
+{
+	struct zap_info *info = malloc(sizeof(*info));
+	if (!info)
+		return NULL;
+	info->info = "socket";
+	return info;
+}
+
 zap_err_t zap_transport_get(zap_t *pz, zap_log_fn_t log_fn,
 			    zap_mem_info_fn_t mem_info_fn)
 {
@@ -2090,6 +2100,7 @@ zap_err_t zap_transport_get(zap_t *pz, zap_log_fn_t log_fn,
 	z->share = z_sock_share;
 	z->get_name = z_get_name;
 	z->send_mapped = z_sock_send_mapped;
+	z->get_info = z_sock_get_info;
 
 	/* is it needed? */
 	z->mem_info_fn = mem_info_fn;
