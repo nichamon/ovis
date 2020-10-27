@@ -82,6 +82,8 @@
 #define LDMS_SETH_F_LCLBYTEORDER	LDMS_SETH_F_LE
 #endif
 
+#define LDMS_UNIT_MAX 8 /* including '\0' */
+
 #define LDMS_SET_NAME_MAX 256
 #define LDMS_PRODUCER_NAME_MAX 64 /* including the terminating null byte */
 
@@ -102,6 +104,7 @@ typedef struct ldms_value_desc {
 	uint8_t vd_type;	/*! The type of the value, enum ldms_value_type */
 	uint8_t vd_flags;	/*! Metric or Attribute */
 	uint8_t vd_name_len;	/*! The length of the metric name in bytes*/
+	char vd_units[LDMS_UNIT_MAX];       /*! An 8B '\0' terminated unit string */
 	char vd_name[OVIS_FLEX];		/*! The metric name */
 } *ldms_mdesc_t;
 #pragma pack()
