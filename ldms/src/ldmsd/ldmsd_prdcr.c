@@ -134,7 +134,7 @@ void __prdcr_set_del(ldmsd_prdcr_set_t set)
 		free(set->schema_name);
 
 	if (set->set) {
-		ref_put(&set->set->ref, "prdcr_set");
+		ldms_set_ref_put(set->set, "prdcr_set");
 		ldms_set_unpublish(set->set);
 		ldms_set_delete(set->set);
 	}
@@ -351,7 +351,7 @@ static void _add_cb(ldms_t xprt, ldmsd_prdcr_t prdcr, ldms_dir_set_t dset)
 			return;
 			ldmsd_prdcr_set_ref_get(set); /* dropped in prdset_lookup_cb() */
 			__ldmsd_prdset_lookup_cb(xprt, 0, 0, xs, set);
-			ref_put(&xs->ref, "ldms_xprt_set_by_name");
+			ldms_set_ref_get(xs, "ldms_xprt_set_by_name");
 		}
 		set = prdcr_set_new(dset->inst_name, dset->schema_name);
 		if (!set) {
