@@ -143,14 +143,15 @@ int timer_base_add_hfmetric(struct timer_base *tb,
 		goto out;
 	}
 	t->timer.n = n;
-	t->timer.mid = ldms_schema_metric_array_add(tb->schema, name, type, t->timer.n);
+	t->timer.mid = ldms_schema_metric_array_add(tb->schema, name, type,
+							   "", t->timer.n);
 	if (t->timer.mid < 0) {
 		rc = -t->timer.mid;
 		goto out;
 	}
 	snprintf(tb->buff, sizeof(tb->buff), "%s_timeval", name);
 	t->timer.tid = ldms_schema_metric_array_add(tb->schema, tb->buff,
-				LDMS_V_U64_ARRAY, t->timer.n*2);
+				LDMS_V_U64_ARRAY, "", t->timer.n*2);
 	if (t->timer.tid < 0) {
 		rc = -t->timer.tid;
 		goto out;

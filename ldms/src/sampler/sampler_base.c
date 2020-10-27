@@ -256,19 +256,19 @@ ldms_schema_t base_schema_new(base_data_t base)
 		goto err_0;
 	}
 
-	rc = ldms_schema_meta_add(base->schema, "component_id", LDMS_V_U64);
+	rc = ldms_schema_meta_add(base->schema, "component_id", LDMS_V_U64, "");
 	if (rc < 0) {
 		errno = rc;
 		goto err_1;
 	}
 
-	rc = ldms_schema_metric_add(base->schema, "job_id", LDMS_V_U64);
+	rc = ldms_schema_metric_add(base->schema, "job_id", LDMS_V_U64, "");
 	if (rc < 0) {
 		errno = ENOMEM;
 		goto err_1;
 	}
 
-	rc = ldms_schema_metric_add(base->schema, "app_id", LDMS_V_U64);
+	rc = ldms_schema_metric_add(base->schema, "app_id", LDMS_V_U64, "");
 	if (rc < 0) {
 		errno = ENOMEM;
 		goto err_1;

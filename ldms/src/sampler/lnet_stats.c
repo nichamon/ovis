@@ -225,7 +225,7 @@ static int create_metric_set(base_data_t base)
 	 */
 	i = 0;
 	for ( ; i < NAME_CNT; i++) {
-		rc = ldms_schema_metric_add(schema, stat_name[i], LDMS_V_U64);
+		rc = ldms_schema_metric_add(schema, stat_name[i], LDMS_V_U64, "");
 		if (rc < 0) {
 			rc = ENOMEM;
 			goto err;

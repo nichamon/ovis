@@ -88,7 +88,7 @@ static int create_metric_set(base_data_t base)
 	metric_offset = ldms_schema_metric_count_get(schema);
 
 	/* add ticker metric */
-	rc = ldms_schema_metric_add(schema, metric_name, LDMS_V_U64);
+	rc = ldms_schema_metric_add(schema, metric_name, LDMS_V_U64, "");
 	if (rc < 0) {
 		rc = ENOMEM;
 		goto err;
