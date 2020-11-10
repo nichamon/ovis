@@ -680,6 +680,16 @@ int publish_kernel(const char *setfile)
 	return 0;
 }
 
+int ldmsd_offset_verify(long interval, long offset)
+{
+	/* Assume interval is a non-negative number. */
+	if (offset < 0)
+		return -1;
+	if (offset >= interval)
+		return -1;
+	return 0;
+}
+
 static void stop_sampler(struct ldmsd_plugin_cfg *pi)
 {
 	ovis_scheduler_event_del(pi->os, &pi->oev);
@@ -1267,8 +1277,7 @@ int ldmsd_start_sampler(char *plugin_name, char *interval, char *offset)
 	pi->sample_interval_us = sample_interval;
 	if (offset) {
 		sample_offset = strtol(offset, NULL, 0);
-		if ( !((sample_interval >= 10) &&
-		       (sample_interval >= labs(sample_offset)*2)) ){
+		if (0 > ldmsd_offset_verify(pi->sample_interval_us, sample_offset)) {
 			rc = EDOM;
 			goto out;
 		}

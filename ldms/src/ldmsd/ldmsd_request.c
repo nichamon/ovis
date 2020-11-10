@@ -2682,6 +2682,7 @@ out:
 
 static int updtr_add_handler(ldmsd_req_ctxt_t reqc)
 {
+	extern int ldmsd_offset_verify(long interval, long offset);
 	char *name, *offset_str, *interval_str, *push, *auto_interval, *attr_name;
 	name = offset_str = interval_str = push = auto_interval = NULL;
 	size_t cnt = 0;
@@ -2767,7 +2768,8 @@ static int updtr_add_handler(ldmsd_req_ctxt_t reqc)
 					"is not a number.", offset_str);
 			goto send_reply;
 		}
-		if (interval_str && (interval < labs(offset) * 2)) {
+		if (interval_str &&
+				(0 > ldmsd_offset_verify(interval, offset))) {
 			reqc->errcode = EINVAL;
 			cnt = Snprintf(&reqc->line_buf, &reqc->line_len,
 					"The absolute value of the offset value "
