@@ -943,6 +943,7 @@ ldmsd_updtr_new_with_auth(const char *name, char *interval_str, char *offset_str
 					int push_flags, int is_auto_task,
 					uid_t uid, gid_t gid, int perm)
 {
+	extern int ldmsd_offset_verify(long interval, long offset);
 	struct ldmsd_updtr *updtr;
 	char *endptr;
 	long interval_us = UPDTR_TREE_MGMT_TASK_INTRVL, offset_us = LDMSD_UPDT_HINT_OFFSET_NONE;
@@ -966,7 +967,7 @@ ldmsd_updtr_new_with_auth(const char *name, char *interval_str, char *offset_str
 			offset_us = strtol(offset_str, &endptr, 0);
 			if (('\0' == offset_str[0]) || ('\0' != endptr[0]))
 				goto einval;
-			if (interval_us < labs(offset_us) * 2)
+			if (0 > ldmsd_offset_verify(interval_us, offset_us))
 				goto einval;
 			/* Make it a hint offset */
 			offset_us -= updtr_sched_offset_skew_get();
