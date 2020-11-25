@@ -559,7 +559,7 @@ static void client_push_update_cb(ldms_t x, ldms_set_t set,
 		assert(0);
 	}
 
-	if (1 == (status | ~LDMS_UPD_F_PUSH)) {
+	if ((status | ~LDMS_UPD_F_PUSH)) {
 		_log("%s: Received push update error\n", setname);
 		assert(0);
 	}
