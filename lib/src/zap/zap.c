@@ -481,6 +481,11 @@ void zap_interpose_event(zap_ep_t ep, void *ctxt)
 static
 struct zap_event_queue *__get_least_busy_zap_event_queue();
 
+#if _ZAP_EP_TRACK_
+TAILQ_HEAD(zap_ep_list, zap_ep) zap_ep_list;
+pthread_mutex_t zap_ep_list_lock = PTHREAD_MUTEX_INITIALIZER;
+#endif /* _ZAP_EP_TRACK_ */
+
 zap_ep_t zap_new(zap_t z, zap_cb_fn_t cb)
 {
 	zap_ep_t zep = NULL;
@@ -497,6 +502,11 @@ zap_ep_t zap_new(zap_t z, zap_cb_fn_t cb)
 	pthread_mutex_init(&zep->lock, NULL);
 	sem_init(&zep->block_sem, 0, 0);
 	zep->event_queue = __get_least_busy_zap_event_queue();
+#if _ZAP_EP_TRACK_
+	pthread_mutex_lock(&zap_ep_list_lock);
+	TAILQ_INSERT_TAIL(&zap_ep_list, zep, entry);
+	pthread_mutex_unlock(&zap_ep_list_lock);
+#endif /* _ZAP_EP_TRACK_ */
 	return zep;
 }
 
@@ -627,6 +637,11 @@ void zap_put_ep(zap_ep_t ep)
 	assert(ep->ref_count);
 	if (0 == __sync_sub_and_fetch(&ep->ref_count, 1)) {
 		zap_event_queue_ep_put(ep->event_queue);
+#if _ZAP_EP_TRACK_
+		pthread_mutex_lock(&zap_ep_list_lock);
+		TAILQ_REMOVE(&zap_ep_list, ep, entry);
+		pthread_mutex_unlock(&zap_ep_list_lock);
+#endif /* _ZAP_EP_TRACK_ */
 		ep->z->destroy(ep);
 	}
 }
@@ -1036,6 +1051,11 @@ static void init_atfork(void)
 	int stats_w;
 
 	pthread_mutex_init(&zap_list_lock, 0);
+	
+#if _ZAP_EP_TRACK_
+	TAILQ_INIT(&zap_ep_list);
+	pthread_mutex_init(&zap_ep_list_lock, 0);
+#endif /* _ZAP_EP_TRACK_ */
 
 	stats_w = ZAP_ENV_INT(ZAP_THRSTAT_WINDOW);
 	zap_event_workers = ZAP_ENV_INT(ZAP_EVENT_WORKERS);
