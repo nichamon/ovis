@@ -53,6 +53,7 @@
 #include <semaphore.h>
 #include <sys/queue.h>
 #include <pthread.h>
+#include "ovis_ref/ref.h"
 #include "ovis-ldms-config.h"
 #include "zap.h"
 
@@ -157,6 +158,7 @@ const char *__zap_ep_state_str(zap_ep_state_t state);
 
 struct zap_ep {
 	zap_t z;
+	struct ref_s ref;
 	uint32_t ref_count;
 	pthread_mutex_t lock;
 	zap_ep_state_t state;
@@ -174,6 +176,9 @@ struct zap_ep {
 
 	/** Event queue */
 	struct zap_event_queue *event_queue;
+#ifdef _ZAP_EP_TRACK_
+	TAILQ_ENTRY(zap_ep) ep_link;
+#endif /* ZAP_EP_TRACK_ */
 };
 
 struct zap {
