@@ -402,7 +402,8 @@ static zap_err_t z_sock_connect(zap_ep_t ep,
 		goto err2;
 	}
 
-	zap_get_ep(&sep->ep); /* Release when disconnect */
+//	zap_get_ep(&sep->ep); /* Release when disconnect */
+	ref_get(&sep->ep.ref, "zap_sock:connected");
 
 	OVIS_EVENT_INIT(&sep->ev);
 	sep->ev.param.type = OVIS_EVENT_EPOLL;
@@ -418,7 +419,8 @@ static zap_err_t z_sock_connect(zap_ep_t ep,
 	return ZAP_ERR_OK;
 
  err3:
-	zap_put_ep(&sep->ep);
+//	zap_put_ep(&sep->ep);
+	ref_put(&sep->ep.ref, "zap_sock:connected");
  err2:
 	free(sep->conn_data);
 	sep->conn_data = NULL;
@@ -561,7 +563,8 @@ static void process_sep_msg_ack_accepted(struct z_sock_ep *sep)
 		.type = ZAP_EVENT_CONNECTED,
 		.status = ZAP_ERR_OK,
 	};
-	zap_get_ep(&sep->ep); /* Release when receive disconnect/error event. */
+//	zap_get_ep(&sep->ep); /* Release when receive disconnect/error event. */
+	ref_get(&sep->ep.ref, "zap_sock:connected");
 	sep->ep.cb(&sep->ep, &ev);
 }
 
@@ -832,7 +835,7 @@ static void process_sep_msg_rendezvous(struct z_sock_ep *sep)
 		goto err0;
 	}
 	map->type = ZAP_MAP_REMOTE;
-	zap_get_ep(&sep->ep); /* Release when app calls zap_unmap(). */
+	ref_get(&sep->ep.ref, "zap_sock:rendezvous");
 	map->ep = &sep->ep;
 	SOCK_MAP_KEY_SET(map, msg->rmap_key);
 
@@ -1100,7 +1103,8 @@ static void sock_ev_cb(ovis_event_t ev)
 	struct z_sock_ep *sep = ev->param.ctxt;
 
 	zap_thrstat_wait_end(sock_stats);
-	zap_get_ep(&sep->ep);
+//	zap_get_ep(&sep->ep);
+	ref_get(&sep->ep.ref, "zap_sock:sock_ev_cb");
 	DEBUG_LOG(sep, "ep: %p, sock_ev_cb() -- BEGIN --\n", sep);
 
 	/* Handle write */
@@ -1140,7 +1144,8 @@ static void sock_ev_cb(ovis_event_t ev)
 	}
  out:
 	DEBUG_LOG(sep, "ep: %p, sock_ev_cb() -- END --\n", sep);
-	zap_put_ep(&sep->ep);
+//	zap_put_ep(&sep->ep);
+	ref_put(&sep->ep.ref, "zap_sock:sock_ev_cb");
 	zap_thrstat_wait_start(sock_stats);
 }
 
@@ -1542,9 +1547,11 @@ static void sock_event(ovis_event_t ev)
 	if (do_cb)
 		sep->ep.cb((void*)sep, &zev);
 
-	if (drop_conn_ref)
+	if (drop_conn_ref) {
 		/* Taken in z_sock_connect and process_sep_msg_accepted */
-		zap_put_ep(&sep->ep);
+//		zap_put_ep(&sep->ep);
+		ref_put(&sep->ep.ref, "zap_sock:connected");
+	}
 	return;
 }
 
@@ -1897,7 +1904,7 @@ static zap_err_t z_sock_unmap(zap_map_t map)
 			z_sock_key_delete(SOCK_MAP_KEY_GET(map));
 	} else {
 		if (map->ep)
-			zap_put_ep(map->ep);
+			ref_put(&map->ep->ref, "zap_sock:rendezvous");
 	}
 	return ZAP_ERR_OK;
 }

@@ -1286,7 +1286,7 @@ static void handle_rendezvous(struct z_fi_ep *rep,
 		return;
 	}
 	map->type = ZAP_MAP_REMOTE;
-	zap_get_ep(&rep->ep);
+	ref_get(&rep->ep->ref, "zap_fabric:rendezvous");
 	map->ep = &rep->ep;
 	map->mr[ZAP_FABRIC] = (void*)sh->rkey;
 
@@ -2385,7 +2385,7 @@ static zap_err_t z_fi_unmap(zap_map_t map)
 			fi_close(&zm->mr[i]->fid);
 	}
 	if ((map->type == ZAP_MAP_REMOTE) && map->ep)
-		zap_put_ep(map->ep);
+		ref_put(&map->ep->ref, "zap_fabric:rendezvous");
 	free(zm);
 	return ZAP_ERR_OK;
 }

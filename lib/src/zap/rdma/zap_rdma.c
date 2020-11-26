@@ -998,7 +998,7 @@ static void handle_rendezvous(struct z_rdma_ep *rep,
 		return;
 	}
 	map->type = ZAP_MAP_REMOTE;
-	__zap_get_ep(&rep->ep); /* will be put in zap_unmap() */
+	ref_get(&rep->ep->ref, "zap_rdma:rendezvous"); /* will be put in zap_unmap() */
 	map->ep = &rep->ep;
 	map->mr[ZAP_RDMA] = zm;
 
@@ -2242,7 +2242,7 @@ static zap_err_t z_rdma_unmap(zap_map_t map)
 			ibv_dereg_mr(zm->mr[i]);
 	}
 	if ((map->type == ZAP_MAP_REMOTE) && map->ep)
-		zap_put_ep(map->ep);
+		ref_put(&map->ep->ref, "zap_rdma:rendezvous");
 	free(zm);
 	return ZAP_ERR_OK;
 }

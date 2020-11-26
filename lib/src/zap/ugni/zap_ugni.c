@@ -771,7 +771,7 @@ static void process_uep_msg_rendezvous(struct z_ugni_ep *uep)
 		goto err0;
 	}
 	map->type = ZAP_MAP_REMOTE;
-	zap_get_ep(&uep->ep);
+	ref_get(&uep->ep->ref, "zap_ugni:rendezvous");
 	map->ep = (void*)uep;
 	map->mr[ZAP_UGNI] = &msg->gni_mh;
 
@@ -2664,7 +2664,7 @@ static zap_err_t z_ugni_unmap(zap_map_t map)
 {
 	struct zap_ugni_map *m = (void*) map;
 	if ((map->type == ZAP_MAP_REMOTE) && map->ep)
-		zap_put_ep(map->ep);
+		ref_put(&map->ep->ref, "zap_ugni:rendezvous");
 	return ZAP_ERR_OK;
 }
 
