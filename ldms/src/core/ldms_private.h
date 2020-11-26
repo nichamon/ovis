@@ -53,6 +53,7 @@
 #include <pthread.h>
 #include <zap/zap.h>
 #include "ovis_util/os_util.h"
+#include "ovis_ref/ref.h"
 
 #define LDMS_GN_INCREMENT(_gn) do { \
 	(_gn) = __cpu_to_le64(__le64_to_cpu((_gn)) + 1); \
