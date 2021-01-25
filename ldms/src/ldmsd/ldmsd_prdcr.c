@@ -64,8 +64,6 @@
 #include "ldmsd_request.h"
 #include "config.h"
 
-static void prdcr_task_cb(ldmsd_task_t task, void *arg);
-
 int prdcr_resolve(const char *hostname, unsigned short port_no,
 		  struct sockaddr_storage *ss, socklen_t *ss_len)
 {
@@ -116,8 +114,19 @@ static ldmsd_prdcr_set_t prdcr_set_new(const char *inst_name, const char *schema
 	pthread_mutex_init(&set->lock, NULL);
 	rbn_init(&set->rbn, set->inst_name);
 
+	set->state_ev = ev_new(prdcr_set_state_type);
+	if (!set->state_ev)
+		goto err_2;
+	EV_DATA(set->state_ev, struct state_data)->prd_set = set;
+	set->update_ev = ev_new(prdcr_set_update_type);
+	if (!set->update_ev)
+		goto err_3;
+	EV_DATA(set->update_ev, struct update_data)->prd_set = set;
+
 	set->ref_count = 1;
 	return set;
+ err_3:
+	ev_put(set->state_ev);
  err_2:
 	free(set->inst_name);
  err_1:
@@ -147,9 +156,6 @@ void __prdcr_set_del(ldmsd_prdcr_set_t set)
 		strgp_ref = LIST_FIRST(&set->strgp_list);
 	}
 
-	if (set->updt_hint_entry.le_prev)
-		LIST_REMOVE(set, updt_hint_entry);
-
 	free(set->inst_name);
 	free(set);
 }
@@ -173,54 +179,13 @@ static void prdcr_set_del(ldmsd_prdcr_set_t set)
 	ldmsd_prdcr_set_ref_put(set);
 }
 
-#define UPDT_HINT_TREE_ADD 1
-#define UPDT_HINT_TREE_REMOVE 2
-void prdcr_hint_tree_update(ldmsd_prdcr_t prdcr, ldmsd_prdcr_set_t prd_set,
-				struct ldmsd_updtr_schedule *hint, int op)
-{
-	struct rbn *rbn;
-	struct ldmsd_updt_hint_set_list *list;
-	struct ldmsd_updtr_schedule *hint_key;
-	if (0 == hint->intrvl_us)
-		return;
-	rbn = rbt_find(&prdcr->hint_set_tree, hint);
-	if (op == UPDT_HINT_TREE_REMOVE) {
-		if (!rbn)
-			return;
-		list = container_of(rbn, struct ldmsd_updt_hint_set_list, rbn);
-		assert(prd_set->ref_count);
-		assert(prd_set->updt_hint_entry.le_prev);
-		LIST_REMOVE(prd_set, updt_hint_entry);
-		prd_set->updt_hint_entry.le_next = NULL;
-		prd_set->updt_hint_entry.le_prev = NULL;
-		ldmsd_prdcr_set_ref_put(prd_set);
-
-		if (LIST_EMPTY(&list->list)) {
-			rbt_del(&prdcr->hint_set_tree, &list->rbn);
-			free(list->rbn.key);
-			free(list);
-		}
-	} else if (op == UPDT_HINT_TREE_ADD) {
-		if (!rbn) {
-			list = malloc(sizeof(*list));
-			hint_key = malloc(sizeof(*hint_key));
-			*hint_key = *hint;
-			rbn_init(&list->rbn, hint_key);
-			rbt_ins(&prdcr->hint_set_tree, &list->rbn);
-			LIST_INIT(&list->list);
-		} else {
-			list = container_of(rbn,
-					struct ldmsd_updt_hint_set_list, rbn);
-		}
-		ldmsd_prdcr_set_ref_get(prd_set);
-		LIST_INSERT_HEAD(&list->list, prd_set, updt_hint_entry);
-	}
-}
-
 static void prdcr_reset_set(ldmsd_prdcr_t prdcr, ldmsd_prdcr_set_t prd_set)
 {
-	prdcr_hint_tree_update(prdcr, prd_set,
-			       &prd_set->updt_hint, UPDT_HINT_TREE_REMOVE);
+	EV_DATA(prd_set->state_ev, struct state_data)->start_n_stop = 0;
+	ldmsd_prdcr_set_ref_get(prd_set, "state_ev");
+	if (ev_post(producer, updater, prd_set->state_ev, NULL)) {
+		ldmsd_prdcr_set_ref_put(prd_set, "state_ev");
+	}
 	rbt_del(&prdcr->set_tree, &prd_set->rbn);
 	ldmsd_prdcr_set_ref_put(prd_set);	/* set_tree reference */
 	prdcr_set_del(prd_set);
@@ -250,53 +215,6 @@ static ldmsd_prdcr_set_t _find_set(ldmsd_prdcr_t prdcr, const char *inst_name)
 	if (rbn)
 		return container_of(rbn, struct ldmsd_prdcr_set, rbn);
 	return NULL;
-}
-
-void ldmsd_prd_set_updtr_task_update(ldmsd_prdcr_set_t prd_set)
-{
-	ldmsd_updtr_t updtr;
-	ldmsd_name_match_t match;
-	char *str;
-	int rc;
-	ldmsd_cfg_lock(LDMSD_CFGOBJ_UPDTR);
-	for (updtr = ldmsd_updtr_first(); updtr; updtr = ldmsd_updtr_next(updtr)) {
-		ldmsd_updtr_lock(updtr);
-		if (updtr->state != LDMSD_UPDTR_STATE_RUNNING) {
-			ldmsd_updtr_unlock(updtr);
-			continue;
-		}
-
-		/* Updaters for push don't schedule any updates. */
-		if (0 != updtr->push_flags) {
-			ldmsd_updtr_unlock(updtr);
-			continue;
-		}
-		if (!ldmsd_updtr_prdcr_find(updtr, prd_set->prdcr->obj.name)) {
-			ldmsd_updtr_unlock(updtr);
-			continue;
-		}
-		if (!LIST_EMPTY(&updtr->match_list)) {
-			LIST_FOREACH(match, &updtr->match_list, entry) {
-				if (match->selector == LDMSD_NAME_MATCH_INST_NAME)
-					str = prd_set->inst_name;
-				else
-					str = prd_set->schema_name;
-				rc = regexec(&match->regex, str, 0, NULL, 0);
-				if (!rc)
-					goto update_tasks;
-			}
-			goto nxt_updtr;
-		}
-	update_tasks:
-		pthread_mutex_lock(&prd_set->lock);
-		ldmsd_updtr_tasks_update(updtr, prd_set);
-		pthread_mutex_unlock(&prd_set->lock);
-	nxt_updtr:
-		ldmsd_updtr_unlock(updtr);
-	}
-
-
-	ldmsd_cfg_unlock(LDMSD_CFGOBJ_UPDTR);
 }
 
 static void __update_set_info(ldmsd_prdcr_set_t set, ldms_dir_set_t dset)
@@ -372,16 +290,10 @@ static void _add_cb(ldms_t xprt, ldmsd_prdcr_t prdcr, ldms_dir_set_t dset)
 	}
 
 	__update_set_info(set, dset);
-	if (0 != set->updt_hint.intrvl_us) {
-		ldmsd_log(LDMSD_LDEBUG, "producer '%s' add set '%s' to hint tree\n",
-						prdcr->obj.name, set->inst_name);
-		prdcr_hint_tree_update(prdcr, set,
-				&set->updt_hint, UPDT_HINT_TREE_ADD);
- 	}
-
-	ldmsd_prdcr_unlock(prdcr);
-	ldmsd_prd_set_updtr_task_update(set);
-	ldmsd_prdcr_lock(prdcr);
+	EV_DATA(set->state_ev, struct state_data)->start_n_stop = 1;
+	ldmsd_prdcr_set_ref_get(set, "state_ev");
+	if (ev_post(producer, updater, set->state_ev, NULL))
+		ldmsd_prdcr_set_ref_put(set, "state_ev");
 }
 
 /*
@@ -435,21 +347,12 @@ static void prdcr_dir_cb_upd(ldms_t xprt, ldms_dir_t dir, ldmsd_prdcr_t prdcr)
 			continue;
 		}
 		pthread_mutex_lock(&set->lock);
-		prdcr_hint_tree_update(prdcr, set, &set->updt_hint, UPDT_HINT_TREE_REMOVE);
-		prev_hint = set->updt_hint;
 		__update_set_info(set, &dir->set_data[i]);
-		prdcr_hint_tree_update(prdcr, set, &set->updt_hint, UPDT_HINT_TREE_ADD);
+		EV_DATA(set->state_ev, struct state_data)->start_n_stop = 1;
+		ldmsd_prdcr_set_ref_get(set, "state_ev");
+		if (ev_post(producer, updater, set->state_ev, NULL))
+			ldmsd_prdcr_set_ref_put(set, "state_ev");
 		pthread_mutex_unlock(&set->lock);
-		if (0 != ldmsd_updtr_schedule_cmp(&prev_hint, &set->updt_hint)) {
-			/*
-			 * Update Updater tasks only when
-			 * there are any changes to
-			 * avoid unnecessary iterations.
-			 */
-			ldmsd_prdcr_unlock(prdcr);
-			ldmsd_prd_set_updtr_task_update(set);
-			ldmsd_prdcr_lock(prdcr);
-		}
 	}
 }
 
@@ -574,7 +477,6 @@ static void prdcr_connect_cb(ldms_t x, ldms_xprt_event_t e, void *cb_arg)
 		if (ldms_xprt_dir(prdcr->xprt, prdcr_dir_cb, prdcr,
 				  LDMS_DIR_F_NOTIFY))
 			ldms_xprt_close(prdcr->xprt);
-		ldmsd_task_stop(&prdcr->task);
 		break;
 	case LDMS_XPRT_EVENT_RECV:
 		ldmsd_recv_msg(x, e->data, e->data_len);
@@ -614,8 +516,8 @@ reset_prdcr:
 	case LDMSD_PRDCR_STATE_CONNECTING:
 	case LDMSD_PRDCR_STATE_CONNECTED:
 		prdcr->conn_state = LDMSD_PRDCR_STATE_DISCONNECTED;
-		ldmsd_task_start(&prdcr->task, prdcr_task_cb, prdcr,
-				 0, prdcr->conn_intrvl_us, 0);
+		ev_sched_to(&to, prdcr->conn_intrvl_us / 1000000, 0);
+		ev_post(producer, producer, prdcr->connect_ev, &to);
 		break;
 	case LDMSD_PRDCR_STATE_STOPPED:
 		assert(0 == "STOPPED shouldn't have xprt event");
@@ -626,9 +528,6 @@ reset_prdcr:
 	prdcr->xprt = NULL;
 	ldmsd_prdcr_unlock(prdcr);
 }
-
-extern const char *auth_name;
-extern struct attr_value_list *auth_opt;
 
 static void prdcr_connect(ldmsd_prdcr_t prdcr)
 {
@@ -669,27 +568,6 @@ static void prdcr_connect(ldmsd_prdcr_t prdcr)
 		assert(0);
 	}
 }
-static void prdcr_task_cb(ldmsd_task_t task, void *arg)
-{
-	ldmsd_prdcr_t prdcr = arg;
-
-	ldmsd_prdcr_lock(prdcr);
-	switch (prdcr->conn_state) {
-	case LDMSD_PRDCR_STATE_STOPPED:
-	case LDMSD_PRDCR_STATE_STOPPING:
-		ldmsd_task_stop(&prdcr->task);
-		break;
-	case LDMSD_PRDCR_STATE_DISCONNECTED:
-		prdcr_connect(prdcr);
-		break;
-	case LDMSD_PRDCR_STATE_CONNECTING:
-		break;
-	case LDMSD_PRDCR_STATE_CONNECTED:
-		ldmsd_task_stop(&prdcr->task);
-		break;
-	}
-	ldmsd_prdcr_unlock(prdcr);
-}
 
 static int set_cmp(void *a, const void *b)
 {
@@ -722,6 +600,40 @@ const char *ldmsd_prdcr_type2str(enum ldmsd_prdcr_type type)
 		return NULL;
 }
 
+int prdcr_connect_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t ev)
+{
+	prdcr_connect(EV_DATA(ev, struct connect_data)->prdcr);
+	return 0;
+}
+
+/*
+ * An updater has start. Send the updtr all of the prdcr sets.
+ */
+int updtr_start_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t ev)
+{
+	ldmsd_prdcr_t prdcr;
+	ldmsd_prdcr_set_t prd_set;
+
+	ldmsd_cfg_lock(LDMSD_CFGOBJ_PRDCR);
+	for (prdcr = ldmsd_prdcr_first(); prdcr; prdcr = ldmsd_prdcr_next(prdcr)) {
+		for (prd_set = ldmsd_prdcr_set_first(prdcr);
+		     prd_set; prd_set = ldmsd_prdcr_set_next(prd_set)) {
+			EV_DATA(prd_set->state_ev, struct state_data)->start_n_stop = 1;
+			ldmsd_prdcr_set_ref_get(prd_set, "state_ev");
+			if (ev_post(producer, updater, prd_set->state_ev, NULL))
+				ldmsd_prdcr_set_ref_put(prd_set, "state_ev");
+		}
+	}
+	ldmsd_cfg_unlock(LDMSD_CFGOBJ_PRDCR);
+	return 0;
+}
+
+int updtr_stop_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t ev)
+{
+	return 0;
+}
+
+
 ldmsd_prdcr_t
 ldmsd_prdcr_new_with_auth(const char *name, const char *xprt_name,
 		const char *host_name, const unsigned short port_no,
@@ -746,7 +658,6 @@ ldmsd_prdcr_new_with_auth(const char *name, const char *xprt_name,
 	prdcr->port_no = port_no;
 	prdcr->conn_state = LDMSD_PRDCR_STATE_STOPPED;
 	rbt_init(&prdcr->set_tree, set_cmp);
-	rbt_init(&prdcr->hint_set_tree, ldmsd_updtr_schedule_cmp);
 	prdcr->host_name = strdup(host_name);
 	if (!prdcr->host_name)
 		goto out;
@@ -775,7 +686,13 @@ ldmsd_prdcr_new_with_auth(const char *name, const char *xprt_name,
 			goto out;
 	}
 
-	ldmsd_task_init(&prdcr->task);
+	prdcr->connect_ev = ev_new(prdcr_connect_type);
+	EV_DATA(prdcr->connect_ev, struct connect_data)->prdcr = prdcr;
+	prdcr->start_ev = ev_new(prdcr_start_type);
+	EV_DATA(prdcr->start_ev, struct start_data)->entity = prdcr;
+	prdcr->stop_ev = ev_new(prdcr_stop_type);
+	EV_DATA(prdcr->stop_ev, struct stop_data)->entity = prdcr;
+
 	ldmsd_cfgobj_unlock(&prdcr->obj);
 	return prdcr;
 out:
@@ -864,9 +781,9 @@ int __ldmsd_prdcr_start(ldmsd_prdcr_t prdcr, ldmsd_sec_ctxt_t ctxt)
 	prdcr->conn_state = LDMSD_PRDCR_STATE_DISCONNECTED;
 
 	prdcr->obj.perm |= LDMSD_PERM_DSTART;
-	ldmsd_task_start(&prdcr->task, prdcr_task_cb, prdcr,
-			 LDMSD_TASK_F_IMMEDIATE,
-			 prdcr->conn_intrvl_us, 0);
+
+	ev_post(producer, updater, prdcr->start_ev, NULL);
+	ev_post(producer, producer, prdcr->connect_ev, NULL);
 out:
 	ldmsd_prdcr_unlock(prdcr);
 	return rc;
@@ -905,16 +822,13 @@ int __ldmsd_prdcr_stop(ldmsd_prdcr_t prdcr, ldmsd_sec_ctxt_t ctxt)
 	}
 	if (prdcr->type == LDMSD_PRDCR_TYPE_LOCAL)
 		prdcr_reset_sets(prdcr);
-	ldmsd_task_stop(&prdcr->task);
 	prdcr->obj.perm &= ~LDMSD_PERM_DSTART;
 	prdcr->conn_state = LDMSD_PRDCR_STATE_STOPPING;
 	if (prdcr->xprt)
 		ldms_xprt_close(prdcr->xprt);
-	ldmsd_prdcr_unlock(prdcr);
-	ldmsd_task_join(&prdcr->task);
-	ldmsd_prdcr_lock(prdcr);
 	if (!prdcr->xprt)
 		prdcr->conn_state = LDMSD_PRDCR_STATE_STOPPED;
+	ev_port(producer, updater, prdcr->stop_ev, NULL);
 out:
 	ldmsd_prdcr_unlock(prdcr);
 	return rc;
@@ -1110,35 +1024,6 @@ ldmsd_prdcr_set_t ldmsd_prdcr_set_find(ldmsd_prdcr_t prdcr, const char *setname)
 	if (rbn)
 		return container_of(rbn, struct ldmsd_prdcr_set, rbn);
 	return NULL;
-}
-
-/**
- * Get the first set with the given update hint \c intrvl and \c offset.
- *
- * Caller must hold the producer lock.
- */
-ldmsd_prdcr_set_t ldmsd_prdcr_set_first_by_hint(ldmsd_prdcr_t prdcr,
-					struct ldmsd_updtr_schedule *hint)
-{
-	struct rbn *rbn;
-	ldmsd_updt_hint_set_list_t list;
-	rbn = rbt_find(&prdcr->hint_set_tree, hint);
-	if (!rbn)
-		return NULL;
-	list = container_of(rbn, struct ldmsd_updt_hint_set_list, rbn);
-	if (LIST_EMPTY(&list->list))
-		assert(0);
-	return LIST_FIRST(&list->list);
-}
-
-/**
- * Get the next set with the given update hint \c intrvl and \c offset.
- *
- * Caller must hold the producer lock.
- */
-ldmsd_prdcr_set_t ldmsd_prdcr_set_next_by_hint(ldmsd_prdcr_set_t prd_set)
-{
-	return LIST_NEXT(prd_set, updt_hint_entry);
 }
 
 /* Must be called with strgp lock held. */

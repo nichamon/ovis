@@ -106,10 +106,24 @@ static void strgp_update_fn(ldmsd_strgp_t strgp, ldmsd_prdcr_set_t prd_set)
 			    strgp->metric_arry, strgp->metric_count);
 }
 
+int store_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t ev)
+{
+	ldmsd_strgp_t strgp = EV_DATA(ev, struct store_data)->strgp;
+	ldmsd_prdcr_set_t prd_set = EV_DATA(ev, struct store_data)->prd_set;
+	strgp->update_fn(strgp, prd_set);
+	ldmsd_prdcr_set_ref_put(prd_set, "store_ev");
+	return 0;
+}
+
 ldmsd_strgp_t
 ldmsd_strgp_new_with_auth(const char *name, uid_t uid, gid_t gid, int perm)
 {
 	struct ldmsd_strgp *strgp;
+	ev_worker_t worker;
+	ev_t start_ev = 0;
+	ev_t stop_ev = 0;
+	char worker_name[PATH_MAX];
+
 
 	strgp = (struct ldmsd_strgp *)
 		ldmsd_cfgobj_new_with_auth(name, LDMSD_CFGOBJ_STRGP,
@@ -118,13 +132,56 @@ ldmsd_strgp_new_with_auth(const char *name, uid_t uid, gid_t gid, int perm)
 	if (!strgp)
 		return NULL;
 
+	start_ev = ev_new(strgp_start_type);
+	if (!start_ev) {
+		ldmsd_log(LDMSD_LERROR,
+			  "%s: error %d creating %s event\n",
+			  __func__, errno, ev_type_name(strgp_start_type));
+		goto err;
+	}
+
+	stop_ev = ev_new(strgp_stop_type);
+	if (!stop_ev) {
+		ldmsd_log(LDMSD_LERROR,
+			  "%s: error %d creating %s event\n",
+			  __func__, errno, ev_type_name(strgp_stop_type));
+		goto err;
+	}
+
+	snprintf(worker_name, PATH_MAX, "strgp:%s", name);
+	worker = ev_worker_get(worker_name);
+	if (!worker) {
+		worker = ev_worker_new(worker_name, store_actor);
+		if (!worker) {
+			ldmsd_log(LDMSD_LERROR,
+				  "%s: error %d creating new worker %s\n",
+				  __func__, errno, worker_name);
+			goto err;
+		}
+	}
+
 	strgp->state = LDMSD_STRGP_STATE_STOPPED;
 	strgp->update_fn = strgp_update_fn;
+	strgp->worker = worker;
+	strgp->start_ev = start_ev;
+	strgp->stop_ev = stop_ev;
+	EV_DATA(strgp->start_ev, struct start_data)->entity = strgp;
+	EV_DATA(strgp->stop_ev, struct start_data)->entity = strgp;
 	LIST_INIT(&strgp->prdcr_list);
 	TAILQ_INIT(&strgp->metric_list);
-	ldmsd_task_init(&strgp->task);
 	ldmsd_cfgobj_unlock(&strgp->obj);
 	return strgp;
+err:
+	errno = ENOMEM;
+	if (worker)
+		ev_worker_free(worker);
+	if (start_ev)
+		ev_put(start_ev);
+	if (stop_ev)
+		ev_put(stop_ev);
+	if (strgp)
+		ldmsd_updtr___del(&strgp->obj);
+	return NULL;
 }
 
 ldmsd_strgp_t
@@ -558,7 +615,6 @@ int __ldmsd_strgp_stop(ldmsd_strgp_t strgp, ldmsd_sec_ctxt_t ctxt)
 		rc = EBUSY;
 		goto out;
 	}
-	ldmsd_task_stop(&strgp->task);
 	strgp_close(strgp);
 	strgp->state = LDMSD_STRGP_STATE_STOPPED;
 	strgp->obj.perm &= ~LDMSD_PERM_DSTART;
@@ -629,7 +685,6 @@ void ldmsd_strgp_close()
 		if (strgp->state != LDMSD_STRGP_STATE_RUNNING) {
 			goto next;
 		}
-		ldmsd_task_stop(&strgp->task);
 		strgp_close(strgp);
 		strgp->state = LDMSD_STRGP_STATE_STOPPED;
 		ldmsd_strgp_unlock(strgp);

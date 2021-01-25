@@ -81,6 +81,11 @@ void ldmsd_updtr___del(ldmsd_cfgobj_t obj)
 		ldmsd_cfgobj_put(&prdcr_ref->prdcr->obj);
 		free(prdcr_ref);
 	}
+
+	ev_worker_free(updtr->worker);
+	ev_put(updtr->start_ev);
+	ev_put(updtr->stop_ev);
+
 	ldmsd_cfgobj___del(obj);
 }
 
@@ -110,127 +115,6 @@ static ldmsd_prdcr_ref_t updtr_prdcr_ref_next(ldmsd_prdcr_ref_t ref)
 	return container_of(rbn, struct ldmsd_prdcr_ref, rbn);
 }
 
-#ifdef LDMSD_UPDATE_TIME
-void __updt_time_get(struct ldmsd_updt_time *updt_time)
-{
-	__sync_fetch_and_add(&updt_time->ref, 1);
-}
-
-void __updt_time_put(struct ldmsd_updt_time *updt_time)
-{
-	if (0 == __sync_sub_and_fetch(&updt_time->ref, 1)) {
-		if (updt_time->update_start.tv_sec != 0) {
-			struct timeval end;
-			gettimeofday(&end, NULL);
-			updt_time->updtr->duration =
-				ldmsd_timeval_diff(&updt_time->update_start,
-						&end);
-		} else {
-			updt_time->updtr->duration = -1;
-		}
-		free(updt_time);
-	}
-}
-#endif /* LDMSD_UDPATE_TIME */
-
-/* Caller must hold the updater lock */
-static ldmsd_updtr_task_t updtr_task_find(ldmsd_updtr_t updtr,
-				struct ldmsd_updtr_schedule *sched)
-{
-	struct rbn *rbn;
-	rbn = rbt_find(&updtr->task_tree, (void *)sched);
-	if (!rbn)
-		return NULL;
-	return container_of(rbn, struct ldmsd_updtr_task, rbn);
-}
-
-static ldmsd_updtr_task_t updtr_task_first(ldmsd_updtr_t updtr)
-{
-	struct rbn *rbn;
-	rbn = rbt_min(&updtr->task_tree);
-	if (!rbn)
-		return NULL;
-	return container_of(rbn, struct ldmsd_updtr_task, rbn);
-}
-
-static ldmsd_updtr_task_t updtr_task_next(ldmsd_updtr_task_t task)
-{
-	struct rbn *rbn;
-	ldmsd_updtr_task_t next;
-	rbn = rbn_succ(&task->rbn);
-	if (!rbn)
-		return NULL;
-	next = container_of(rbn, struct ldmsd_updtr_task, rbn);
-	if ((next->hint.intrvl_us != task->hint.intrvl_us) ||
-			(next->hint.offset_us != task->hint.offset_us))
-		return NULL;
-	return next;
-}
-
-static void updtr_task_init(ldmsd_updtr_task_t task, ldmsd_updtr_t updtr,
-				int is_default, long interval, long offset)
-{
-	int offset_increment = updtr_sched_offset_skew_get();
-	if (offset != LDMSD_UPDT_HINT_OFFSET_NONE) {
-		task->task_flags = LDMSD_TASK_F_SYNCHRONOUS;
-		task->sched.offset_us = offset + offset_increment;
-	} else {
-		task->task_flags = 0;
-		task->sched.offset_us = LDMSD_UPDT_HINT_OFFSET_NONE;
-	}
-	task->hint.intrvl_us = task->sched.intrvl_us = interval;
-	task->hint.offset_us = offset;
-	task->updtr = updtr;
-	task->is_default = is_default;
-	task->set_count = 0;
-	rbn_init(&task->rbn, &task->hint);
-	ldmsd_task_init(&task->task);
-}
-
-/* Caller must hold the updater lock. */
-static ldmsd_updtr_task_t updtr_task_new(ldmsd_updtr_t updtr,
-					long hint_interval,
-					long hint_offset)
-{
-	ldmsd_updtr_task_t task = calloc(1, sizeof(*task));
-	if (!task)
-		return NULL;
-	updtr_task_init(task, updtr, 0, hint_interval, hint_offset);
-	rbt_ins(&updtr->task_tree, &task->rbn);
-	return task;
-}
-
-static void updtr_task_cb(ldmsd_task_t task, void *arg);
-static inline void updtr_update_task_start(ldmsd_updtr_task_t task)
-{
-	ldmsd_task_start(&task->task, updtr_task_cb, task,
-		task->task_flags, task->sched.intrvl_us, task->sched.offset_us);
-}
-
-static inline void updtr_task_stop(ldmsd_updtr_task_t task)
-{
-	ldmsd_task_stop(&task->task);
-}
-
-/* Caller must hold the updater lock. */
-static void updtr_task_del(ldmsd_updtr_task_t task)
-{
-	ldmsd_updtr_t updtr = task->updtr;
-	ldmsd_task_join(&task->task);
-	rbt_del(&updtr->task_tree, &task->rbn);
-	free(task);
-}
-
-static void updtr_task_set_add(ldmsd_updtr_task_t task)
-{
-	__sync_add_and_fetch(&task->set_count, 1);
-}
-
-static void updtr_task_set_reset(ldmsd_updtr_task_t task)
-{
-	task->set_count = 0;
-}
-
 static void updtr_update_cb(ldms_t t, ldms_set_t set, int status, void *arg)
 {
 	uint64_t gn;
@@ -239,11 +123,6 @@ static void updtr_update_cb(ldms_t t, ldms_set_t set, int status, void *arg)
 
 	pthread_mutex_lock(&prd_set->lock);
 	gettimeofday(&prd_set->updt_end, NULL);
-#ifdef LDMSD_UPDATE_TIME
-	prd_set->updt_duration = ldmsd_timeval_diff(&prd_set->updt_start,
-							&prd_set->updt_end);
-	__updt_time_put(prd_set->updt_time);
-#endif /* LDMSD_UPDATE_TIME */
 	errcode = LDMS_UPD_ERROR(status);
 	ldmsd_log(LDMSD_LDEBUG, "Update complete for Set %s with status %#x\n",
 					prd_set->inst_name, status);
@@ -275,10 +154,8 @@ static void updtr_update_cb(ldms_t t, ldms_set_t set, int status, void *arg)
 	ldmsd_strgp_ref_t str_ref;
 	LIST_FOREACH(str_ref, &prd_set->strgp_list, entry) {
 		ldmsd_strgp_t strgp = str_ref->strgp;
-
-		ldmsd_strgp_lock(strgp);
-		strgp->update_fn(strgp, prd_set);
-		ldmsd_strgp_unlock(strgp);
+		ldmsd_prdcr_set_ref_get(prd_set);
+		ev_port(updater, strgp->worker, str_ref->store_ev, NULL);
 	}
 set_ready:
 	if ((status & LDMS_UPD_F_MORE) == 0)
@@ -309,7 +186,6 @@ struct str_list_ent_s {
 struct ldmsd_group_traverse_ctxt {
 	ldmsd_prdcr_t prdcr;
 	ldmsd_updtr_t updtr;
-	ldmsd_updtr_task_t task;
 	LIST_HEAD(, str_list_ent_s) str_list;
 };
 
@@ -330,45 +206,77 @@ __grp_iter_cb(ldms_set_t grp, const char *name, void *arg)
 	return 0;
 }
 
+void resched_prd_set(ldmsd_updtr_t updtr, ldmsd_prdcr_set_t prd_set, struct timespec *to)
+{
+	clock_gettime(CLOCK_REALTIME, to);
+	if (updtr->is_auto_task && prd_set->updt_hint.intrvl_us) {
+		to->tv_sec += prd_set->updt_hint.intrvl_us / 1000000;
+		if (prd_set->updt_hint.offset_us != LDMSD_UPDT_HINT_OFFSET_NONE) {
+			to->tv_nsec =
+				(prd_set->updt_hint.offset_us
+				 + prd_set->updt_hint.offset_skew) * 1000;
+		} else {
+			to->tv_nsec = prd_set->updt_hint.offset_skew * 1000;
+		}
+	} else {
+		to->tv_sec += updtr->sched.intrvl_us / 1000000;
+		if (updtr->sched.offset_us != LDMSD_UPDT_HINT_OFFSET_NONE) {
+			to->tv_nsec =
+				(updtr->sched.offset_us
+				 + updtr->sched.offset_skew) * 1000;
+		} else {
+			to->tv_nsec = updtr->sched.offset_skew * 1000;
+		}
+	}
+}
+
 void __ldmsd_prdset_lookup_cb(ldms_t xprt, enum ldms_lookup_status status,
 			      int more, ldms_set_t set, void *arg);
-static int schedule_set_updates(ldmsd_prdcr_set_t prd_set, ldmsd_updtr_task_t task)
+static int schedule_set_updates(ldmsd_updtr_t updtr,
+				ldmsd_prdcr_set_t prd_set,
+				ldmsd_name_match_t match)
 {
 	int rc = 0;
 	int flags;
 	char *op_s = "skipped doing anything";
-	ldmsd_prdcr_set_t pset;
-	ldmsd_updtr_t updtr = task->updtr;
-	struct ldmsd_group_traverse_ctxt ctxt;
 	/* The reference will be put back in update_cb */
 	ldmsd_log(LDMSD_LDEBUG, "Schedule an update for set %s\n",
 					prd_set->inst_name);
+
+	/* If a match condition is not specified, everything matches */
+	if (match) {
+		if (match->selector == LDMSD_NAME_MATCH_INST_NAME)
+			rc = regexec(&match->regex, prd_set->inst_name, 0, NULL, 0);
+		else
+			rc = regexec(&match->regex, prd_set->schema_name, 0, NULL, 0);
+		if (rc)
+			return 0;
+	}
+
 	int push_flags = 0;
 	struct str_list_ent_s *ent;
-	LIST_INIT(&ctxt.str_list);
 	gettimeofday(&prd_set->updt_start, NULL);
-#ifdef LDMSD_UPDATE_TIME
-	__updt_time_get(prd_set->updt_time);
-	if (prd_set->updt_time->update_start.tv_sec == 0)
-		prd_set->updt_time->update_start = prd_set->updt_start;
-#endif
 	if (!updtr->push_flags) {
 		op_s = "Updating";
+
 		prd_set->state = LDMSD_PRDCR_SET_STATE_UPDATING;
 		ldmsd_prdcr_set_ref_get(prd_set);
 		flags = ldmsd_group_check(prd_set->set);
 		if (flags & LDMSD_GROUP_IS_GROUP) {
+			struct ldmsd_group_traverse_ctxt ctxt;
+			LIST_INIT(&ctxt.str_list);
+
 			/* This is a group */
 			ctxt.prdcr = prd_set->prdcr;
 			ctxt.updtr = updtr;
-			ctxt.task = task;
 			/* __grp_iter_cb() will populate ctxt.str_list */
 			rc = ldmsd_group_iter(prd_set->set,
 					      __grp_iter_cb, &ctxt);
 			if (rc)
 				goto out;
 			LIST_FOREACH(ent, &ctxt.str_list, entry) {
-				pset = ldmsd_prdcr_set_find(prd_set->prdcr, ent->str);
+				ldmsd_prdcr_set_t pset
+					= ldmsd_prdcr_set_find(prd_set->prdcr, ent->str);
 				if (!pset)
 					continue; /* It is OK. Try again next iteration */
 				if (pset->state == LDMSD_PRDCR_SET_STATE_START) {
@@ -388,7 +296,7 @@ static int schedule_set_updates(ldmsd_prdcr_set_t prd_set, ldmsd_updtr_task_t ta
 				}
 				if (pset->state != LDMSD_PRDCR_SET_STATE_READY)
 					continue; /* It is OK. The set might not be ready */
-				rc = schedule_set_updates(pset, task);
+				rc = schedule_set_updates(pset, pset NULL);
 				if (rc)
 					goto out;
 			}
@@ -400,6 +308,15 @@ static int schedule_set_updates(ldmsd_prdcr_set_t prd_set, ldmsd_updtr_task_t ta
 		} else {
 			rc = ldms_xprt_update(prd_set->set, updtr_update_cb, prd_set);
 		}
+
+		EV_DATA(prd_set->update_ev, struct update_data)->updtr = updtr;
+		EV_DATA(prd_set->update_ev, struct update_data)->prd_set = prd_set;
+		EV_DATA(prd_set->update_ev, struct update_data)->reschedule = 1;
+		struct timespec to;
+		resched_prd_set(updtr, prd_set, &to);
+		if (ev_post(updtr->worker, updtr->worker, prd_set->update_ev, &to))
+			ldmsd_prdcr_set_ref_put(prd_set, "update_ev");
+
 	} else if (0 == (prd_set->push_flags & LDMSD_PRDCR_SET_F_PUSH_REG)) {
 		op_s = "Registering push for";
 		if (updtr->push_flags & LDMSD_UPDTR_F_PUSH_CHANGE)
@@ -416,14 +333,7 @@ static int schedule_set_updates(ldmsd_prdcr_set_t prd_set, ldmsd_updtr_task_t ta
 		}
 	}
 out:
-	while ((ent = LIST_FIRST(&ctxt.str_list))) {
-		LIST_REMOVE(ent, entry);
-		free(ent);
-	}
 	if (rc) {
-#ifdef LDMSD_UPDATE_TIME
-		__updt_time_put(prd_set->updt_time);
-#endif
 		ldmsd_log(LDMSD_LINFO, "Synchronous error %d: %s Set %s\n",
 						rc, op_s, prd_set->inst_name);
 		if (!updtr->push_flags)
@@ -437,6 +347,8 @@ static int cancel_set_updates(ldmsd_prdcr_set_t prd_set, ldmsd_updtr_t updtr)
 	int rc;
 	ldmsd_log(LDMSD_LDEBUG, "Cancel push for set %s\n", prd_set->inst_name);
 	assert(prd_set->set);
+	if (prd_set->update_ev)
+		EV_DATA(prd_set->update_ev, struct update_data)->reschedule = 0;
 	if (!(prd_set->push_flags & LDMSD_PRDCR_SET_F_PUSH_REG))
 		return 0;
 	rc = ldms_xprt_cancel_push(prd_set->set);
@@ -449,89 +361,10 @@ static int cancel_set_updates(ldmsd_prdcr_set_t prd_set, ldmsd_updtr_t updtr)
 	return rc;
 }
 
-static int __setgrp_members_lookup(ldmsd_prdcr_set_t setgrp)
-{
-	struct ldmsd_group_traverse_ctxt ctxt;
-	struct str_list_ent_s *ent;
-	ldmsd_prdcr_set_t pset;
-	int rc;
-
-	LIST_INIT(&ctxt.str_list);
-	ctxt.prdcr = setgrp->prdcr;
-	ctxt.updtr = NULL;
-	ctxt.task = NULL;
-
-	/*
-	 * __grp_iter_cb() will populate ctxt.str_list
-	 */
-	rc = ldmsd_group_iter(setgrp->set, __grp_iter_cb, &ctxt);
-	if (rc) {
-		ldmsd_log(LDMSD_LERROR, "Error %d: Failed to get the set member "
-				"list of ssetgroup %s\n", rc, setgrp->inst_name);
-		return rc;
-	}
-	LIST_FOREACH(ent, &ctxt.str_list, entry) {
-		pset = ldmsd_prdcr_set_find(setgrp->prdcr, ent->str);
-		if (!pset) {
-			/*
-			 * LDMSD has not received the DIR_ADD of
-			 * this pset yet.
-			 *
-			 * Do lookup when schedule an update for
-			 * the set group.
-			 */
-			continue;
-		}
-		switch (pset->state) {
-			case LDMSD_PRDCR_SET_STATE_READY:
-			case LDMSD_PRDCR_SET_STATE_LOOKUP:
-				/*
-				 * This could occur if the set group stays
-				 * in the START state due to the synchronous
-				 * lookup error of a set member.
-				 */
-				continue;
-			case LDMSD_PRDCR_SET_STATE_UPDATING:
-				ldmsd_log(LDMSD_LINFO, "%s: %s in an "
-						"unexpected state (%s)\n",
-						__func__, pset->inst_name,
-						ldmsd_prdcr_set_state_str(pset->state));
-				continue;
-			case LDMSD_PRDCR_SET_STATE_START:
-				ldmsd_prdcr_set_ref_get(pset);
-				pset->state = LDMSD_PRDCR_SET_STATE_LOOKUP;
-				rc = ldms_xprt_lookup(setgrp->prdcr->xprt,
-						pset->inst_name,
-						LDMS_LOOKUP_BY_INSTANCE,
-						      __ldmsd_prdset_lookup_cb, pset);
-				if (rc) {
-					pset->state = LDMSD_PRDCR_SET_STATE_START;
-					ldmsd_log(LDMSD_LINFO,
-						"Synchronous error %d "
-						"from ldms_lookup\n", rc);
-					ldmsd_prdcr_set_ref_put(pset);
-					goto out;
-				}
-				break;
-			case LDMSD_PRDCR_SET_STATE_DELETED:
-			default:
-				continue;
-		}
-	}
-out:
-	while ((ent = LIST_FIRST(&ctxt.str_list))) {
-		LIST_REMOVE(ent, entry);
-		free(ent);
-	}
-	return rc;
-}
-
 void __ldmsd_prdset_lookup_cb(ldms_t xprt, enum ldms_lookup_status status,
 			int more, ldms_set_t set, void *arg)
 {
 	ldmsd_prdcr_set_t prd_set = arg;
-	int ready = 0;
-	int flags;
 	pthread_mutex_lock(&prd_set->lock);
 	if (status != LDMS_LOOKUP_OK) {
 		assert(NULL == set);
@@ -566,121 +399,13 @@ void __ldmsd_prdset_lookup_cb(ldms_t xprt, enum ldms_lookup_status status,
 	} else {
 		assert(0 == "multiple lookup on the same prdcr_set");
 	}
-	flags = ldmsd_group_check(prd_set->set);
-	if (flags & LDMSD_GROUP_IS_GROUP) {
-		/*
-		 * Lookup the member sets
-		 */
-		if (__setgrp_members_lookup(prd_set))
-			goto out;
-	}
 	prd_set->state = LDMSD_PRDCR_SET_STATE_READY;
 	ldmsd_log(LDMSD_LINFO, "Set %s is ready\n", prd_set->inst_name);
 	ldmsd_strgp_update(prd_set);
-	ready = 1;
 out:
 	pthread_mutex_unlock(&prd_set->lock);
-	if (ready)
-		ldmsd_prd_set_updtr_task_update(prd_set);
 	ldmsd_prdcr_set_ref_put(prd_set); /* The ref is taken before calling lookup */
 	return;
-}
-
-static void schedule_prdcr_updates(ldmsd_updtr_task_t task,
-				   ldmsd_prdcr_t prdcr, ldmsd_name_match_t match)
-{
-	ldmsd_updtr_t updtr = task->updtr;
-#ifdef LDMSD_UPDATE_TIME
-	struct timeval start, end;
-	gettimeofday(&start, NULL);
-#endif /* LDMSD_UPDATE_TIME */
-	ldmsd_prdcr_lock(prdcr);
-	if (prdcr->conn_state != LDMSD_PRDCR_STATE_CONNECTED || prdcr->xprt->disconnected)
-		goto out;
-
-	ldmsd_prdcr_set_t prd_set;
-	if (updtr->is_auto_task)
-		prd_set = ldmsd_prdcr_set_first_by_hint(prdcr, &task->hint);
-	else
-		prd_set = ldmsd_prdcr_set_first(prdcr);
-
-	while (prd_set) {
-		int rc;
-		const char *str;
-
-		if (match) {
-			if (match->selector == LDMSD_NAME_MATCH_INST_NAME)
-				str = prd_set->inst_name;
-			else
-				str = prd_set->schema_name;
-			rc = regexec(&match->regex, str, 0, NULL, 0);
-			if (rc)
-				goto next_prd_set;
-		}
-
-		ldmsd_log(LDMSD_LDEBUG, "updtr_task sched '%ld': set '%s'\n",
-				task->sched.intrvl_us, prd_set->inst_name);
-		updtr_task_set_add(task);
-
-		switch (prd_set->state) {
-		case LDMSD_PRDCR_SET_STATE_READY:
-			break;
-		case LDMSD_PRDCR_SET_STATE_START:
-			ldmsd_prdcr_set_ref_get(prd_set); /* It will be put back in lookup_cb */
-			/* Lookup the set */
-			prd_set->state = LDMSD_PRDCR_SET_STATE_LOOKUP;
-			assert(prd_set->set == NULL);
-			rc = ldms_xprt_lookup(prdcr->xprt, prd_set->inst_name,
-					      LDMS_LOOKUP_BY_INSTANCE,
-					      __ldmsd_prdset_lookup_cb, prd_set);
-			if (rc) {
-				/* If the error is EEXIST, the set is already in the set tree. */
-				if (rc == EEXIST) {
-					ldmsd_log(LDMSD_LERROR, "Prdcr '%s': "
-						"lookup failed synchronously. "
-						"The set '%s' already exists. "
-						"It is likely that there are more "
-						"than one producers pointing to "
-						"the set.\n",
-						prd_set->prdcr->obj.name,
-						prd_set->inst_name);
-				} else {
-					ldmsd_log(LDMSD_LINFO, "Synchronous error "
-							"%d from ldms_lookup\n", rc);
-				}
-				prd_set->state = LDMSD_PRDCR_SET_STATE_START;
-				ldmsd_prdcr_set_ref_put(prd_set);
-			}
-			goto next_prd_set;
-		case LDMSD_PRDCR_SET_STATE_LOOKUP:
-			ldmsd_log(LDMSD_LINFO, "%s: Set %s: "
-				"there is an outstanding lookup.\n",
-				__func__, prd_set->inst_name);
-			goto next_prd_set;
-		case LDMSD_PRDCR_SET_STATE_UPDATING:
-			ldmsd_log(LDMSD_LINFO, "%s: Set %s: "
-				"there is an outstanding update.\n",
-				__func__, prd_set->inst_name);
-		case LDMSD_PRDCR_SET_STATE_DELETED:
-		default:
-			goto next_prd_set;
-		}
-
-		schedule_set_updates(prd_set, task);
-
-next_prd_set:
-		if (updtr->is_auto_task)
-			prd_set = ldmsd_prdcr_set_next_by_hint(prd_set);
-		else
-			prd_set = ldmsd_prdcr_set_next(prd_set);
-	}
-out:
-	ldmsd_prdcr_unlock(prdcr);
-
-#ifdef LDMSD_UPDATE_TIME
-	gettimeofday(&end, NULL);
-	prdcr->sched_update_time = ldmsd_timeval_diff(&start, &end);
-#endif /* LDMSD_UPDATE_tIME */
 }
 
 static void cancel_prdcr_updates(ldmsd_updtr_t updtr,
@@ -715,49 +440,6 @@ out:
 	ldmsd_prdcr_unlock(prdcr);
 }
 
-static void schedule_updates(ldmsd_updtr_task_t task)
-{
-	ldmsd_updtr_t updtr = task->updtr;
-	ldmsd_name_match_t match;
-
-#ifdef LDMSD_UPDATE_TIME
-	ldmsd_log(LDMSD_LDEBUG, "Updater %s: schedule an update\n",
-						updtr->obj.name);
-	struct timeval start;
-	struct ldmsd_updt_time *updt_time = calloc(1, sizeof(*updt_time));
-	__updt_time_get(updt_time);
-	updt_time->updtr = updtr;
-	updtr->curr_updt_time = updt_time;
-	updtr->duration = -1;
-	updtr->sched_duration = -1;
-	gettimeofday(&start, NULL);
-	updt_time->sched_start = start;
-#endif /* LDMSD_UPDATE_TIME */
-	updtr_task_set_reset(task);
-	if (!LIST_EMPTY(&updtr->match_list)) {
-		LIST_FOREACH(match, &updtr->match_list, entry) {
-			ldmsd_prdcr_ref_t ref;
-			for (ref = updtr_prdcr_ref_first(updtr); ref;
-					ref = updtr_prdcr_ref_next(ref))
-				schedule_prdcr_updates(task, ref->prdcr, match);
-		}
-	} else {
-		ldmsd_prdcr_ref_t ref;
-		for (ref = updtr_prdcr_ref_first(updtr); ref;
-				ref = updtr_prdcr_ref_next(ref))
-			schedule_prdcr_updates(task, ref->prdcr, NULL);
-	}
-#ifdef LDMSD_UPDATE_TIME
-	struct timeval end;
-	gettimeofday(&end, NULL);
-	updtr->sched_duration = ldmsd_timeval_diff(&start, &end);
-	updtr->curr_updt_time = NULL;
-	__updt_time_put(updt_time);
-#endif /* LDMSD_UPDATE_TIME */
-	if ((!task->is_default) && (0 == task->set_count))
-		updtr_task_stop(task);
-}
-
 static void cancel_push(ldmsd_updtr_t updtr)
 {
 	ldmsd_name_match_t match;
@@ -777,157 +459,164 @@ static void cancel_push(ldmsd_updtr_t updtr)
 	}
 }
 
-static void updtr_task_cb(ldmsd_task_t task, void *arg)
+static void __group_update(ldmsd_prdcr_set_t prd_set, ldmsd_updtr_t updtr)
 {
-	ldmsd_updtr_task_t utask = arg;
-	ldmsd_updtr_t updtr = utask->updtr;
-	ldmsd_updtr_lock(updtr);
-	switch (updtr->state) {
-	case LDMSD_UPDTR_STATE_STOPPING:
-	case LDMSD_UPDTR_STATE_STOPPED:
-		break;
-	case LDMSD_UPDTR_STATE_RUNNING:
-		schedule_updates(utask);
-		break;
+	int flags, rc;
+	flags = ldmsd_group_check(prd_set->set);
+	if (flags & LDMSD_GROUP_IS_GROUP) {
+		struct ldmsd_group_traverse_ctxt ctxt;
+		LIST_INIT(&ctxt.str_list);
+
+		/* This is a group */
+		ctxt.prdcr = prd_set->prdcr;
+		ctxt.updtr = updtr;
+		/* __grp_iter_cb() will populate ctxt.str_list */
+		rc = ldmsd_group_iter(prd_set->set,
+				      __grp_iter_cb, &ctxt);
+		if (rc)
+			goto out;
+
+		struct str_list_ent_s *ent;
+		LIST_FOREACH(ent, &ctxt.str_list, entry) {
+			ldmsd_prdcr_set_t pset =
+				ldmsd_prdcr_set_find(prd_set->prdcr, ent->str);
+			if (!pset)
+				continue; /* It is OK. Try again next iteration */
+			rc = schedule_set_updates(updtr, pset, NULL);
+			if (rc)
+				break;
+		}
+		while ((ent = LIST_FIRST(&ctxt.str_list))) {
+			LIST_REMOVE(ent, entry);
+			free(ent);
+		}
 	}
-	ldmsd_updtr_unlock(updtr);
-}
-
-/* Delete all unused tasks */
-static void __updtr_task_tree_cleanup(ldmsd_updtr_t updtr)
-{
-	ldmsd_updtr_task_t task;
-	struct ldmsd_updtr_task_list unused_task_list;
-
-	LIST_INIT(&unused_task_list);
-	for (task = updtr_task_first(updtr); task; task = updtr_task_next(task)) {
-		if (task->is_default)
-			continue;
-		if (task->task.flags & LDMSD_TASK_F_STOP)
-			LIST_INSERT_HEAD(&unused_task_list, task, entry);
-	}
-	LIST_FOREACH(task, &unused_task_list, entry) {
-		ldmsd_task_join(&task->task);
-		LIST_REMOVE(task, entry);
-		updtr_task_del(task);
-	}
-}
-
-static void updtr_tree_task_cb(ldmsd_task_t task, void *arg)
-{
-	ldmsd_updtr_task_t utask = arg;
-	ldmsd_updtr_t updtr = utask->updtr;
-	ldmsd_updtr_lock(updtr);
-	switch (updtr->state) {
-	case LDMSD_UPDTR_STATE_STOPPING:
-	case LDMSD_UPDTR_STATE_STOPPED:
-		break;
-	case LDMSD_UPDTR_STATE_RUNNING:
-		__updtr_task_tree_cleanup(updtr);
-		break;
-	}
-	ldmsd_updtr_unlock(updtr);
-}
-
-void __prdcr_set_update_sched(ldmsd_prdcr_set_t prd_set,
-				  ldmsd_updtr_task_t updt_task)
-{
-	prd_set->updt_interval = updt_task->sched.intrvl_us;
-	prd_set->updt_offset = updt_task->sched.offset_us;
-	prd_set->updt_sync = (updt_task->task_flags & LDMSD_TASK_F_SYNCHRONOUS)?1:0;
-}
-
-/**
- * Update the task tree of \c updater
- *
- * Caller must hold the updater lock and the prd_set lock.
- *
- * The updater MUST in RUNNING state.
- */
-int ldmsd_updtr_tasks_update(ldmsd_updtr_t updtr, ldmsd_prdcr_set_t prd_set)
-{
-	ldmsd_updtr_task_t task;
-	int rc = 0;
-
-	if (!updtr->is_auto_task) {
-		/*
-		 * Ignore the update hint and use the default schedule.
-		 */
-		task = &updtr->default_task;
-		goto out;
-	} else if (prd_set->updt_hint.intrvl_us == 0) {
-		task = &updtr->default_task;
-		goto out;
-	} else if ((updtr->default_task.hint.intrvl_us == prd_set->updt_hint.intrvl_us) &&
-		(updtr->default_task.hint.offset_us == prd_set->updt_hint.offset_us)) {
-		/* The default task will update the producer set. */
-		task = &updtr->default_task;
-		goto out;
-	}
-
-	task = updtr_task_find(updtr, &prd_set->updt_hint);
-	if (task)
-		goto start_task;
-
-	task = updtr_task_new(updtr, prd_set->updt_hint.intrvl_us,
-					prd_set->updt_hint.offset_us);
-	if (!task)
-		return ENOMEM;
-start_task:
-	updtr_update_task_start(task);
 out:
-	__prdcr_set_update_sched(prd_set, task);
-	if (prd_set->set)
-		rc = ldmsd_set_update_hint_set(prd_set->set, task->sched.intrvl_us,
-					       task->sched.offset_us);
-	return rc;
+	/* no-op */;
 }
 
-/* Caller must hold the updtr lock. */
-static int updtr_tasks_create(ldmsd_updtr_t updtr)
+static void __update_prdcr_set(ldmsd_updtr_t updtr, ldmsd_prdcr_set_t prd_set)
 {
-	ldmsd_prdcr_ref_t prd_ref;
-	ldmsd_prdcr_t prdcr;
-	ldmsd_name_match_t match;
-	ldmsd_prdcr_set_t prd_set;
-	char *str;
+	struct timespec to;
 	int rc;
 
-	ldmsd_log(LDMSD_LDEBUG, "updtr '%s' getting auto-schedule\n", updtr->obj.name);
-
-	for (prd_ref = updtr_prdcr_ref_first(updtr); prd_ref;
-			prd_ref = updtr_prdcr_ref_next(prd_ref)) {
-		prdcr = prd_ref->prdcr;
-		ldmsd_prdcr_lock(prdcr);
-		for (prd_set = ldmsd_prdcr_set_first(prdcr); prd_set;
-		     prd_set = ldmsd_prdcr_set_next(prd_set)) {
-			pthread_mutex_lock(&prd_set->lock);
-			if (!LIST_EMPTY(&updtr->match_list)) {
-				LIST_FOREACH(match, &updtr->match_list, entry) {
-					if (match->selector == LDMSD_NAME_MATCH_INST_NAME)
-						str = prd_set->inst_name;
-					else
-						str = prd_set->schema_name;
-					rc = regexec(&match->regex, str, 0, NULL, 0);
-					if (!rc)
-						goto update_tasks;
-				}
-				goto nxt_prd_set;
-			}
-		update_tasks:
-			rc = ldmsd_updtr_tasks_update(updtr, prd_set);
-			if (rc)
-				goto err;
-		nxt_prd_set:
-			pthread_mutex_unlock(&prd_set->lock);
+	switch (prd_set->state) {
+	case LDMSD_PRDCR_SET_STATE_READY:
+		if (ldmsd_group_check(prd_set->set) & LDMSD_GROUP_IS_GROUP) {
+			__group_update(prd_set, updtr);
+			/* Do not reschedule the update of the group
+			 * as its members are being rescheduled independently.
+			 * The new prd_set member */
+			goto out;
 		}
-		ldmsd_prdcr_unlock(prdcr);
+		prd_set->state = LDMSD_PRDCR_SET_STATE_UPDATING;
+		ldmsd_prdcr_set_ref_get(prd_set, "xprt_update");
+		rc = ldms_xprt_update(prd_set->set, updtr_update_cb, prd_set);
+		if (rc) {
+			ldmsd_prdcr_set_ref_put(prd_set, "xprt_update");
+			ldmsd_log(LDMSD_LINFO,
+				  "%s: ldms_xprt_update returned %d for %s\n",
+				  __func__, rc, prd_set->inst_name);
+			prd_set->state = LDMSD_PRDCR_SET_STATE_READY;
+			goto out;
+		}
+		break;
+	case LDMSD_PRDCR_SET_STATE_START:
+		ldmsd_prdcr_set_ref_get(prd_set); /* It will be put back in lookup_cb */
+		/* Lookup the set */
+		prd_set->state = LDMSD_PRDCR_SET_STATE_LOOKUP;
+		assert(prd_set->set == NULL);
+		rc = ldms_xprt_lookup(prd_set->prdcr->xprt, prd_set->inst_name,
+				      LDMS_LOOKUP_BY_INSTANCE,
+				      __ldmsd_prdset_lookup_cb, prd_set);
+		if (rc) {
+			/* If the error is EEXIST, the set is already in the set tree. */
+			if (rc == EEXIST) {
+				ldmsd_log(LDMSD_LERROR, "Prdcr '%s': "
+					"lookup failed synchronously. "
+					"The set '%s' already exists. "
+					"It is likely that there are more "
+					"than one producers pointing to "
+					"the set.\n",
+					prd_set->prdcr->obj.name,
+					prd_set->inst_name);
+			} else {
+				ldmsd_log(LDMSD_LINFO, "Synchronous error "
+						"%d from ldms_lookup\n", rc);
+			}
+			prd_set->state = LDMSD_PRDCR_SET_STATE_START;
+			ldmsd_prdcr_set_ref_put(prd_set);
+		}
+		break;
+	case LDMSD_PRDCR_SET_STATE_LOOKUP:
+		ldmsd_log(LDMSD_LINFO, "%s: Set %s: "
+			"there is an outstanding lookup.\n",
+			__func__, prd_set->inst_name);
+		break;
+	case LDMSD_PRDCR_SET_STATE_UPDATING:
+		ldmsd_log(LDMSD_LINFO, "%s: Set %s: "
+			"there is an outstanding update.\n",
+			__func__, prd_set->inst_name);
+		break;
+	case LDMSD_PRDCR_SET_STATE_DELETED:
+		goto out;
+	default:
+		break;
 	}
-	return 0;
-err:
+
+	/* prd_set update reschedule */
+	resched_prd_set(updtr, prd_set, &to);
+	ldmsd_prdcr_set_ref_get(prd_set, "update_ev"); /* Dropped when event is processed */
+	if (ev_post(updtr->worker, updtr->worker, prd_set->update_ev, &to))
+		ldmsd_prdcr_set_ref_put(prd_set, "update_ev");
+ out:
 	pthread_mutex_unlock(&prd_set->lock);
-	ldmsd_prdcr_unlock(prdcr);
-	return rc;
+}
+
+int prdcr_set_state_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t ev)
+{
+	ldmsd_name_match_t match;
+	ldmsd_updtr_t updtr;
+	ldmsd_prdcr_set_t prd_set = EV_DATA(ev, struct state_data)->prd_set;
+	int state = EV_DATA(ev, struct state_data)->start_n_stop;
+	EV_DATA(prd_set->update_ev, struct update_data)->reschedule = state;
+
+	if (!state)
+		goto out;
+
+	ldmsd_cfg_lock(LDMSD_CFGOBJ_UPDTR);
+	for (updtr = ldmsd_updtr_first(); updtr; updtr = ldmsd_updtr_next(updtr)) {
+		if (!LIST_EMPTY(updtr->match_list)) {
+			LIST_FOREACH(match, updtr->match_list, entry) {
+				schedule_set_updates(updtr, prd_set, match);
+			}
+		} else {
+			schedule_set_updates(updtr, prd_set, NULL);
+		}
+	}
+	ldmsd_cfg_unlock(LDMSD_CFGOBJ_UPDTR);
+ out:
+	ldmsd_prdcr_set_ref_put(prd_set, "state_ev");
+	return 0;
+}
+
+int prdcr_set_update_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t ev)
+{
+	ldmsd_updtr_t updtr = EV_DATA(ev, struct update_data)->updtr;
+	ldmsd_prdcr_set_t prd_set = EV_DATA(ev, struct update_data)->prd_set;
+
+	ldmsd_updtr_lock(updtr);
+	switch (updtr->state) {
+	case LDMSD_UPDTR_STATE_STOPPED:
+	case LDMSD_UPDTR_STATE_STOPPING:
+		break;
+	case LDMSD_UPDTR_STATE_RUNNING:
+		__update_prdcr_set(updtr, prd_set);
+		break;
+	}
+	ldmsd_updtr_unlock(updtr);
+	ldmsd_prdcr_set_ref_put(prd_set, "update_ev");
+	return 0;
 }
 
 int prdcr_ref_cmp(void *a, const void *b)
@@ -942,19 +631,14 @@ ldmsd_updtr_new_with_auth(const char *name, char *interval_str, char *offset_str
 					int push_flags, int is_auto_task,
 					uid_t uid, gid_t gid, int perm)
 {
-	struct ldmsd_updtr *updtr;
+	struct ldmsd_updtr *updtr = NULL;
+	ev_worker_t worker = NULL;
+	char worker_name[PATH_MAX];
 	char *endptr;
 	long interval_us = UPDTR_TREE_MGMT_TASK_INTRVL, offset_us = LDMSD_UPDT_HINT_OFFSET_NONE;
-	updtr = (struct ldmsd_updtr *)
-		ldmsd_cfgobj_new_with_auth(name, LDMSD_CFGOBJ_UPDTR,
-				 sizeof *updtr, ldmsd_updtr___del,
-				 uid, gid, perm);
-	if (!updtr)
-		return NULL;
+	ev_t start_ev, stop_ev;
+	start_ev = stop_ev = NULL;
 
-	updtr->state = LDMSD_UPDTR_STATE_STOPPED;
-	updtr->default_task.is_default = 1;
-	updtr->is_auto_task = is_auto_task;
 	if (interval_str) {
 		interval_us = strtol(interval_str, &endptr, 0);
 		if (('\0' == interval_str[0]) || ('\0' != endptr[0]))
@@ -972,20 +656,65 @@ ldmsd_updtr_new_with_auth(const char *name, char *interval_str, char *offset_str
 		} else {
 			offset_us = LDMSD_UPDT_HINT_OFFSET_NONE;
 		}
-	} else {
-		if (push_flags)
-			updtr->default_task.task_flags = LDMSD_TASK_F_IMMEDIATE;
 	}
-	/* Initialize the default task */
-	updtr_task_init(&updtr->default_task, updtr, 1, interval_us, offset_us);
-	updtr_task_init(&updtr->tree_mgmt_task, updtr, 1, UPDTR_TREE_MGMT_TASK_INTRVL,
-							LDMSD_UPDT_HINT_OFFSET_NONE);
+
+	updtr = (struct ldmsd_updtr *)ldmsd_cfgobj_new_with_auth(name,
+					LDMSD_CFGOBJ_UPDTR,
+					sizeof *updtr,
+					ldmsd_updtr___del,
+					uid, gid, perm);
+	if (!updtr)
+		return NULL;
+
+	start_ev = ev_new(updtr_start_type);
+	if (!start_ev) {
+		ldmsd_log(LDMSD_LERROR,
+			  "%s: error %d creating %s event\n",
+			  __func__, errno, ev_type_name(updtr_start_type));
+		goto err;
+	}
+
+	stop_ev = ev_new(updtr_stop_type);
+	if (!stop_ev) {
+		ldmsd_log(LDMSD_LERROR,
+			  "%s: error %d creating %s event\n",
+			  __func__, errno, ev_type_name(updtr_stop_type));
+		goto err;
+	}
+
+	snprintf(worker_name, PATH_MAX, "updtr:%s", name);
+	worker = ev_worker_new(worker_name, prdcr_set_update_actor);
+	if (!worker) {
+		ldmsd_log(LDMSD_LERROR,
+				"%s: error %d creating new worker %s\n",
+				__func__, errno, worker_name);
+		goto err;
+	}
+
+	updtr->state = LDMSD_UPDTR_STATE_STOPPED;
+	updtr->is_auto_task = is_auto_task;
+	updtr->push_flags = push_flags;
+	updtr->worker = worker;
+	updtr->start_ev = start_ev;
+	updtr->stop_ev = stop_ev;
+	EV_DATA(updtr->start_ev, struct start_data)->entity = updtr;
+	EV_DATA(updtr->stop_ev, struct start_data)->entity = updtr;
+
 	rbt_init(&updtr->prdcr_tree, prdcr_ref_cmp);
 	LIST_INIT(&updtr->match_list);
-	rbt_init(&updtr->task_tree, ldmsd_updtr_schedule_cmp);
-	updtr->push_flags = push_flags;
 	ldmsd_cfgobj_unlock(&updtr->obj);
 	return updtr;
+err:
+	errno = ENOMEM;
+	if (worker)
+		ev_worker_free(worker);
+	if (start_ev)
+		ev_put(start_ev);
+	if (stop_ev)
+		ev_put(stop_ev);
+	if (updtr)
+		ldmsd_updtr___del(&updtr->obj);
+	return NULL;
 einval:
 	ldmsd_cfgobj_unlock(&updtr->obj);
 	ldmsd_updtr_put(updtr);
@@ -1058,25 +787,11 @@ int __ldmsd_updtr_start(ldmsd_updtr_t updtr, ldmsd_sec_ctxt_t ctxt)
 	updtr->state = LDMSD_UPDTR_STATE_RUNNING;
 	updtr->obj.perm |= LDMSD_PERM_DSTART;
 
-	updtr_update_task_start(&updtr->default_task);
-
-	if (updtr->is_auto_task) {
-		ldmsd_task_start(&updtr->tree_mgmt_task.task, updtr_tree_task_cb,
-				&updtr->tree_mgmt_task,
-				updtr->tree_mgmt_task.task_flags,
-				updtr->tree_mgmt_task.sched.intrvl_us,
-				updtr->tree_mgmt_task.sched.offset_us);
-	}
-
-	if ((0 == updtr->push_flags) || (updtr->is_auto_task)) {
-		/* Task tree isn't needed for updaters that are for 'push' */
-		/*
-		 * Create the task tree that contains
-		 * the tasks that handle the producer sets
-		 * that have different hint different from the default task.
-		 */
-		updtr_tasks_create(updtr);
-	}
+	/*
+	 * Tell the producer an updater is starting. It will tell the updater
+	 * the sets that can be updated.
+	 */
+	ev_post(updater, producer, updtr->start_ev, NULL);
 
 out:
 	ldmsd_updtr_unlock(updtr);
@@ -1109,8 +824,8 @@ int ldmsd_updtr_start(const char *updtr_name, const char *interval_str,
 		else
 			updtr->is_auto_task = 1;
 	}
-	interval_us = updtr->default_task.sched.intrvl_us;
-	offset_us = updtr->default_task.hint.offset_us;
+	interval_us = updtr->sched.intrvl_us;
+	offset_us = updtr->sched.offset_us;
 	if (interval_str) {
 		/* A new interval is given. */
 		interval_us = strtol(interval_str, NULL, 0);
@@ -1126,7 +841,10 @@ int ldmsd_updtr_start(const char *updtr_name, const char *interval_str,
 					- updtr_sched_offset_skew_get();
 
 	/* Initialize the default task */
-	updtr_task_init(&updtr->default_task, updtr, 1, interval_us, offset_us);
+	updtr->sched.intrvl_us = interval_us;
+	updtr->sched.offset_us = offset_us;
+	updtr->sched.offset_skew = updtr_sched_offset_skew_get();
+
 	ldmsd_updtr_unlock(updtr);
 	rc = __ldmsd_updtr_start(updtr, ctxt);
 	ldmsd_updtr_put(updtr);
@@ -1141,21 +859,7 @@ err:
 /* Caller must hold the updater lock. */
 static void __updtr_tasks_stop(ldmsd_updtr_t updtr)
 {
-	ldmsd_updtr_task_t task;
-
-	/* Stop the default task */
-	ldmsd_task_stop(&updtr->default_task.task);
-	ldmsd_task_join(&updtr->default_task.task);
-
-	/* Stop the task tree management task */
-	ldmsd_task_stop(&updtr->tree_mgmt_task.task);
-	ldmsd_task_join(&updtr->tree_mgmt_task.task);
-
-	while (!rbt_empty(&updtr->task_tree)) {
-		task = updtr_task_first(updtr);
-		ldmsd_task_stop(&task->task);
-		updtr_task_del(task);
-	}
+	ev_flush(updtr->worker);
 }
 
 int __ldmsd_updtr_stop(ldmsd_updtr_t updtr, ldmsd_sec_ctxt_t ctxt)
@@ -1186,7 +890,9 @@ int __ldmsd_updtr_stop(ldmsd_updtr_t updtr, ldmsd_sec_ctxt_t ctxt)
 	ldmsd_updtr_lock(updtr);
 	/* tasks stopped */
 	updtr->state = LDMSD_UPDTR_STATE_STOPPED;
-	/* let-through */
+
+	ev_post(updater, producer, updtr->stop_ev, NULL);
+
 out_1:
 	ldmsd_updtr_unlock(updtr);
 	return rc;
@@ -1543,9 +1249,4 @@ int ldmsd_updtr_schedule_cmp(void *a, const void *b)
 		return 1;
 
 	return ka->offset_us - kb->offset_us;
-}
-
-ldmsd_updtr_task_t updtr_task_get(struct rbn *rbn)
-{
-	return container_of(rbn, struct ldmsd_updtr_task, rbn);
 }

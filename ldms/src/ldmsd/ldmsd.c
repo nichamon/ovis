@@ -1584,6 +1584,54 @@ static int __create_default_auth()
 	return rc;
 }
 
+
+int default_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t ev)
+{
+	ldmsd_log(LDMSD_LINFO, "Unhandled Event: type=%s, id=%d\n",
+		  ev_type_name(ev_type(ev)), ev_type_id(ev_type(ev)));
+	ldmsd_log(LDMSD_LINFO, "    status  : %s\n", status ? "FLUSH" : "OK" );
+	ldmsd_log(LDMSD_LINFO, "    src     : %s\n", ev_worker_name(src));
+	ldmsd_log(LDMSD_LINFO, "    dst     : %s\n", ev_worker_name(dst));
+	return 0;
+}
+
+void ldmsd_ev_init(void)
+{
+	smplr_sample_type = ev_type_new("smplr:sample", sizeof(struct sample_data));
+	prdcr_connect_type = ev_type_new("prdcr:connect", sizeof(struct connect_data));
+	prdcr_set_update_type = ev_type_new("prdcr_set:update", sizeof(struct update_data));
+	prdcr_set_store_type = ev_type_new("prdcr_set:store", sizeof(struct store_data));
+	prdcr_set_state_type = ev_type_new("prdcr_set:state", sizeof(struct state_data));
+	updtr_start_type = ev_type_new("updtr:start", sizeof(struct start_data));
+	prdcr_start_type = ev_type_new("prdcr:start", sizeof(struct start_data));
+	strgp_start_type = ev_type_new("strgp:start", sizeof(struct start_data));
+	smplr_start_type = ev_type_new("smplr:start", sizeof(struct start_data));
+	updtr_stop_type = ev_type_new("updtr:stop", sizeof(struct stop_data));
+	prdcr_stop_type = ev_type_new("prdcr:stop", sizeof(struct stop_data));
+	strgp_stop_type = ev_type_new("strgp:stop", sizeof(struct stop_data));
+	smplr_stop_type = ev_type_new("smplr:stop", sizeof(struct stop_data));
+	cfgobj_enabled_type = ev_type_new("cfg:enabled", sizeof(struct start_data));
+	cfgobj_disabled_type = ev_type_new("cfg:disabled", sizeof(struct stop_data));
+
+	producer = ev_worker_new("producer", default_actor);
+	updater = ev_worker_new("updater", default_actor);
+	sampler = ev_worker_new("sampler", default_actor);
+	storage = ev_worker_new("storage", default_actor);
+	cfg = ev_worker_new("cfg", default_actor);
+
+	ev_dispatch(sampler, smplr_sample_type, sample_actor);
+	ev_dispatch(updater, prdcr_set_update_type, prdcr_set_update_actor);
+	ev_dispatch(updater, prdcr_set_state_type, prdcr_set_state_actor);
+	ev_dispatch(updater, prdcr_start_type, prdcr_start_actor);
+	ev_dispatch(updater, prdcr_stop_type, prdcr_stop_actor);
+	ev_dispatch(producer, prdcr_connect_type, prdcr_connect_actor);
+	ev_dispatch(producer, updtr_start_type, updtr_start_actor);
+	ev_dispatch(producer, updtr_stop_type, updtr_stop_actor);
+	ev_dispatch(cfg, cfgobj_enabled_type, cfgobj_enabled_actor);
+	ev_dispatch(cfg, cfgobj_disabled_type, cfgobj_disabled_actor);
+
+}
+
 int main(int argc, char *argv[])
 {
 #ifdef DEBUG
@@ -1838,6 +1886,8 @@ int main(int argc, char *argv[])
 		}
 	}
 
+	ldmsd_ev_init();
+
 	/* Initialize LDMS */
 	umask(0);
 	if (!max_mem_sz_str) {
@@ -1971,6 +2021,7 @@ int main(int argc, char *argv[])
 					"thread.\n", ret);
 			cleanup(7, "event thread create fail");
 		}
+		ldmsd_setname_np(ev_thread[op], "ldmsd:scheduler");
 	}
 
 	/* Create the test sets */
