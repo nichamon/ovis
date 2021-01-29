@@ -158,6 +158,23 @@ void ev_flush(ev_worker_t w)
 	sem_post(&w->w_sem);
 }
 
+void ev_worker_free(ev_worker_t w)
+{
+	pthread_cancel(w->w_thread);
+	pthread_join(w->w_thread, NULL);
+
+	pthread_mutex_lock(&worker_lock);
+	rbt_del(&worker_tree, &w->w_rbn);
+	pthread_mutex_unlock(&worker_lock);
+
+	pthread_mutex_destroy(&w->w_lock);
+
+	sem_destroy(&w->w_sem);
+
+	free(w->w_name);
+	free(w);
+}
+
 ev_worker_t ev_worker_new(const char *name, ev_actor_t actor_fn)
 {
 	int err = ENOMEM;

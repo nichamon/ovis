@@ -68,6 +68,16 @@ void ev_put(ev_t ev);
  */
 ev_worker_t ev_worker_new(const char *name, ev_actor_t actor_fn);
 
+/*
+ * \brief Free a worker
+ *
+ * The application must flush the worker (by calling \c ev_flush)
+ * before freeing the worker.
+ *
+ * \param w    a worker
+ */
+void ev_worker_free(ev_worker_t w);
+
 /**
  * \brief Return the worker's name
  *
