@@ -419,6 +419,7 @@ extern void ldmsd_strgp_close();
 
 void cleanup(int x, const char *reason)
 {
+	return; /* DEBUG */
 	int llevel = LDMSD_LINFO;
 	if (x)
 		llevel = LDMSD_LCRITICAL;
@@ -2119,6 +2120,7 @@ int main(int argc, char *argv[])
 			break;
 		}
 	}
+
 	is_ldmsd_initialized = 1;
 	/* Start listening on ports */
 	ldmsd_listen_t listen;
