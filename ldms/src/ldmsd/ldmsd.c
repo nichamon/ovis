@@ -75,10 +75,12 @@
 #include <time.h>
 #include <coll/rbt.h>
 #include <coll/str_map.h>
+#include "ovis_ev/ev.h"
 #include "ldms.h"
 #include "ldmsd.h"
 #include "ldms_xprt.h"
 #include "ldmsd_request.h"
+#include "ldmsd_event.h"
 #include "config.h"
 #include "kldms_req.h"
 
@@ -113,7 +115,6 @@ char *logfile;
 char *pidfile;
 char *bannerfile;
 int banner = 1;
-pthread_mutex_t log_lock = PTHREAD_MUTEX_INITIALIZER;
 size_t max_mem_size;
 char *max_mem_sz_str;
 
@@ -221,24 +222,62 @@ int ldmsd_loglevel_to_syslog(enum ldmsd_loglevel level)
 /* Impossible file pointer as syslog-use sentinel */
 #define LDMSD_LOG_SYSLOG ((FILE*)0x7)
 
-void __ldmsd_log(enum ldmsd_loglevel level, const char *fmt, va_list ap)
+int __logrotate()
+{
+	int rc;
+	if (!logfile) {
+		ldmsd_log(LDMSD_LERROR, "Received a logrotate command but "
+			"the log messages are printed to the standard out.\n");
+		return EINVAL;
+	}
+	if (log_fp == LDMSD_LOG_SYSLOG) {
+		/* nothing to do */
+		return 0;
+	}
+	struct timeval tv;
+	char ofile_name[PATH_MAX];
+	gettimeofday(&tv, NULL);
+	sprintf(ofile_name, "%s-%ld", logfile, tv.tv_sec);
+
+	fflush(log_fp);
+	fclose(log_fp);
+	rename(logfile, ofile_name);
+	log_fp = fopen_perm(logfile, "a", LDMSD_DEFAULT_FILE_PERM);
+	if (!log_fp) {
+		printf("%-10s: Failed to rotate the log file. Cannot open a new "
+			"log file\n", "ERROR");
+		fflush(stdout);
+		rc = errno;
+		goto err;
+	}
+	int fd = fileno(log_fp);
+	if (dup2(fd, 1) < 0) {
+		rc = errno;
+		goto err;
+	}
+	if (dup2(fd, 2) < 0) {
+		rc = errno;
+		goto err;
+	}
+	stdout = stderr = log_fp;
+	return 0;
+err:
+	return rc;
+}
+
+int __log(enum ldmsd_loglevel level, char *msg)
 {
 	if ((level != LDMSD_LALL) &&
 			(quiet || ((0 <= level) && (level < log_level_thr))))
-		return;
+		return 0;
 	if (log_fp == LDMSD_LOG_SYSLOG) {
-		vsyslog(ldmsd_loglevel_to_syslog(level),fmt,ap);
-		return;
+		syslog(ldmsd_loglevel_to_syslog(level), "%s", msg);
+		return 0;
 	}
 	time_t t;
 	struct tm tm;
 	char dtsz[200];
 
-	pthread_mutex_lock(&log_lock);
-	if (!log_fp) {
-		pthread_mutex_unlock(&log_lock);
-		return;
-	}
 	t = time(NULL);
 	localtime_r(&t, &tm);
 	if (strftime(dtsz, sizeof(dtsz), "%a %b %d %H:%M:%S %Y", &tm))
@@ -248,9 +287,45 @@ void __ldmsd_log(enum ldmsd_loglevel level, const char *fmt, va_list ap)
 		fprintf(log_fp, "%-10s: ", ldmsd_loglevel_names[level]);
 	}
 
-	vfprintf(log_fp, fmt, ap);
+	fprintf(log_fp, "%s", msg);
 	fflush(log_fp);
-	pthread_mutex_unlock(&log_lock);
+	return 0;
+}
+
+int log_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t ev)
+{
+	enum ldmsd_loglevel level = EV_DATA(ev, struct log_data)->level;
+	char *msg = EV_DATA(ev, struct log_data)->msg;
+	uint8_t is_rotate = EV_DATA(ev, struct log_data)->is_rotate;
+	int rc;
+
+	if (is_rotate)
+		rc = __logrotate();
+	else
+		rc = __log(level, msg);
+
+	free(msg);
+	ev_put(ev);
+	return rc;
+}
+
+void __ldmsd_log(enum ldmsd_loglevel level, const char *fmt, va_list ap)
+{
+	ev_t log_ev;
+	char *msg;
+	int rc;
+
+	log_ev = ev_new(log_type);
+	if (!log_ev)
+		return;
+	rc = vasprintf(&msg, fmt, ap);
+	if (rc < 0)
+		return;
+	EV_DATA(log_ev, struct log_data)->msg = msg;
+	EV_DATA(log_ev, struct log_data)->level = level;
+	EV_DATA(log_ev, struct log_data)->is_rotate = 0;
+
+	ev_post(NULL, logger_w, log_ev, NULL);
 }
 
 void ldmsd_log(enum ldmsd_loglevel level, const char *fmt, ...)
@@ -418,52 +493,13 @@ FILE *ldmsd_open_log(const char *progname)
 }
 
 int ldmsd_logrotate() {
-	int rc;
-	if (!logfile) {
-		ldmsd_log(LDMSD_LERROR, "Received a logrotate command but "
-			"the log messages are printed to the standard out.\n");
-		return EINVAL;
-	}
-	if (log_fp == LDMSD_LOG_SYSLOG) {
-		/* nothing to do */
-		return 0;
-	}
-	struct timeval tv;
-	char ofile_name[PATH_MAX];
-	gettimeofday(&tv, NULL);
-	sprintf(ofile_name, "%s-%ld", logfile, tv.tv_sec);
-
-	pthread_mutex_lock(&log_lock);
-	if (!log_fp) {
-		pthread_mutex_unlock(&log_lock);
-		return EINVAL;
-	}
-	fflush(log_fp);
-	fclose(log_fp);
-	rename(logfile, ofile_name);
-	log_fp = fopen_perm(logfile, "a", LDMSD_DEFAULT_FILE_PERM);
-	if (!log_fp) {
-		printf("%-10s: Failed to rotate the log file. Cannot open a new "
-			"log file\n", "ERROR");
-		fflush(stdout);
-		rc = errno;
-		goto err;
-	}
-	int fd = fileno(log_fp);
-	if (dup2(fd, 1) < 0) {
-		rc = errno;
-		goto err;
-	}
-	if (dup2(fd, 2) < 0) {
-		rc = errno;
-		goto err;
-	}
-	stdout = stderr = log_fp;
-	pthread_mutex_unlock(&log_lock);
+	ev_t ev = ev_new(log_type);
+	if (!ev)
+		return ENOMEM;
+	EV_DATA(ev, struct log_data)->is_rotate = 1;
+	EV_DATA(ev, struct log_data)->msg = NULL;
+	ev_post(NULL, logger_w, ev, NULL);
 	return 0;
-err:
-	pthread_mutex_unlock(&log_lock);
-	return rc;
 }
 
 void cleanup_sa(int signal, siginfo_t *info, void *arg)
@@ -1651,6 +1687,17 @@ int main(int argc, char *argv[])
 	sigaddset(&sigset, SIGINT);
 	sigaddset(&sigset, SIGTERM);
 	sigaddset(&sigset, SIGABRT);
+
+	ret = ldmsd_ev_init();
+	if (ret) {
+		printf("Memory allocation failure.\n");
+		exit(1);
+	}
+	ret = ldmsd_worker_init();
+	if (ret) {
+		printf("Memory allocation failure.\n");
+		exit(1);
+	}
 
 	auth_opt = av_new(AUTH_OPT_MAX);
 	if (!auth_opt) {
