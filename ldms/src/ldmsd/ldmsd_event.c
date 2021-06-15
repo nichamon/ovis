@@ -50,19 +50,92 @@
 #include "ovis_ev/ev.h"
 #include "ldmsd_event.h"
 
+int default_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t ev)
+{
+	ldmsd_log(LDMSD_LINFO, "Unhandled Event: type=%s, id=%d\n",
+		  ev_type_name(ev_type(ev)), ev_type_id(ev_type(ev)));
+	ldmsd_log(LDMSD_LINFO, "    status  : %s\n", status ? "FLUSH" : "OK" );
+	ldmsd_log(LDMSD_LINFO, "    src     : %s\n", (src)?ev_worker_name(src):"");
+	ldmsd_log(LDMSD_LINFO, "    dst     : %s\n", (dst)?ev_worker_name(dst):"");
+	return 0;
+}
+
 extern int log_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t ev);
+extern int reqc_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t ev);
+extern int recv_rec_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t ev);
+extern int msg_tree_xprt_term_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t ev);
+extern int deferred_start_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t ev);
+
 int ldmsd_worker_init(void)
 {
 	logger_w = ev_worker_new("logger", log_actor);
 	if (!logger_w)
 		return ENOMEM;
+
+	/* msg_tree */
+	msg_tree_w = ev_worker_new("msg_tree", default_actor);
+	if (!msg_tree_w)
+		return ENOMEM;
+
+	ev_dispatch(msg_tree_w, reqc_type, reqc_actor);
+	ev_dispatch(msg_tree_w, recv_rec_type, recv_rec_actor);
+	ev_dispatch(msg_tree_w, xprt_term_type, msg_tree_xprt_term_actor);
+	ev_dispatch(msg_tree_w, deferred_start_type, deferred_start_actor);
 	return 0;
 }
 
 int ldmsd_ev_init(void)
 {
+	/* Event type */
 	log_type = ev_type_new("ldmsd:log", sizeof(struct log_data));
 	if (!log_type)
 		return ENOMEM;
+
+	xprt_term_type = ev_type_new("ldms:xprt_term", sizeof(struct xprt_term_data));
+	if (!xprt_term_type)
+		return ENOMEM;
+
+	dir_add_type = ev_type_new("ldms_xprt:dir_add", sizeof(struct dir_data));
+	lookup_complete_type = ev_type_new("ldms_xprt:lookup_complete",
+					  sizeof(struct lookup_data));
+	update_complete_type = ev_type_new("ldms_xprt:update_complete",
+					  sizeof(struct update_data));
+	recv_rec_type = ev_type_new("ldms_xprt:recv", sizeof(struct recv_rec_data));
+	reqc_type = ev_type_new("ldmsd:reqc_ev", sizeof(struct reqc_data));
+	deferred_start_type = ev_type_new("ldmsd:deferred_start", 0);
+
+	stream_pub_type = ev_type_new("cfg:stream", sizeof(struct stream_pub_data));
+	stream_sub_type = ev_type_new("cfg:stream_sub", sizeof(struct stream_sub_data));
+
+	prdcr_new_type = ev_type_new("cfg:prdcr_add", sizeof(struct prdcr_def_data));
+	prdcr_del_type = ev_type_new("cfg:prdcr_del", sizeof(struct filter_data));
+	prdcr_start_type = ev_type_new("cfg:prdcr_start", sizeof(struct filter_data));
+	prdcr_stop_type = ev_type_new("cfg:prdcr_stop", sizeof(struct filter_data));
+	prdcr_status_type = ev_type_new("cfg:prdcr_status", sizeof(struct filter_data));
+	prdcr_rem_type = ev_type_new("prdcr:rem", sizeof(struct prdcr_data));
+
+	prdcr_connect_type = ev_type_new("prdcr:connect", sizeof(struct prdcr_data));
+	prdcr_connected_type = ev_type_new("ldms_xprt:connected", sizeof(struct prdcr_data));
+	prdcr_disconnected_type = ev_type_new("ldms_xprt:disconnected", sizeof(struct prdcr_data));
+	prdcr_conn_error_type = ev_type_new("ldms_xprt:conn_err", sizeof(struct prdcr_data));
+	prdcr_rem_set_del_type = ev_type_new("ldms_xprt:rem_set", sizeof(struct set_del_data));
+
+	prdset_update_hint_type = ev_type_new("prdset:update_hint", sizeof(struct prdset_data));
+	prdset_add_type = ev_type_new("prdset:add", sizeof(struct prdset_data));
+	prdset_strgp_add_type = ev_type_new("prdset:strgp_add", sizeof(struct prdset_data));
+	prdset_strgp_rem_type = ev_type_new("prdset:strgp_rem", sizeof(struct prdset_data));
+	prdset_lookup_type = ev_type_new("prdset:lookup", sizeof(struct prdset_data));
+	prdset_update_type = ev_type_new("prdset:update", sizeof(struct prdset_data));
+	prdset_reg_push_type = ev_type_new("prdset:reg_push", sizeof(struct prdset_data));
+	prdset_sched_update_type = ev_type_new("prdset:sched_update", sizeof(struct prdset_data));
+
+	updtr_new_type = ev_type_new("cfg:updtr_add", sizeof(struct updtr_def_data));
+	updtr_del_type = ev_type_new("cfg:updtr_del", sizeof(struct filter_data));
+	updtr_rem_type = ev_type_new("updtr:rem", sizeof(struct updtr_data));
+	updtr_start_type = ev_type_new("cfg:start", sizeof(struct filter_data));
+	updtr_stop_type = ev_type_new("cfg:stop", sizeof(struct filter_data));
+	updtr_lookup_type = ev_type_new("updtr:lookup", sizeof(struct updtr_data));
+
+	strgp_new_type = ev_type_new("cfg:strgp_add", sizeof(struct strgp_def_data));
 	return 0;
 }
