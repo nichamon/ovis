@@ -24,6 +24,22 @@ typedef struct ev__s {
 	struct timespec e_to;
 	struct rbn e_to_rbn;
 	TAILQ_ENTRY(ev__s) e_entry;
+#ifdef _EV_TRACK_
+	const char *new_func;
+	int new_line;
+	const char *del_func;
+	int del_line;
+	const char *post_func;
+	int post_line;
+	struct rbn rbn;
+	uint64_t id;
+	struct ev__s *parent;
+	uint8_t is_parent_alive;
+	pthread_mutex_t lock;
+	uint32_t num_children;
+	TAILQ_HEAD(ev_children, ev__s) children;
+	TAILQ_ENTRY(ev__s) child_ent;
+#endif /* _EV_TRACK_ */
 	struct ev_s e_ev;
 } *ev__t;
 
@@ -48,8 +64,17 @@ struct ev_worker_s {
 	struct rbt w_event_tree;
 	/* A list of events without timeouts */
 	TAILQ_HEAD(w_event_list, ev__s) w_event_list;
+#ifdef _EV_TRACK_
+	struct ev__s *cur_ev;
+	struct rbn thr_rbn;
+#endif /* _EV_TRACK_ */
 };
 
 #define EV(_e_) container_of(_e_, struct ev__s, e_ev);
+
+#ifdef _EV_TRACK_
+struct ev__s *ev__s_get(ev_t e);
+#endif /* _EV_TRACK_ */
+
 #endif
 
