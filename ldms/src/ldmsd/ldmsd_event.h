@@ -113,6 +113,7 @@ struct log_data {
 ev_type_t recv_rec_type;
 ev_type_t reqc_type; /* add to msg_tree, rem to msg_tree, send to cfg */
 ev_type_t deferred_start_type;
+ev_type_t cfg_type;
 
 struct recv_rec_data {
 	ldmsd_req_hdr_t rec;
