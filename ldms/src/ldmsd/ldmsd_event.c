@@ -68,16 +68,26 @@ extern int deferred_start_actor(ev_worker_t src, ev_worker_t dst, ev_status_t st
 
 extern int recv_cfg_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t ev);
 
+extern int
+prdcr_tree_cfg_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t ev);
+extern int
+prdcr_tree_cfg_rsp_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e);
+extern int
+prdcr_cfg_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e);
+
 int ldmsd_worker_init(void)
 {
+	int i;
+	char s[128];
+
 	logger_w = ev_worker_new("logger", log_actor);
 	if (!logger_w)
-		return ENOMEM;
+		goto enomem;
 
 	/* msg_tree */
 	msg_tree_w = ev_worker_new("msg_tree", default_actor);
 	if (!msg_tree_w)
-		return ENOMEM;
+		goto enomem;
 
 	ev_dispatch(msg_tree_w, reqc_type, reqc_actor);
 	ev_dispatch(msg_tree_w, recv_rec_type, recv_rec_actor);
@@ -87,9 +97,32 @@ int ldmsd_worker_init(void)
 	/* cfg worker */
 	cfg_w = ev_worker_new("cfg", recv_cfg_actor);
 	if (!cfg_w)
-		return ENOMEM;
+		goto enomem;
+
+	/* prdcr_tree worker */
+	prdcr_tree_w = ev_worker_new("prdcr_tree", default_actor);
+	if (!prdcr_tree_w)
+		goto enomem;
+
+	ev_dispatch(prdcr_tree_w, cfg_type, prdcr_tree_cfg_actor);
+	ev_dispatch(prdcr_tree_w, cfgobj_rsp_type, prdcr_tree_cfg_rsp_actor);
+
+	/* prdcr worker pool */
+	prdcr_pool = calloc(ldmsd_num_prdcr_workers_get(), sizeof(ev_worker_t));
+	if (!prdcr_pool)
+		goto enomem;
+	for (i = 0; i < ldmsd_num_prdcr_workers_get(); i++) {
+		snprintf(s, 127, "prdcr_w-%d", i + 1);
+		prdcr_pool[i] = ev_worker_new(s, default_actor);
+		if (!prdcr_pool[i])
+			goto enomem;
+
+		ev_dispatch(prdcr_pool[i], cfgobj_cfg_type, prdcr_cfg_actor);
+	}
 
 	return 0;
+enomem:
+	return ENOMEM;
 }
 
 int ldmsd_ev_init(void)
@@ -111,40 +144,34 @@ int ldmsd_ev_init(void)
 	recv_rec_type = ev_type_new("ldms_xprt:recv", sizeof(struct recv_rec_data));
 	reqc_type = ev_type_new("ldmsd:reqc_ev", sizeof(struct reqc_data));
 	deferred_start_type = ev_type_new("ldmsd:deferred_start", 0);
-	cfg_type = ev_type_new("msg_tree:recv_cfg", sizeof(struct reqc_data));
+	cfg_type = ev_type_new("msg_tree:recv_cfg", sizeof(struct cfg_data));
 
-	stream_pub_type = ev_type_new("cfg:stream", sizeof(struct stream_pub_data));
-	stream_sub_type = ev_type_new("cfg:stream_sub", sizeof(struct stream_sub_data));
+	cfgobj_cfg_type = ev_type_new("cfgobj_tree:cfgobj:cfg_req", sizeof(struct cfgobj_data));
+	cfgobj_rsp_type = ev_type_new("cfgobj:cfgobj_tree:cfg_rsp", sizeof(struct cfgobj_rsp_data));
 
-	prdcr_new_type = ev_type_new("cfg:prdcr_add", sizeof(struct prdcr_def_data));
-	prdcr_del_type = ev_type_new("cfg:prdcr_del", sizeof(struct filter_data));
-	prdcr_start_type = ev_type_new("cfg:prdcr_start", sizeof(struct filter_data));
-	prdcr_stop_type = ev_type_new("cfg:prdcr_stop", sizeof(struct filter_data));
-	prdcr_status_type = ev_type_new("cfg:prdcr_status", sizeof(struct filter_data));
-	prdcr_rem_type = ev_type_new("prdcr:rem", sizeof(struct prdcr_data));
-
-	prdcr_connect_type = ev_type_new("prdcr:connect", sizeof(struct prdcr_data));
-	prdcr_connected_type = ev_type_new("ldms_xprt:connected", sizeof(struct prdcr_data));
-	prdcr_disconnected_type = ev_type_new("ldms_xprt:disconnected", sizeof(struct prdcr_data));
-	prdcr_conn_error_type = ev_type_new("ldms_xprt:conn_err", sizeof(struct prdcr_data));
-	prdcr_rem_set_del_type = ev_type_new("ldms_xprt:rem_set", sizeof(struct set_del_data));
-
-	prdset_update_hint_type = ev_type_new("prdset:update_hint", sizeof(struct prdset_data));
-	prdset_add_type = ev_type_new("prdset:add", sizeof(struct prdset_data));
-	prdset_strgp_add_type = ev_type_new("prdset:strgp_add", sizeof(struct prdset_data));
-	prdset_strgp_rem_type = ev_type_new("prdset:strgp_rem", sizeof(struct prdset_data));
-	prdset_lookup_type = ev_type_new("prdset:lookup", sizeof(struct prdset_data));
-	prdset_update_type = ev_type_new("prdset:update", sizeof(struct prdset_data));
-	prdset_reg_push_type = ev_type_new("prdset:reg_push", sizeof(struct prdset_data));
-	prdset_sched_update_type = ev_type_new("prdset:sched_update", sizeof(struct prdset_data));
-
-	updtr_new_type = ev_type_new("cfg:updtr_add", sizeof(struct updtr_def_data));
-	updtr_del_type = ev_type_new("cfg:updtr_del", sizeof(struct filter_data));
-	updtr_rem_type = ev_type_new("updtr:rem", sizeof(struct updtr_data));
-	updtr_start_type = ev_type_new("cfg:start", sizeof(struct filter_data));
-	updtr_stop_type = ev_type_new("cfg:stop", sizeof(struct filter_data));
-	updtr_lookup_type = ev_type_new("updtr:lookup", sizeof(struct updtr_data));
-
-	strgp_new_type = ev_type_new("cfg:strgp_add", sizeof(struct strgp_def_data));
 	return 0;
+}
+
+ev_worker_t assign_prdcr_worker()
+{
+	/*
+	 * TODO: Use a more sophisticated than a round-robin
+	 */
+	static int i = 0;
+	ev_worker_t w = prdcr_pool[i];
+	i++;
+	i = i%ldmsd_num_prdcr_workers_get();
+	return w;
+}
+
+struct filt_ent *ldmsd_filter_first(struct filter_data *filt)
+{
+	filt->_cur_ent = TAILQ_FIRST(&filt->filt);
+	return filt->_cur_ent;
+}
+
+struct filt_ent *ldmsd_filter_next(struct filter_data *filt)
+{
+	filt->_cur_ent = TAILQ_NEXT(filt->_cur_ent, ent);
+	return filt->_cur_ent;
 }

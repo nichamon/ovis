@@ -62,6 +62,7 @@
 #include "ldmsd.h"
 #include "ldms_xprt.h"
 #include "ldmsd_request.h"
+#include "ldmsd_event.h"
 #include "config.h"
 
 static void prdcr_task_cb(ldmsd_task_t task, void *arg);
@@ -758,6 +759,23 @@ const char *ldmsd_prdcr_type2str(enum ldmsd_prdcr_type type)
 		return NULL;
 }
 
+const char *ldmsd_prdcr_state_str(enum ldmsd_prdcr_state state)
+{
+	switch (state) {
+	case LDMSD_PRDCR_STATE_STOPPED:
+		return "STOPPED";
+	case LDMSD_PRDCR_STATE_DISCONNECTED:
+		return "DISCONNECTED";
+	case LDMSD_PRDCR_STATE_CONNECTING:
+		return "CONNECTING";
+	case LDMSD_PRDCR_STATE_CONNECTED:
+		return "CONNECTED";
+	case LDMSD_PRDCR_STATE_STOPPING:
+		return "STOPPING";
+	}
+	return "BAD STATE";
+}
+
 ldmsd_prdcr_t
 ldmsd_prdcr_new_with_auth(const char *name, const char *xprt_name,
 		const char *host_name, const unsigned short port_no,
@@ -814,7 +832,9 @@ ldmsd_prdcr_new_with_auth(const char *name, const char *xprt_name,
 	}
 
 	ldmsd_task_init(&prdcr->task);
-	ldmsd_cfgobj_unlock(&prdcr->obj);
+	prdcr->worker = assign_prdcr_worker();
+
+	ldmsd_cfgobj_unlock(&prdcr->obj); /* TODO: remove this when ready */
 	return prdcr;
 out:
 	rbt_del(cfgobj_trees[LDMSD_CFGOBJ_PRDCR], &prdcr->obj.rbn);
@@ -914,6 +934,7 @@ int ldmsd_prdcr_start(const char *name, const char *interval_str,
 		      ldmsd_sec_ctxt_t ctxt)
 {
 	int rc = 0;
+
 	ldmsd_prdcr_t prdcr = ldmsd_prdcr_find(name);
 	if (!prdcr)
 		return ENOENT;
@@ -1270,3 +1291,1060 @@ int ldmsd_prdcr_unsubscribe_regex(const char *prdcr_regex, char *stream_name,
 	regfree(&regex);
 	return 0;
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+typedef int (*actor_fn)(ldmsd_prdcr_t prdcr, void *args);
+int __filter(struct filter_data *filter, actor_fn actor, void *args)
+{
+	ldmsd_prdcr_t prdcr;
+	struct filt_ent *ent;
+	int rc;
+
+	if (!filter->is_regex) {
+		for (ent = ldmsd_filter_first(filter); ent; ent = ldmsd_filter_next(filter)) {
+			prdcr = ldmsd_prdcr_find(ent->str);
+			if (!prdcr) {
+				ldmsd_log(LDMSD_LERROR, "prdcr '%s' not found.", ent->str);
+			} else {
+				rc = actor(prdcr, args);
+				if (rc)
+					return rc;
+			}
+		}
+	} else {
+		for (prdcr = ldmsd_prdcr_first(); prdcr; prdcr = ldmsd_prdcr_next(prdcr)) {
+			for (ent = ldmsd_filter_first(filter); ent; ent = ldmsd_filter_next(filter)) {
+				rc = regexec(&ent->regex, prdcr->obj.name, 0, NULL, 0);
+				if (0 == rc) {
+					rc = actor(prdcr, args);
+					if (rc)
+						return rc;
+					break;
+				}
+			}
+		}
+	}
+	return 0;
+}
+
+extern void ldmsd_req_ctxt_sec_get(ldmsd_req_ctxt_t rctxt, ldmsd_sec_ctxt_t sctxt);
+
+struct prdcr_cfg_ctxt {
+	int is_all;
+	int num_sent;
+	int num_recv;
+	ldmsd_req_ctxt_t reqc;
+
+	uint32_t req_id;
+	struct ldmsd_sec_ctxt sctxt;
+};
+
+struct prdcr_start_ctxt {
+	struct prdcr_cfg_ctxt base;
+	ldmsd_interval interval;
+	uint8_t is_deferred;
+};
+
+struct prdcr_cfg_rsp {
+	int errcode;
+	char *errmsg;
+	void *ctxt;
+};
+
+static struct prdcr_cfg_rsp *
+prdcr_stop_handler(ldmsd_prdcr_t prdcr, void *cfg_ctxt)
+{
+	struct prdcr_cfg_ctxt *ctxt = (struct prdcr_cfg_ctxt *)cfg_ctxt;
+	struct prdcr_cfg_rsp *rsp;
+	int rc;
+
+	rsp = calloc(1, sizeof(*rsp));
+	if (!rsp)
+		goto enomem;
+
+	rc = ldmsd_cfgobj_access_check(&prdcr->obj, 0222, &ctxt->sctxt);
+	if (rc) {
+		rsp->errcode = EPERM;
+		rc = asprintf(&rsp->errmsg, "prdcr '%s' permission denied.",
+							prdcr->obj.name);
+		if (rc < 0)
+			goto enomem;
+		else
+			goto out;
+	}
+	if (prdcr->conn_state == LDMSD_PRDCR_STATE_STOPPED)
+		goto out;
+
+	if (prdcr->conn_state == LDMSD_PRDCR_STATE_STOPPING) {
+		rsp->errcode = EBUSY;
+		rc = asprintf(&rsp->errmsg, "prdcr '%s' already stopped.",
+							prdcr->obj.name);
+		if (rc < 0)
+			goto enomem;
+		else
+			goto out;
+	}
+
+	if (prdcr->type == LDMSD_PRDCR_TYPE_LOCAL)
+		prdcr_reset_sets(prdcr);
+
+	ldmsd_task_stop(&prdcr->task);
+	prdcr->obj.perm &= ~LDMSD_PERM_DSTART;
+	prdcr->conn_state = LDMSD_PRDCR_STATE_STOPPING;
+	if (prdcr->xprt)
+		ldms_xprt_close(prdcr->xprt);
+	ldmsd_task_join(&prdcr->task);
+	if (!prdcr->xprt)
+		prdcr->conn_state = LDMSD_PRDCR_STATE_STOPPED;
+out:
+	return rsp;
+enomem:
+	ldmsd_log(LDMSD_LCRITICAL, "Out of memory\n");
+	free(rsp);
+	return NULL;
+}
+
+static struct prdcr_cfg_rsp *
+prdcr_start_handler(ldmsd_prdcr_t prdcr, void *cfg_ctxt)
+{
+	struct prdcr_start_ctxt *ctxt = (struct prdcr_start_ctxt *)cfg_ctxt;
+	struct prdcr_cfg_rsp *rsp;
+	int rc;
+
+	rsp = calloc(1, sizeof(*rsp));
+	if (!rsp)
+		goto enomem;
+
+	rc = ldmsd_cfgobj_access_check(&prdcr->obj, 0222, &ctxt->base.sctxt);
+	if (rc) {
+		rsp->errcode = EPERM;
+		rc = asprintf(&rsp->errmsg, "prdcr '%s' permission denied.",
+							prdcr->obj.name);
+		if (rc < 0)
+			goto enomem;
+		else
+			goto out;
+	}
+
+	if (prdcr->conn_state != LDMSD_PRDCR_STATE_STOPPED) {
+		rsp->errcode = EBUSY;
+		rc = asprintf(&rsp->errmsg, "prdcr '%s' is already running.",
+							prdcr->obj.name);
+		if (rc < 0)
+			goto enomem;
+		else
+			goto out;
+	}
+
+	if (ctxt->interval)
+		prdcr->conn_intrvl_us = ctxt->interval;
+	prdcr->obj.perm |= LDMSD_PERM_DSTART;
+
+	if (!ctxt->is_deferred) {
+		prdcr->conn_state = LDMSD_PRDCR_STATE_DISCONNECTED;
+
+		ldmsd_task_start(&prdcr->task, prdcr_task_cb, prdcr,
+				 LDMSD_TASK_F_IMMEDIATE,
+				 prdcr->conn_intrvl_us, 0);
+	}
+
+out:
+	return rsp;
+enomem:
+	ldmsd_log(LDMSD_LCRITICAL, "Out of memory\n");
+	free(rsp);
+	return NULL;
+}
+
+static struct ldmsd_msg_buf *
+__prdcr_status_json_obj(ldmsd_prdcr_t prdcr)
+{
+	ldmsd_prdcr_set_t prv_set;
+	int set_count = 0;
+	int cnt;
+	struct ldmsd_msg_buf *buf = ldmsd_msg_buf_new(1024);
+	if (!buf)
+		goto enomem;
+
+	cnt = ldmsd_msg_buf_append(buf,
+			"{ \"name\":\"%s\","
+			"\"type\":\"%s\","
+			"\"host\":\"%s\","
+			"\"port\":%hu,"
+			"\"transport\":\"%s\","
+			"\"reconnect_us\":\"%ld\","
+			"\"state\":\"%s\","
+			"\"sets\": [",
+			prdcr->obj.name, ldmsd_prdcr_type2str(prdcr->type),
+			prdcr->host_name, prdcr->port_no, prdcr->xprt_name,
+			prdcr->conn_intrvl_us,
+			ldmsd_prdcr_state_str(prdcr->conn_state));
+	if (cnt < 0)
+		goto enomem;
+
+	set_count = 0;
+	for (prv_set = ldmsd_prdcr_set_first(prdcr); prv_set;
+	     prv_set = ldmsd_prdcr_set_next(prv_set)) {
+		if (set_count) {
+			cnt = ldmsd_msg_buf_append(buf, ",\n");
+			if (cnt < 0)
+				goto enomem;
+		}
+
+		cnt = ldmsd_msg_buf_append(buf,
+			"{ \"inst_name\":\"%s\","
+			"\"schema_name\":\"%s\","
+			"\"state\":\"%s\"}",
+			prv_set->inst_name,
+			(prv_set->schema_name ? prv_set->schema_name : ""),
+			ldmsd_prdcr_set_state_str(prv_set->state));
+		if (cnt < 0)
+			goto enomem;
+
+		set_count++;
+	}
+	cnt = ldmsd_msg_buf_append(buf, "]}");
+	if (cnt < 0)
+		goto enomem;
+
+	return buf;
+
+enomem:
+	ldmsd_log(LDMSD_LCRITICAL, "Out of memory\n");
+	ldmsd_msg_buf_free(buf);
+	return NULL;
+}
+
+static struct prdcr_cfg_rsp *
+prdcr_status_handler(ldmsd_prdcr_t prdcr, void *cfg_ctxt)
+{
+	struct prdcr_cfg_rsp *rsp;
+
+	rsp = calloc(1, sizeof(*rsp));
+	if (!rsp) {
+		ldmsd_log(LDMSD_LCRITICAL, "Out of memory\n");
+		return NULL;
+	}
+	rsp->ctxt = __prdcr_status_json_obj(prdcr);
+	if (!rsp->ctxt) {
+		rsp->errcode = ENOMEM;
+		free(rsp);
+		return NULL;
+	}
+	return rsp;
+}
+
+static struct prdcr_cfg_rsp *
+prdcr_del_handler(ldmsd_prdcr_t prdcr, void *cfg_ctxt)
+{
+	int rc;
+	struct prdcr_cfg_ctxt *ctxt = (struct prdcr_cfg_ctxt *)cfg_ctxt;
+	struct prdcr_cfg_rsp *rsp = calloc(1, sizeof(*rsp));
+	if (!rsp)
+		goto enomem;
+	rsp->errcode = ldmsd_cfgobj_access_check(&prdcr->obj, 0222, &ctxt->sctxt);
+	if (rsp->errcode) {
+		rc = asprintf(&rsp->errmsg, "prdcr '%s' permission denied.",
+							  prdcr->obj.name);
+		if (rc < 0)
+			goto enomem;
+		else
+			goto out;
+	}
+
+	if (prdcr->conn_state != LDMSD_PRDCR_STATE_STOPPED) {
+		rsp->errcode = EBUSY;
+		rc = asprintf(&rsp->errmsg, "prdcr '%s' is in use.", prdcr->obj.name);
+		if (rc < 0)
+			goto enomem;
+		else
+			goto out;
+	}
+
+	if (ldmsd_cfgobj_refcount(&prdcr->obj) > 2) {
+		rsp->errcode = EBUSY;
+		rc = asprintf(&rsp->errmsg, "prdcr '%s' is in use.", prdcr->obj.name);
+		if (rc < 0)
+			goto enomem;
+		else
+			goto out;
+	}
+	rsp->ctxt = ldmsd_prdcr_get(prdcr);
+
+out:
+	return rsp;
+
+enomem:
+	ldmsd_log(LDMSD_LCRITICAL, "Out of memory\n");
+	return NULL;
+}
+
+int prdcr_cfg_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e)
+{
+	if (EV_OK != status)
+		return 0;
+
+	int rc;
+	struct prdcr_cfg_rsp *rsp;
+	ev_t rsp_ev;
+
+	ldmsd_prdcr_t prdcr = (ldmsd_prdcr_t)EV_DATA(e, struct cfgobj_data)->obj;
+	struct prdcr_cfg_ctxt *cfg_ctxt = EV_DATA(e, struct cfgobj_data)->ctxt;
+
+	switch (cfg_ctxt->req_id) {
+	case LDMSD_PRDCR_DEL_REQ:
+		rsp = prdcr_del_handler(prdcr, cfg_ctxt);
+		break;
+	case LDMSD_PRDCR_START_REQ:
+	case LDMSD_PRDCR_START_REGEX_REQ:
+	case LDMSD_PRDCR_DEFER_START_REQ:
+	case LDMSD_PRDCR_DEFER_START_REGEX_REQ:
+		rsp = prdcr_start_handler(prdcr, cfg_ctxt);
+		break;
+	case LDMSD_PRDCR_STOP_REQ:
+	case LDMSD_PRDCR_STOP_REGEX_REQ:
+		rsp = prdcr_stop_handler(prdcr, cfg_ctxt);
+		break;
+	case LDMSD_PRDCR_STATUS_REQ:
+		rsp = prdcr_status_handler(prdcr, cfg_ctxt);
+		break;
+	default:
+		ldmsd_log(LDMSD_LERROR, "%s received an unsupported request ID %d.\n",
+							__func__, cfg_ctxt->req_id);
+		assert(0);
+		return ENOTSUP;
+	}
+
+	rsp_ev = ev_new(cfgobj_rsp_type);
+	if (!rsp_ev) {
+		ldmsd_log(LDMSD_LCRITICAL, "Out of memory\n");
+		rc = ENOMEM;
+		goto err;
+	}
+
+	ev_put(e);
+
+	EV_DATA(rsp_ev, struct cfgobj_rsp_data)->ctxt = cfg_ctxt;
+	EV_DATA(rsp_ev, struct cfgobj_rsp_data)->rsp = rsp;
+
+	ev_post(prdcr->worker, prdcr_tree_w, rsp_ev, 0);
+	ldmsd_prdcr_put(prdcr); /* Take in prdcr_cfg_actor() */
+	return 0;
+err:
+	free(rsp);
+	return rc;
+}
+
+static int
+__tree_post_ev2prdcr(ldmsd_prdcr_t prdcr, ldmsd_req_ctxt_t reqc,
+					struct prdcr_cfg_ctxt *ctxt)
+{
+	int rc;
+	ev_t ev = ev_new(cfgobj_cfg_type);
+	if (!ev)
+		return ENOMEM;
+	ctxt->reqc = reqc;
+	ctxt->req_id = reqc->req_id;
+
+	EV_DATA(ev, struct cfgobj_data)->ctxt = ctxt;
+	EV_DATA(ev, struct cfgobj_data)->obj = (ldmsd_cfgobj_t)ldmsd_prdcr_get(prdcr);
+
+	ctxt->num_sent += 1;
+	rc = ev_post(prdcr_tree_w, prdcr->worker, ev, 0);
+	if (rc)
+		ctxt->num_sent -= 1;
+	return rc;
+}
+
+/*
+ * Aggregate the status of each producer.
+ *
+ * Without an error of a producer, the response to the client looks like this
+ *    [ {<producer status} , {}, ... ].
+ * In case an producer responding with an error, the response will be
+ * <prdcr A's errmsg>, <prdcr B's errmsg>. \c reqc->errcode is the same
+ * as the first error occurrence.
+ */
+static int
+tree_status_rsp_handler(ldmsd_req_ctxt_t reqc, struct prdcr_cfg_rsp *rsp,
+						struct prdcr_cfg_ctxt *ctxt)
+{
+	struct ldmsd_msg_buf *buf = (struct ldmsd_msg_buf *)rsp->ctxt;
+
+	if (reqc->errcode) {
+		if (!rsp->errcode) {
+			/* Ignore the status */
+			goto out;
+		}
+		(void) linebuf_printf(reqc, ", %s", rsp->errmsg);
+		goto out;
+	}
+
+	if (rsp->errcode) {
+		reqc->errcode = rsp->errcode;
+		(void) snprintf(reqc->line_buf, reqc->line_len, "%s", rsp->errmsg);
+		goto out;
+	}
+
+	if (1 < ctxt->num_recv)
+		(void) linebuf_printf(reqc, ",");
+	(void) linebuf_printf(reqc, "%s", buf->buf);
+
+	if (ctxt->is_all && (ctxt->num_sent == ctxt->num_recv))
+		(void) linebuf_printf(reqc, "]");
+
+out:
+	ldmsd_msg_buf_free(buf);
+	free(rsp);
+	return 0;
+}
+
+static int
+tree_del_rsp_handler(ldmsd_req_ctxt_t reqc, struct prdcr_cfg_rsp *rsp, struct prdcr_cfg_ctxt *ctxt)
+{
+	ldmsd_prdcr_t prdcr = (ldmsd_prdcr_t)rsp->ctxt;
+
+	if (rsp->errcode) {
+		if (!reqc->errcode)
+			reqc->errcode = rsp->errcode;
+		if (ctxt->num_recv)
+			(void)linebuf_printf(reqc, ", ");
+		(void)linebuf_printf(reqc, "%s", rsp->errmsg);
+		goto out;
+	}
+
+	ldmsd_cfgobj_del(prdcr->obj.name, LDMSD_CFGOBJ_PRDCR);
+	ldmsd_prdcr_put(prdcr); /* Put back the 'create' reference */
+
+out:
+	ldmsd_prdcr_put(prdcr); /* Put back the 'del_rsp' reference */
+	free(rsp);
+	return 0;
+}
+
+
+static int
+tree_cfg_rsp_handler(ldmsd_req_ctxt_t reqc, struct prdcr_cfg_rsp *rsp, struct prdcr_cfg_ctxt *ctxt)
+{
+	if (rsp->errcode) {
+		if (!reqc->errcode)
+			reqc->errcode = rsp->errcode;
+		if (ctxt->num_recv > 1)
+			(void)linebuf_printf(reqc, ", ");
+		(void)linebuf_printf(reqc, "%s", rsp->errmsg);
+	}
+
+	free(rsp->errmsg);
+	free(rsp->ctxt);
+	free(rsp);
+	return 0;
+}
+
+int prdcr_tree_cfg_rsp_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e)
+{
+	if (EV_OK != status)
+		return 0;
+
+	void *rsp = EV_DATA(e, struct cfgobj_rsp_data)->rsp;
+	struct prdcr_cfg_ctxt *ctxt = EV_DATA(e, struct cfgobj_rsp_data)->ctxt;
+	struct ldmsd_req_ctxt *reqc = ctxt->reqc;
+	int rc = 0;
+
+	ctxt->num_recv++;
+	if (!rsp)
+		goto out;
+
+	switch (reqc->req_id) {
+	case LDMSD_PRDCR_ADD_REQ:
+		assert(0 == "Impossible case");
+		break;
+	case LDMSD_PRDCR_DEL_REQ:
+		rc = tree_del_rsp_handler(reqc, rsp, ctxt);
+		break;
+	case LDMSD_PRDCR_DEFER_START_REQ:
+	case LDMSD_PRDCR_START_REQ:
+	case LDMSD_PRDCR_DEFER_START_REGEX_REQ:
+	case LDMSD_PRDCR_START_REGEX_REQ:
+	case LDMSD_PRDCR_STOP_REQ:
+	case LDMSD_PRDCR_STOP_REGEX_REQ:
+		rc = tree_cfg_rsp_handler(reqc, rsp, ctxt);
+		break;
+	case LDMSD_PRDCR_STATUS_REQ:
+		rc = tree_status_rsp_handler(reqc, rsp, ctxt);
+		break;
+	default:
+		assert(0 == "impossible case");
+	}
+
+	if (rc) {
+		reqc->errcode = EINTR;
+		(void) snprintf(reqc->line_buf, reqc->line_len,
+				"LDMSD: failed to construct the response.");
+	}
+
+out:
+	if (ctxt->is_all && (ctxt->num_sent == ctxt->num_recv)) {
+		/* All producers have sent back the responses */
+		ldmsd_send_req_response(reqc, reqc->line_buf);
+		free(ctxt);
+	}
+
+	ev_put(e);
+	return 0;
+}
+
+
+static int tree_prdcr_stop_regex_handler(ldmsd_req_ctxt_t reqc)
+{
+	int rc;
+	char *regex_str = NULL;
+	regex_t regex;
+	ldmsd_prdcr_t prdcr, nxt_prdcr;
+	struct prdcr_cfg_ctxt *ctxt = NULL;
+
+	ctxt = calloc(1, sizeof(*ctxt));
+	if (!ctxt)
+		goto enomem;
+
+	reqc->errcode = 0;
+
+	regex_str = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_REGEX);
+	if (!regex_str) {
+		reqc->errcode = EINVAL;
+		rc = linebuf_printf(reqc,
+				"The attribute 'regex' is required by prdcr_start_regex.");
+		goto send_reply;
+	}
+
+	reqc->errcode = ldmsd_compile_regex(&regex, regex_str, reqc->line_buf,
+								reqc->line_len);
+	if (reqc->errcode)
+		goto send_reply;
+
+	ldmsd_req_ctxt_sec_get(reqc, &ctxt->sctxt);
+
+	prdcr = ldmsd_prdcr_first();
+	while (prdcr) {
+		nxt_prdcr = ldmsd_prdcr_next(prdcr);
+		rc = regexec(&regex, prdcr->obj.name, 0, NULL, 0);
+		if (rc)
+			goto next;
+		if (!nxt_prdcr)
+			ctxt->is_all = 1;
+		rc = __tree_post_ev2prdcr(prdcr, reqc, ctxt);
+		if (rc) {
+			if (ENOMEM == rc)
+				goto enomem;
+			reqc->errcode = EINTR;
+			rc = linebuf_printf(reqc,
+					"Failed to handle the prdcr_start command.");
+			goto send_reply;
+		}
+	next:
+		prdcr = nxt_prdcr;
+	}
+	goto out;
+enomem:
+	reqc->errcode = ENOMEM;
+	rc = linebuf_printf(reqc, "LDMSD: out of memory.");
+	ldmsd_log(LDMSD_LCRITICAL, "Out of memory\n");
+	free(ctxt);
+send_reply:
+	ldmsd_send_req_response(reqc, reqc->line_buf);
+out:
+	free(regex_str);
+	regfree(&regex);
+	return 0;
+}
+
+
+static int __tree_forward2prdcr(ldmsd_req_ctxt_t reqc)
+{
+	int rc;
+	char *name = NULL;
+	ldmsd_prdcr_t prdcr;
+	struct prdcr_cfg_ctxt *ctxt = NULL;
+
+	ctxt = calloc(1, sizeof(*ctxt));
+	if (!ctxt)
+		goto enomem;
+
+	reqc->errcode = 0;
+
+	name = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_NAME);
+	if (!name) {
+		reqc->errcode = EINVAL;
+		rc = linebuf_printf(reqc,
+				"The attribute 'name' is required by prdcr_start.");
+		goto send_reply;
+	}
+
+	ldmsd_req_ctxt_sec_get(reqc, &ctxt->sctxt);
+
+	prdcr = ldmsd_prdcr_find(name);
+	if (!prdcr) {
+		reqc->errcode = ENOENT;
+		rc = linebuf_printf(reqc, "prdcr '%s' does not exist.", name);
+		goto send_reply;
+	}
+
+	ctxt->is_all = 1;
+	rc = __tree_post_ev2prdcr(prdcr, reqc, ctxt);
+	ldmsd_prdcr_put(prdcr); /* Put back ldmsd_prdcr_find()'s reference */
+	if (rc) {
+		if (ENOMEM == rc)
+			goto enomem;
+		reqc->errcode = EINTR;
+		rc = linebuf_printf(reqc,
+				"Failed to handle the prdcr_start command.");
+		goto send_reply;
+	}
+
+	goto out;
+
+enomem:
+	reqc->errcode = ENOMEM;
+	(void) linebuf_printf(reqc, "LDMSD: out of memory.");
+	free(ctxt);
+send_reply:
+	ldmsd_send_req_response(reqc, reqc->line_buf);
+out:
+	free(name);
+	return 0;
+}
+
+static inline int tree_prdcr_del_handler(ldmsd_req_ctxt_t reqc)
+{
+	return __tree_forward2prdcr(reqc);
+}
+
+static inline int tree_prdcr_stop_handler(ldmsd_req_ctxt_t reqc)
+{
+	return __tree_forward2prdcr(reqc);
+}
+
+static int tree_prdcr_start_regex_handler(ldmsd_req_ctxt_t reqc)
+{
+	int rc;
+	char *regex_str, *interval_str;
+	regex_str = interval_str = NULL;
+	regex_t regex;
+	ldmsd_prdcr_t prdcr, nxt_prdcr;
+	struct prdcr_start_ctxt *ctxt = NULL;
+
+	ctxt = calloc(1, sizeof(*ctxt));
+	if (!ctxt)
+		goto enomem;
+
+	if (LDMSD_PRDCR_DEFER_START_REGEX_REQ == reqc->req_id)
+		ctxt->is_deferred = 1;
+
+	reqc->errcode = 0;
+
+	regex_str = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_REGEX);
+	if (!regex_str) {
+		reqc->errcode = EINVAL;
+		rc = linebuf_printf(reqc,
+				"The attribute 'regex' is required by prdcr_start_regex.");
+		goto send_reply;
+	}
+
+	reqc->errcode = ldmsd_compile_regex(&regex, regex_str, reqc->line_buf,
+								reqc->line_len);
+	if (reqc->errcode)
+		goto send_reply;
+
+	interval_str = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_INTERVAL);
+	if (interval_str) {
+		reqc->errcode = ldmsd_time_dur_str2us(interval_str, &ctxt->interval);
+		if (reqc->errcode) {
+			rc = linebuf_printf(reqc,
+					"The interval '%s' is invalid.", interval_str);
+			goto send_reply;
+		}
+	}
+
+	ldmsd_req_ctxt_sec_get(reqc, &ctxt->base.sctxt);
+
+	prdcr = ldmsd_prdcr_first();
+	while (prdcr) {
+		nxt_prdcr = ldmsd_prdcr_next(prdcr);
+		rc = regexec(&regex, prdcr->obj.name, 0, NULL, 0);
+		if (rc)
+			goto next;
+		if (!nxt_prdcr)
+			ctxt->base.is_all = 1;
+		rc = __tree_post_ev2prdcr(prdcr, reqc, &ctxt->base);
+		if (rc) {
+			if (ENOMEM == rc)
+				goto enomem;
+			reqc->errcode = EINTR;
+			rc = linebuf_printf(reqc,
+					"Failed to handle the prdcr_start command.");
+			goto send_reply;
+		}
+	next:
+		prdcr = nxt_prdcr;
+	}
+	goto out;
+enomem:
+	reqc->errcode = ENOMEM;
+	rc = linebuf_printf(reqc, "LDMSD: out of memory.");
+	ldmsd_log(LDMSD_LCRITICAL, "Out of memory\n");
+	free(ctxt);
+send_reply:
+	ldmsd_send_req_response(reqc, reqc->line_buf);
+out:
+	free(regex_str);
+	free(interval_str);
+	regfree(&regex);
+	return 0;
+}
+
+static int tree_prdcr_start_handler(ldmsd_req_ctxt_t reqc)
+{
+	int rc;
+	char *name, *interval_str;
+	name = interval_str = NULL;
+	ldmsd_prdcr_t prdcr;
+	struct prdcr_start_ctxt *ctxt = NULL;
+
+	ctxt = calloc(1, sizeof(*ctxt));
+	if (!ctxt)
+		goto enomem;
+
+	if (LDMSD_PRDCR_DEFER_START_REQ == reqc->req_id)
+		ctxt->is_deferred = 1;
+
+	reqc->errcode = 0;
+
+	name = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_NAME);
+	if (!name) {
+		reqc->errcode = EINVAL;
+		rc = linebuf_printf(reqc,
+				"The attribute 'name' is required by prdcr_start.");
+		goto send_reply;
+	}
+
+	interval_str = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_INTERVAL);
+	if (interval_str) {
+		reqc->errcode = ldmsd_time_dur_str2us(interval_str, &ctxt->interval);
+		if (reqc->errcode) {
+			rc = linebuf_printf(reqc,
+					"The interval '%s' is invalid.", interval_str);
+			goto send_reply;
+		}
+	}
+
+	ldmsd_req_ctxt_sec_get(reqc, &ctxt->base.sctxt);
+
+	prdcr = ldmsd_prdcr_find(name);
+	if (!prdcr) {
+		reqc->errcode = ENOENT;
+		rc = linebuf_printf(reqc, "prdcr '%s' does not exist.", name);
+		goto send_reply;
+	}
+
+	ctxt->base.is_all = 1;
+	rc = __tree_post_ev2prdcr(prdcr, reqc, &ctxt->base);
+	ldmsd_prdcr_put(prdcr); /* Put back ldmsd_prdcr_find()'s reference */
+	if (rc) {
+		if (ENOMEM == rc)
+			goto enomem;
+		reqc->errcode = EINTR;
+		rc = linebuf_printf(reqc,
+				"Failed to handle the prdcr_start command.");
+		goto send_reply;
+	}
+
+	goto out;
+
+enomem:
+	reqc->errcode = ENOMEM;
+	ldmsd_log(LDMSD_LCRITICAL, "Out of memory\n");
+	(void) linebuf_printf(reqc, "LDMSD: out of memory.");
+	free(ctxt);
+send_reply:
+	ldmsd_send_req_response(reqc, reqc->line_buf);
+out:
+	free(name);
+	free(interval_str);
+	return 0;
+}
+
+static int tree_prdcr_status_handler(ldmsd_req_ctxt_t reqc)
+{
+	int rc;
+	char *name;
+	ldmsd_prdcr_t prdcr, nxt_prdcr;
+	struct prdcr_cfg_ctxt *ctxt = calloc(1, sizeof(*ctxt));
+	if (!ctxt)
+		goto enomem;
+
+	ldmsd_req_ctxt_sec_get(reqc, &ctxt->sctxt);
+
+	name = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_NAME);
+
+	rc = linebuf_printf(reqc, "[");
+
+	if (name) {
+		prdcr = ldmsd_prdcr_find(name);
+		if (!prdcr) {
+			reqc->errcode = ENOENT;
+			(void) linebuf_printf(reqc, "prdcr '%s' not found.", name);
+		} else {
+			rc = __tree_post_ev2prdcr(prdcr, reqc, ctxt);
+			ldmsd_prdcr_put(prdcr);
+			if (rc) {
+				if (ENOMEM == rc)
+					goto enomem;
+				reqc->errcode = EINTR;
+				rc = linebuf_printf(reqc,
+						"Failed to handle the prdcr_start command.");
+				goto send_reply;
+			}
+			ctxt->is_all = 1;
+		}
+	} else {
+		prdcr = ldmsd_prdcr_first();
+		while (prdcr) {
+			nxt_prdcr = ldmsd_prdcr_next(prdcr);
+			if (!nxt_prdcr)
+				ctxt->is_all = 1;
+			rc = __tree_post_ev2prdcr(prdcr, reqc, ctxt);
+			if (rc) {
+				if (ENOMEM == rc)
+					goto enomem;
+				reqc->errcode = EINTR;
+				rc = linebuf_printf(reqc,
+						"Failed to handle the prdcr_start command.");
+				goto send_reply;
+			}
+			prdcr = nxt_prdcr;
+		}
+	}
+
+	goto out;
+enomem:
+	reqc->errcode = ENOMEM;
+	ldmsd_log(LDMSD_LCRITICAL, "Out of memory\n");
+	(void) linebuf_printf(reqc, "LDMSD: out of memory.");
+send_reply:
+	ldmsd_send_req_response(reqc, reqc->line_buf);
+out:
+	free(name);
+	return rc;
+
+}
+
+static int tree_prdcr_add_handler(ldmsd_req_ctxt_t reqc)
+{
+	ldmsd_prdcr_t prdcr;
+	char *name, *host, *xprt, *attr_name, *type_s, *port_s, *interval_s;
+	char *auth;
+	enum ldmsd_prdcr_type type = -1;
+	unsigned short port_no = 0;
+	int interval_us = -1;
+	size_t rc;
+	uid_t uid;
+	gid_t gid;
+	int perm;
+	char *perm_s = NULL;
+
+	reqc->errcode = 0;
+	name = host = xprt = type_s = port_s = interval_s = auth = NULL;
+
+	attr_name = "name";
+	name = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_NAME);
+	if (!name)
+		goto einval;
+
+	attr_name = "type";
+	type_s = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_TYPE);
+	if (!type_s) {
+		goto einval;
+	} else {
+		type = ldmsd_prdcr_str2type(type_s);
+		if ((int)type < 0) {
+			rc = linebuf_printf(reqc,
+					"The attribute type '%s' is invalid.",
+					type_s);
+			if (rc < 0)
+				goto enomem;
+			reqc->errcode = EINVAL;
+			goto send_reply;
+		}
+		if (type == LDMSD_PRDCR_TYPE_LOCAL) {
+			rc = linebuf_printf(reqc,
+					"Producer with type 'local' is "
+					"not supported.");
+			if (rc < 0)
+				goto enomem;
+			reqc->errcode = EINVAL;
+			goto send_reply;
+		}
+	}
+
+	attr_name = "xprt";
+	xprt = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_XPRT);
+	if (!xprt)
+		goto einval;
+
+	attr_name = "host";
+	host = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_HOST);
+	if (!host)
+		goto einval;
+
+	attr_name = "port";
+	port_s = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_PORT);
+	if (!port_s) {
+		goto einval;
+	} else {
+		long ptmp = 0;
+		ptmp = strtol(port_s, NULL, 0);
+		if (ptmp < 1 || ptmp > USHRT_MAX) {
+			goto einval;
+		}
+		port_no = (unsigned)ptmp;
+	}
+
+	attr_name = "interval";
+	interval_s = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_INTERVAL);
+	if (!interval_s) {
+		goto einval;
+	} else {
+		 interval_us = strtol(interval_s, NULL, 0);
+	}
+
+	auth = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_AUTH);
+
+	struct ldmsd_sec_ctxt sctxt;
+	ldmsd_req_ctxt_sec_get(reqc, &sctxt);
+	uid = sctxt.crd.uid;
+	gid = sctxt.crd.gid;
+
+	perm = 0770;
+	perm_s = ldmsd_req_attr_str_value_get_by_name(reqc, "perm");
+	if (perm_s)
+		perm = strtol(perm_s, NULL, 0);
+
+	prdcr = ldmsd_prdcr_new_with_auth(name, xprt, host, port_no, type,
+					  interval_us, auth, uid, gid, perm);
+	if (!prdcr) {
+		if (errno == EEXIST)
+			goto eexist;
+		else if (errno == EAFNOSUPPORT)
+			goto eafnosupport;
+		else if (errno == ENOENT)
+			goto ebadauth;
+		else
+			goto enomem;
+	}
+
+	goto send_reply;
+ebadauth:
+	reqc->errcode = ENOENT;
+	rc = linebuf_printf(reqc,
+			"Authentication name not found, check the auth_add configuration.");
+	goto send_reply;
+enomem:
+	reqc->errcode = ENOMEM;
+	(void) linebuf_printf(reqc, "Memory allocation failed.");
+	goto send_reply;
+eexist:
+	reqc->errcode = EEXIST;
+	rc = linebuf_printf(reqc, "The prdcr %s already exists.", name);
+	goto send_reply;
+eafnosupport:
+	reqc->errcode = EAFNOSUPPORT;
+	rc = linebuf_printf(reqc, "Error resolving hostname '%s'\n", host);
+	goto send_reply;
+einval:
+	reqc->errcode = EINVAL;
+	rc = linebuf_printf(reqc, "The attribute '%s' is required.", attr_name);
+send_reply:
+	ldmsd_send_req_response(reqc, reqc->line_buf);
+	free(name);
+	free(type_s);
+	free(port_s);
+	free(interval_s);
+	free(host);
+	free(xprt);
+	free(perm_s);
+	free(auth);
+	return 0;
+}
+
+int prdcr_tree_cfg_actor(ev_worker_t src, ev_worker_t dst,
+					ev_status_t status, ev_t e)
+{
+	if (EV_OK != status)
+		return 0;
+
+	struct ldmsd_req_ctxt *reqc = EV_DATA(e, struct cfg_data)->reqc;
+	int rc;
+
+	switch (reqc->req_id) {
+	case LDMSD_PRDCR_ADD_REQ:
+		rc = tree_prdcr_add_handler(reqc);
+		break;
+	case LDMSD_PRDCR_DEL_REQ:
+		rc = tree_prdcr_del_handler(reqc);
+		break;
+	case LDMSD_PRDCR_DEFER_START_REQ:
+	case LDMSD_PRDCR_START_REQ:
+		rc = tree_prdcr_start_handler(reqc);
+		break;
+	case LDMSD_PRDCR_DEFER_START_REGEX_REQ:
+	case LDMSD_PRDCR_START_REGEX_REQ:
+		rc = tree_prdcr_start_regex_handler(reqc);
+		break;
+	case LDMSD_PRDCR_STOP_REQ:
+		rc = tree_prdcr_stop_handler(reqc);
+		break;
+	case LDMSD_PRDCR_STOP_REGEX_REQ:
+		rc = tree_prdcr_stop_regex_handler(reqc);
+		break;
+	case LDMSD_PRDCR_STATUS_REQ:
+		rc = tree_prdcr_status_handler(reqc);
+		break;
+	default:
+		ldmsd_log(LDMSD_LERROR, "%s doesn't handle req_id %d\n",
+						__func__, reqc->req_id);
+		/* TODO: put back reqc's 'create' ref */
+		goto out;
+	}
+out:
+	if (rc) {
+		/* TODO: handle this */
+	}
+	ev_put(e);
+	return 0;
+}
+
+int prdcr_tree_filter_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e)
+{
+	if (EV_OK != status)
+		return 0;
+
+//	int rc;
+//	struct filter_data filter;
+//	filter = EV_DATA(e, struct prdcr_n_set_filter_data)->prdcr_filter;
+
+
+	return 0;
+}
+

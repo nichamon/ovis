@@ -683,5 +683,15 @@ int ldmsd_msg_buf_send(struct ldmsd_msg_buf *buf,
  */
 int ldmsd_msg_gather(struct ldmsd_msg_buf *buf, ldmsd_req_hdr_t req);
 
+/**
+ * \brief Append string to \c reqc->line_buf;
+ */
+int linebuf_printf(struct ldmsd_req_ctxt *reqc, char *fmt, ...);
 
+/**
+ * \brief Append string to \c buf
+ *
+ * \return Number of character printed to \c buf. A negative errno is returned on errors.
+ */
+size_t ldmsd_msg_buf_append(struct ldmsd_msg_buf *buf, const char *fmt, ...);
 #endif /* LDMS_SRC_LDMSD_LDMSD_REQUEST_H_ */
