@@ -66,6 +66,7 @@
 
 #include <ovis_event/ovis_event.h>
 #include <ovis_util/util.h>
+#include "ovis_ev/ev.h"
 #include "ldms.h"
 
 #define LDMSD_PLUGIN_LIBPATH_DEFAULT PLUGINDIR
@@ -99,6 +100,8 @@ void ldmsd_version_get(struct ldmsd_version *v);
 /** Update hint */
 #define LDMSD_SET_INFO_UPDATE_HINT_KEY "updt_hint_us"
 #define LDMSD_UPDT_HINT_OFFSET_NONE LONG_MIN
+
+typedef unsigned long ldmsd_interval;
 
 typedef struct ldmsd_plugin_set {
 	ldms_set_t set;
@@ -235,6 +238,7 @@ typedef struct ldmsd_prdcr {
 	} type;
 
 	struct ldmsd_task task;
+	ev_worker_t worker;
 
 	/**
 	 * list of subscribed streams from this producer
@@ -254,6 +258,8 @@ typedef struct ldmsd_prdcr {
 	 * quick lookup by the logic that handles update schedule.
 	 */
 	struct rbt hint_set_tree;
+
+	ev_worker_t *prdset_worker_pool;
 #ifdef LDMSD_UPDATE_TIME
 	double sched_update_time;
 #endif /* LDMSD_UPDATE_TIME */
@@ -298,6 +304,7 @@ typedef struct ldmsd_prdcr_set {
 	LIST_HEAD(ldmsd_strgp_ref_list, ldmsd_strgp_ref) strgp_list;
 	struct rbn rbn;
 
+	ev_worker_t worker;
 	LIST_ENTRY(ldmsd_prdcr_set) updt_hint_entry;
 
 	struct ldmsd_updtr_schedule updt_hint;
@@ -848,6 +855,7 @@ int ldmsd_cfgobj_access_check(ldmsd_cfgobj_t obj, int acc, ldmsd_sec_ctxt_t ctxt
 /** Producer configuration object management */
 int ldmsd_prdcr_str2type(const char *type);
 const char *ldmsd_prdcr_type2str(enum ldmsd_prdcr_type type);
+const char *ldmsd_prdcr_state_str(enum ldmsd_prdcr_state state);
 ldmsd_prdcr_t
 ldmsd_prdcr_new(const char *name, const char *xprt_name,
 		const char *host_name, const unsigned short port_no,
@@ -1198,6 +1206,30 @@ extern int listen_on_ldms_xprt(ldmsd_listen_t listen);
 
 uint8_t ldmsd_is_initialized();
 
+/*
+ * \brief Convert a time duration string to integer in microseconds.
+ *
+ * If no unit is given, the unit is in microseconds.
+ *
+ * The expecting format is <number><unit str>.
+ *
+ * The supported unit strings are as follows.
+ *
+ * microseconds:	us, microsecond(s)
+ * milliseconnds:	ms, millisecond(s)
+ * seconds:		s, sec, second(s)
+ * minutes:		min, minutes(s)
+ * hours:		h, hr(s), hour(s)
+ * days:		day(s)
+ *
+ * \param  s  string to be converted
+ * \param  x  handle to the integer
+ *
+ * \return 0 on succes. EINVAL if the value is negative.
+ *         ENOTSUP if the given string is not supported.
+ */
+int ldmsd_time_dur_str2us(const char *s, unsigned long *x);
+
 /**
  * \brief Create a listening endpoint
  *
@@ -1242,5 +1274,10 @@ int ldmsd_timespec_from_str(struct timespec *result, const char *str);
 void ldmsd_timespec_add(struct timespec *a, struct timespec *b, struct timespec *result);
 int ldmsd_timespec_cmp(struct timespec *a, struct timespec *b);
 void ldmsd_timespec_diff(struct timespec *a, struct timespec *b, struct timespec *result);
+
+int ldmsd_num_prdcr_workers_get();
+int ldmsd_num_prdset_workers_get();
+ev_worker_t assign_prdcr_worker();
+ev_worker_t assign_prdset_worker();
 
 #endif

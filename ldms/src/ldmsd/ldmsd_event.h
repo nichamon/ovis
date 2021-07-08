@@ -68,52 +68,44 @@ ev_worker_t stream_pub_w;
 ev_worker_t stream_sub_w;
 
 /* Pool of workers that own the same type of resources */
-ev_worker_t prdcr_pool;
-ev_worker_t prd_set_pool;
+ev_worker_t *prdcr_pool;
+ev_worker_t *prdset_pool;
 ev_worker_t updtr_pool;
 ev_worker_t strgp_pool;
 ev_worker_t auth_pool;
 
+/* event data */
+
 /* Event Types and data */
+struct filt_ent {
+	const char *str;
+	regex_t regex;
+	TAILQ_ENTRY(filt_ent) ent;
+};
+TAILQ_HEAD(str_list, filt_ent);
+
 struct filter_data {
-	char *filter;
+	uint8_t is_regex;
 	int cnt;
-	ldmsd_req_ctxt_t reqc;
+	struct str_list filt;
+
+	/*
+	 * If this is not NULL,
+	 * receiver must report success/failure to the request by
+	 * preparing the response and calling ldmsd_send_req_resp().
+	 */
+	struct ldmsd_req_ctxt *reqc;
+
+	/* internal */
+	struct filt_ent *_cur_ent;
+	void *_ctxt;
 };
-
-/* ldms xprt */
-ev_type_t dir_add_type;
-ev_type_t lookup_complete_type;
-ev_type_t update_complete_type;
-
-struct dir_data {
-	ldms_dir_t dir;
-};
-
-struct lookup_data {
-	ldmsd_prdcr_set_t prdset;
-};
-
-struct update_data {
-	uint8_t is_failed;
-	uint64_t gn;
-	ldms_set_t set;
-};
-
-/* LDMSD log */
-ev_type_t log_type;
 
 struct log_data {
 	uint8_t is_rotate;
 	enum ldmsd_loglevel level;
 	char *msg;
 };
-
-/* LDMSD messages & request contexts */
-ev_type_t recv_rec_type;
-ev_type_t reqc_type; /* add to msg_tree, rem to msg_tree, send to cfg */
-ev_type_t deferred_start_type;
-ev_type_t cfg_type;
 
 struct recv_rec_data {
 	ldmsd_req_hdr_t rec;
@@ -129,15 +121,24 @@ struct reqc_data {
 	ldmsd_req_ctxt_t reqc;
 };
 
-ev_type_t xprt_term_type;
+struct cfg_data {
+	ldmsd_req_ctxt_t reqc;
+	void *ctxt;
+};
+
+struct cfgobj_data {
+	ldmsd_cfgobj_t obj;
+	void *ctxt;
+};
+
+struct cfgobj_rsp_data {
+	void *rsp; /* Response of each cfgobj */
+	void *ctxt; /* Context from the cfgobj_cfg event */
+};
 
 struct xprt_term_data {
 	ldms_t x;
 };
-
-/* streams */
-ev_type_t stream_pub_type;
-ev_type_t stream_sub_type;
 
 struct stream_pub_data {
 	char *stream_name;
@@ -151,26 +152,6 @@ struct stream_sub_data {
 	ldms_t ldms;
 };
 
-/* prdcr config */
-ev_type_t prdcr_new_type;
-ev_type_t prdcr_del_type;
-ev_type_t prdcr_start_type;
-ev_type_t prdcr_stop_type;
-ev_type_t prdcr_status_type;
-ev_type_t prdcr_rem_type;
-
-struct prdcr_def_data {
-	json_entity_t def;
-	ldmsd_req_ctxt_t reqc;
-};
-
-/* prdcr connect */
-ev_type_t prdcr_connect_type;
-ev_type_t prdcr_connected_type;
-ev_type_t prdcr_disconnected_type;
-ev_type_t prdcr_conn_error_type;
-ev_type_t prdcr_rem_set_del_type;
-
 struct prdcr_data {
 	ldmsd_prdcr_t prdcr;
 };
@@ -179,53 +160,32 @@ struct set_del_data {
 	ldms_set_t set;
 };
 
-/* producer sets */
-ev_type_t prdset_update_hint_type;
-ev_type_t prdset_add_type;
-ev_type_t prdset_strgp_add_type;
-ev_type_t prdset_strgp_rem_type;
-ev_type_t prdset_lookup_type;
-ev_type_t prdset_update_type;
-ev_type_t prdset_reg_push_type;
-ev_type_t prdset_sched_update_type;
-
 struct prdset_data {
-	ldmsd_prdcr_set_t prdset;
-	ldmsd_updtr_t updtr;
-	ldmsd_strgp_t strgp;
+	char *set_name;
+	char *prdcr_name;
+	char *updtr_name;
+	unsigned long update_schedule;
+	char *strgp_name;
 };
-
-/* Updaters */
-ev_type_t updtr_new_type;
-ev_type_t updtr_del_type;
-ev_type_t updtr_rem_type;
-ev_type_t updtr_start_type;
-ev_type_t updtr_stop_type;
-ev_type_t updtr_lookup_type;
 
 struct updtr_def_data {
 	json_entity_t def;
 	ldmsd_req_ctxt_t reqc;
 };
 
-struct updtr_filter_data {
-	char *prdcr_filter; /* TODO: subject to change depending on cfg protocol */
-	uint8_t is_prdcr_regex;
-	char *set_filter;
-	uint8_t is_set_regex;
-	ldmsd_req_ctxt_t reqc;
+struct prdcr_n_set_filter_data {
+	struct filter_data prdcr_filter;
+	struct filter_data set_filter;
+};
+
+struct updtr_stop_data {
+	struct prdcr_n_set_filter_data filter;
+	uint8_t is_push;
 };
 
 struct updtr_data {
 	ldmsd_updtr_t updtr;
 };
-
-/* Storage Policies */
-ev_type_t strgp_new_type;
-ev_type_t strgp_del_type;
-ev_type_t strgp_rem_type;
-ev_type_t strgp_start_type;
-ev_type_t strgp_stop_type;
 
 struct strgp_def_data {
 	json_entity_t def;
@@ -240,15 +200,104 @@ struct strgp_filter_data {
 	ldmsd_req_ctxt_t reqc;
 };
 
-/* Sets */
-ev_type_t pi_set_query_type;
-ev_type_t ldmsd_set_reg_type;
-ev_type_t ldmsd_set_dereg_type;
-
 struct set_reg_data {
 	char *pi_inst_name;
 	char *set_inst_name;
 };
 
+struct dir_data {
+	ldms_dir_t dir;
+	ldmsd_prdcr_t prdcr;
+};
+
+struct lookup_data {
+	ldmsd_prdcr_set_t prdset;
+};
+
+struct update_data {
+	uint8_t is_failed;
+	uint64_t gn;
+	ldms_set_t set;
+};
+
+/* Event Types */
+
+/* ldms xprt */
+ev_type_t dir_complete_type;
+ev_type_t lookup_complete_type;
+ev_type_t update_complete_type;
+
+/* LDMSD log */
+ev_type_t log_type;
+
+/* LDMSD messages & request contexts */
+ev_type_t recv_rec_type;
+ev_type_t reqc_type; /* add to msg_tree, rem to msg_tree, send to cfg */
+ev_type_t deferred_start_type;
+ev_type_t cfg_type;
+
+ev_type_t xprt_term_type;
+
+/* Configuration */
+ev_type_t cfgobj_cfg_type;
+ev_type_t cfgobj_rsp_type;
+
+/* Producers */
+ev_type_t prdcr_cfg_type;
+ev_type_t prdcr_rem_type;
+ev_type_t prdcr_start_rsp_type;
+
+/* prdcr connect */
+ev_type_t prdcr_connect_type;
+ev_type_t prdcr_xprt_type;
+
+/* producer sets */
+ev_type_t prdset_update_hint_type;
+ev_type_t prdset_add_type;
+ev_type_t prdset_strgp_add_type;
+ev_type_t prdset_strgp_rem_type;
+ev_type_t prdset_lookup_type;
+ev_type_t prdset_update_type;
+ev_type_t prdset_reg_push_type;
+ev_type_t prdset_sched_update_type;
+
+/* Updaters */
+ev_type_t updtr_new_type;
+ev_type_t updtr_del_type;
+ev_type_t updtr_rem_type;
+ev_type_t updtr_start_type;
+ev_type_t updtr_stop_type;
+ev_type_t updtr_lookup_type;
+
+/* Storage Policies */
+ev_type_t strgp_new_type;
+ev_type_t strgp_del_type;
+ev_type_t strgp_rem_type;
+ev_type_t strgp_start_type;
+ev_type_t strgp_stop_type;
+
+/* streams */
+ev_type_t stream_pub_type;
+ev_type_t stream_sub_type;
+
+/* Sets */
+ev_type_t pi_set_query_type;
+ev_type_t ldmsd_set_reg_type;
+ev_type_t ldmsd_set_dereg_type;
+
+struct ldmsd_cfg_ctxt {
+	int is_all;
+	int num_sent;
+	int num_recv;
+	ldmsd_req_ctxt_t reqc;
+	struct ldmsd_sec_ctxt sctxt;
+};
+
 int ldmsd_ev_init(void);
 int ldmsd_worker_init(void);
+struct filt_ent *ldmsd_filter_first(struct filter_data *filt);
+struct filt_ent *ldmsd_filter_next(struct filter_data *filt);
+
+int ldmsd_cfgtree_done(struct ldmsd_cfg_ctxt *ctxt);
+int ldmsd_cfgtree_post2cfgobj(ldmsd_cfgobj_t obj, ev_worker_t dst,
+		ldmsd_req_ctxt_t reqc, struct ldmsd_cfg_ctxt *ctxt);

@@ -56,6 +56,7 @@
 #include <string.h>
 #include <errno.h>
 #include <coll/rbt.h>
+#include "ldmsd_event.h"
 #include "ldmsd.h"
 
 int cfgobj_cmp(void *a, const void *b)
@@ -288,4 +289,31 @@ ldmsd_cfgobj_t ldmsd_cfgobj_next(ldmsd_cfgobj_t obj)
 out:
 	ldmsd_cfgobj_put(obj);	/* Drop the next reference */
 	return nobj;
+}
+
+int ldmsd_cfgtree_done(struct ldmsd_cfg_ctxt *ctxt)
+{
+	if (ctxt->is_all && (ctxt->num_sent == ctxt->num_recv))
+		return 1;
+	return 0;
+}
+
+int ldmsd_cfgtree_post2cfgobj(ldmsd_cfgobj_t obj, ev_worker_t dst,
+		ldmsd_req_ctxt_t reqc, struct ldmsd_cfg_ctxt *ctxt)
+{
+	int rc;
+	ev_t ev = ev_new(cfgobj_cfg_type);
+	if (!ev)
+		return ENOMEM;
+
+	EV_DATA(ev, struct cfgobj_data)->obj = ldmsd_cfgobj_get(obj);
+	EV_DATA(ev, struct cfgobj_data)->ctxt = ctxt;
+	if (ctxt) {
+		ctxt->reqc = reqc;
+		ctxt->num_sent += 1;
+	}
+	rc = ev_post(prdcr_tree_w, dst, ev, 0);
+	if (rc && ctxt)
+		ctxt->num_sent -= 1;
+	return rc;
 }

@@ -71,6 +71,7 @@
 #include "ldmsd_request.h"
 #include "ldmsd_stream.h"
 #include "ldmsd_event.h"
+#include "ldmsd_request.h"
 #include "ldms_xprt.h"
 
 #pragma GCC diagnostic ignored "-Wunused-but-set-variable"
@@ -106,7 +107,6 @@ void __ldmsd_log(enum ldmsd_loglevel level, const char *fmt, va_list ap);
 
 static char * __thread_stats_as_json(size_t *json_sz);
 static char * __xprt_stats_as_json(size_t *json_sz);
-extern const char *prdcr_state_str(enum ldmsd_prdcr_state state);
 
 __attribute__((format(printf, 1, 2)))
 static inline
@@ -191,7 +191,6 @@ int reqc_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t ev)
 	return 0;
 }
 
-static
 void ldmsd_req_ctxt_sec_get(ldmsd_req_ctxt_t rctxt, ldmsd_sec_ctxt_t sctxt)
 {
 	if (LDMSD_CFG_TYPE_LDMS == rctxt->xprt->type) {
@@ -211,18 +210,9 @@ struct request_handler_entry {
 };
 
 static int example_handler(ldmsd_req_ctxt_t req_ctxt);
-static int prdcr_add_handler(ldmsd_req_ctxt_t req_ctxt);
-static int prdcr_del_handler(ldmsd_req_ctxt_t req_ctxt);
-static int prdcr_start_handler(ldmsd_req_ctxt_t req_ctxt);
-static int prdcr_stop_handler(ldmsd_req_ctxt_t req_ctxt);
-static int prdcr_start_regex_handler(ldmsd_req_ctxt_t req_ctxt);
-static int prdcr_stop_regex_handler(ldmsd_req_ctxt_t req_ctxt);
-static int prdcr_status_handler(ldmsd_req_ctxt_t req_ctxt);
 static int prdcr_set_status_handler(ldmsd_req_ctxt_t req_ctxt);
 static int prdcr_subscribe_regex_handler(ldmsd_req_ctxt_t req_ctxt);
 static int prdcr_unsubscribe_regex_handler(ldmsd_req_ctxt_t req_ctxt);
-static int prdcr_deferred_start_regex_handler(ldmsd_req_ctxt_t req_ctxt);
-static int prdcr_deferred_start_handler(ldmsd_req_ctxt_t req_ctxt);
 static int strgp_add_handler(ldmsd_req_ctxt_t req_ctxt);
 static int strgp_del_handler(ldmsd_req_ctxt_t req_ctxt);
 static int strgp_start_handler(ldmsd_req_ctxt_t req_ctxt);
@@ -317,31 +307,9 @@ static struct request_handler_entry request_handler[] = {
 	[LDMSD_EXAMPLE_REQ] = { LDMSD_EXAMPLE_REQ, example_handler, XALL },
 
 	/* PRDCR */
-	[LDMSD_PRDCR_ADD_REQ] = {
-		LDMSD_PRDCR_ADD_REQ, prdcr_add_handler, XUG
-	},
-	[LDMSD_PRDCR_DEL_REQ] = {
-		LDMSD_PRDCR_DEL_REQ, prdcr_del_handler, XUG
-	},
-	[LDMSD_PRDCR_START_REQ] = {
-		LDMSD_PRDCR_START_REQ, prdcr_start_handler, XUG
-	},
-	[LDMSD_PRDCR_STOP_REQ] = {
-		LDMSD_PRDCR_STOP_REQ, prdcr_stop_handler, XUG
-	},
-	[LDMSD_PRDCR_STATUS_REQ] = {
-		LDMSD_PRDCR_STATUS_REQ, prdcr_status_handler,
-		XALL | LDMSD_PERM_FAILOVER_ALLOWED
-	},
 	[LDMSD_PRDCR_SET_REQ] = {
 		LDMSD_PRDCR_SET_REQ, prdcr_set_status_handler,
 		XUG | LDMSD_PERM_FAILOVER_ALLOWED
-	},
-	[LDMSD_PRDCR_START_REGEX_REQ] = {
-		LDMSD_PRDCR_START_REGEX_REQ, prdcr_start_regex_handler, XUG
-	},
-	[LDMSD_PRDCR_STOP_REGEX_REQ] = {
-		LDMSD_PRDCR_STOP_REGEX_REQ, prdcr_stop_regex_handler, XUG
 	},
 	[LDMSD_PRDCR_HINT_TREE_REQ] = {
 		LDMSD_PRDCR_HINT_TREE_REQ, prdcr_hint_tree_status_handler,
@@ -354,13 +322,6 @@ static struct request_handler_entry request_handler[] = {
 	[LDMSD_PRDCR_UNSUBSCRIBE_REQ] = {
 		LDMSD_PRDCR_UNSUBSCRIBE_REQ, prdcr_unsubscribe_regex_handler,
 		XUG | LDMSD_PERM_FAILOVER_ALLOWED
-	},
-	[LDMSD_PRDCR_DEFER_START_REGEX_REQ] = {
-		LDMSD_PRDCR_DEFER_START_REGEX_REQ, prdcr_deferred_start_regex_handler,
-		XUG
-	},
-	[LDMSD_PRDCR_DEFER_START_REQ] = {
-		LDMSD_PRDCR_DEFER_START_REQ, prdcr_deferred_start_handler, XUG
 	},
 
 	/* STRGP */
@@ -884,6 +845,8 @@ int ldmsd_handle_request(ldmsd_req_ctxt_t reqc)
 	uid_t luid;
 	gid_t lgid;
 	mode_t mask;
+	struct ev_s *ev = NULL;
+	struct ev_worker_s *dst;
 
 	if (LDMSD_CFG_TYPE_LDMS == reqc->xprt->type)
 		ldms = reqc->xprt->ldms.ldms;
@@ -895,6 +858,35 @@ int ldmsd_handle_request(ldmsd_req_ctxt_t reqc)
 	    request->req_id >= (sizeof(request_handler)/sizeof(request_handler[0])))
 		return unimplemented_handler(reqc);
 
+	/*
+	 * TODO: complete this
+	 */
+	switch (request->req_id) {
+	case LDMSD_PRDCR_ADD_REQ:
+	case LDMSD_PRDCR_DEL_REQ:
+	case LDMSD_PRDCR_START_REQ:
+	case LDMSD_PRDCR_START_REGEX_REQ:
+	case LDMSD_PRDCR_STOP_REQ:
+	case LDMSD_PRDCR_STOP_REGEX_REQ:
+	case LDMSD_PRDCR_STATUS_REQ:
+	case LDMSD_PRDCR_DEFER_START_REQ:
+	case LDMSD_PRDCR_DEFER_START_REGEX_REQ:
+		ev = ev_new(cfg_type);
+		dst = prdcr_tree_w;
+		EV_DATA(ev, struct cfg_data)->reqc = reqc;
+		EV_DATA(ev, struct cfg_data)->ctxt = NULL;
+		break;
+	default:
+		goto traditional;
+	}
+	if (!ev) {
+		ldmsd_log(LDMSD_LCRITICAL, "ldmsd: out of memory\n");
+		return ENOMEM;
+	}
+	ev_post(cfg_w, dst, ev, NULL);
+	return 0;
+
+traditional:
 	ent = &request_handler[request->req_id];
 
 	/* Check for unimplemented request */
@@ -1151,7 +1143,8 @@ static int __post_cfg(struct ldmsd_req_ctxt *reqc)
 	if (!ev)
 		return ENOMEM;
 	ldmsd_req_ctxt_ref_get(reqc, "post_cfg");
-	EV_DATA(ev, struct reqc_data)->reqc = reqc;
+	EV_DATA(ev, struct cfg_data)->reqc = reqc;
+	EV_DATA(ev, struct cfg_data)->ctxt = NULL;
 
 	ev_post(msg_tree_w, cfg_w, ev, NULL);
 	return 0;
@@ -1405,6 +1398,7 @@ int deferred_start_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, e
 	next:
 		rbn = nxt_rbn;
 	}
+	ev_put(ev);
 	return 0;
 }
 
@@ -1453,7 +1447,7 @@ int msg_tree_xprt_term_actor(ev_worker_t src, ev_worker_t dst, ev_status_t statu
 
 int recv_cfg_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t ev)
 {
-	struct ldmsd_req_ctxt *reqc = EV_DATA(ev, struct reqc_data)->reqc;
+	struct ldmsd_req_ctxt *reqc = EV_DATA(ev, struct cfg_data)->reqc;
 	struct ldmsd_req_cmd *rcmd = reqc->ctxt;
 	int rc;
 
@@ -1559,345 +1553,6 @@ static int example_handler(ldmsd_req_ctxt_t reqc)
 	return rc;
 }
 
-static int prdcr_add_handler(ldmsd_req_ctxt_t reqc)
-{
-	ldmsd_prdcr_t prdcr;
-	char *name, *host, *xprt, *attr_name, *type_s, *port_s, *interval_s;
-	char *auth;
-	enum ldmsd_prdcr_type type = -1;
-	unsigned short port_no = 0;
-	int interval_us = -1;
-	size_t cnt;
-	uid_t uid;
-	gid_t gid;
-	int perm;
-	char *perm_s = NULL;
-
-	reqc->errcode = 0;
-	name = host = xprt = type_s = port_s = interval_s = auth = NULL;
-
-	attr_name = "name";
-	name = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_NAME);
-	if (!name)
-		goto einval;
-
-	attr_name = "type";
-	type_s = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_TYPE);
-	if (!type_s) {
-		goto einval;
-	} else {
-		type = ldmsd_prdcr_str2type(type_s);
-		if ((int)type < 0) {
-			cnt = Snprintf(&reqc->line_buf, &reqc->line_len,
-					"The attribute type '%s' is invalid.",
-					type_s);
-			goto send_reply;
-		}
-		if (type == LDMSD_PRDCR_TYPE_LOCAL) {
-			cnt = Snprintf(&reqc->line_buf, &reqc->line_len,
-					"Producer with type 'local' is "
-					"not supported.");
-			reqc->errcode = EINVAL;
-			goto send_reply;
-		}
-	}
-
-	attr_name = "xprt";
-	xprt = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_XPRT);
-	if (!xprt)
-		goto einval;
-
-	attr_name = "host";
-	host = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_HOST);
-	if (!host)
-		goto einval;
-
-	attr_name = "port";
-	port_s = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_PORT);
-	if (!port_s) {
-		goto einval;
-	} else {
-		long ptmp = 0;
-		ptmp = strtol(port_s, NULL, 0);
-		if (ptmp < 1 || ptmp > USHRT_MAX) {
-			goto einval;
-		}
-		port_no = (unsigned)ptmp;
-	}
-
-	attr_name = "interval";
-	interval_s = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_INTERVAL);
-	if (!interval_s) {
-		goto einval;
-	} else {
-		 interval_us = strtol(interval_s, NULL, 0);
-	}
-
-	auth = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_AUTH);
-
-	struct ldmsd_sec_ctxt sctxt;
-	ldmsd_req_ctxt_sec_get(reqc, &sctxt);
-	uid = sctxt.crd.uid;
-	gid = sctxt.crd.gid;
-
-	perm = 0770;
-	perm_s = ldmsd_req_attr_str_value_get_by_name(reqc, "perm");
-	if (perm_s)
-		perm = strtol(perm_s, NULL, 0);
-
-	prdcr = ldmsd_prdcr_new_with_auth(name, xprt, host, port_no, type,
-					  interval_us, auth, uid, gid, perm);
-	if (!prdcr) {
-		if (errno == EEXIST)
-			goto eexist;
-		else if (errno == EAFNOSUPPORT)
-			goto eafnosupport;
-		else if (errno == ENOENT)
-			goto ebadauth;
-		else
-			goto enomem;
-	}
-
-	goto send_reply;
-ebadauth:
-	reqc->errcode = ENOENT;
-	cnt = Snprintf(&reqc->line_buf, &reqc->line_len,
-			"Authentication name not found, check the auth_add configuration.");
-	goto send_reply;
-enomem:
-	reqc->errcode = ENOMEM;
-	cnt = Snprintf(&reqc->line_buf, &reqc->line_len,
-			"Memory allocation failed.");
-	goto send_reply;
-eexist:
-	reqc->errcode = EEXIST;
-	cnt = Snprintf(&reqc->line_buf, &reqc->line_len,
-			"The prdcr %s already exists.", name);
-	goto send_reply;
-eafnosupport:
-	reqc->errcode = EAFNOSUPPORT;
-	cnt = Snprintf(&reqc->line_buf, &reqc->line_len,
-			"Error resolving hostname '%s'\n", host);
-	goto send_reply;
-einval:
-	reqc->errcode = EINVAL;
-	cnt = Snprintf(&reqc->line_buf, &reqc->line_len,
-			"The attribute '%s' is required.", attr_name);
-send_reply:
-	ldmsd_send_req_response(reqc, reqc->line_buf);
-	free(name);
-	free(type_s);
-	free(port_s);
-	free(interval_s);
-	free(host);
-	free(xprt);
-	free(perm_s);
-	free(auth);
-	return 0;
-}
-
-static int prdcr_del_handler(ldmsd_req_ctxt_t reqc)
-{
-	char *name = NULL, *attr_name;
-	size_t cnt = 0;
-	struct ldmsd_sec_ctxt sctxt;
-
-	reqc->errcode = 0;
-
-	attr_name = "name";
-	name = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_NAME);
-	if (!name) {
-		reqc->errcode = EINVAL;
-		cnt = Snprintf(&reqc->line_buf, &reqc->line_len,
-				"The attribute '%s' is required by prdcr_del.",
-			       	attr_name);
-		goto send_reply;
-	}
-
-	ldmsd_req_ctxt_sec_get(reqc, &sctxt);
-
-	reqc->errcode = ldmsd_prdcr_del(name, &sctxt);
-	switch (reqc->errcode) {
-	case 0:
-		break;
-	case ENOENT:
-		Snprintf(&reqc->line_buf, &reqc->line_len,
-				"The producer specified does not exist.");
-		break;
-	case EBUSY:
-		Snprintf(&reqc->line_buf, &reqc->line_len,
-				"The producer is in use.");
-		break;
-	case EACCES:
-		Snprintf(&reqc->line_buf, &reqc->line_len,
-				"Permission denied.");
-		break;
-	default:
-		Snprintf(&reqc->line_buf, &reqc->line_len,
-				"Error: %d %s",
-				reqc->errcode, ovis_errno_abbvr(reqc->errcode));
-	}
-
-send_reply:
-	ldmsd_send_req_response(reqc, reqc->line_buf);
-	free(name);
-	return 0;
-}
-
-static int prdcr_start_handler(ldmsd_req_ctxt_t reqc)
-{
-	char *name, *interval_str;
-	name = interval_str = NULL;
-	size_t cnt = 0;
-	struct ldmsd_sec_ctxt sctxt;
-
-	reqc->errcode = 0;
-
-	name = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_NAME);
-	if (!name) {
-		reqc->errcode = EINVAL;
-		cnt = Snprintf(&reqc->line_buf, &reqc->line_len,
-				"The attribute 'name' is required by prdcr_start.");
-		goto send_reply;
-	}
-
-	ldmsd_req_ctxt_sec_get(reqc, &sctxt);
-	interval_str = ldmsd_req_attr_str_value_get_by_id(reqc,
-							LDMSD_ATTR_INTERVAL);
-	reqc->errcode = ldmsd_prdcr_start(name, interval_str, &sctxt);
-	switch (reqc->errcode) {
-	case 0:
-		break;
-	case EBUSY:
-		cnt = Snprintf(&reqc->line_buf, &reqc->line_len,
-				"The producer is already running.");
-		break;
-	case ENOENT:
-		cnt = Snprintf(&reqc->line_buf, &reqc->line_len,
-				"The producer specified does not exist.");
-		break;
-	case EACCES:
-		Snprintf(&reqc->line_buf, &reqc->line_len,
-				"Permission denied.");
-		break;
-	default:
-		Snprintf(&reqc->line_buf, &reqc->line_len,
-				"Error: %d %s",
-				reqc->errcode, ovis_errno_abbvr(reqc->errcode));
-	}
-
-send_reply:
-	ldmsd_send_req_response(reqc, reqc->line_buf);
-	free(name);
-	free(interval_str);
-	return 0;
-}
-
-static int prdcr_stop_handler(ldmsd_req_ctxt_t reqc)
-{
-	char *name = NULL;
-	size_t cnt = 0;
-	struct ldmsd_sec_ctxt sctxt;
-
-	reqc->errcode = 0;
-
-	name = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_NAME);
-	if (!name) {
-		reqc->errcode = EINVAL;
-		cnt = Snprintf(&reqc->line_buf, &reqc->line_len,
-				"The attribute 'name' is required by prdcr_stop.");
-		goto send_reply;
-	}
-
-	ldmsd_req_ctxt_sec_get(reqc, &sctxt);
-
-	reqc->errcode = ldmsd_prdcr_stop(name, &sctxt);
-	switch (reqc->errcode) {
-	case 0:
-		break;
-	case EBUSY:
-		cnt = Snprintf(&reqc->line_buf, &reqc->line_len,
-				"The producer is already stopped.");
-		break;
-	case ENOENT:
-		cnt = Snprintf(&reqc->line_buf, &reqc->line_len,
-				"The producer specified does not exist.");
-		break;
-	case EACCES:
-		cnt = Snprintf(&reqc->line_buf, &reqc->line_len,
-				"Permission denied.");
-		break;
-	default:
-		Snprintf(&reqc->line_buf, &reqc->line_len,
-				"Error: %d %s",
-				reqc->errcode, ovis_errno_abbvr(reqc->errcode));
-	}
-
-send_reply:
-	ldmsd_send_req_response(reqc, reqc->line_buf);
-	free(name);
-	return 0;
-}
-
-static int prdcr_start_regex_handler(ldmsd_req_ctxt_t reqc)
-{
-	char *prdcr_regex, *interval_str;
-	prdcr_regex = interval_str = NULL;
-	size_t cnt = 0;
-	struct ldmsd_sec_ctxt sctxt;
-
-	reqc->errcode = 0;
-
-	prdcr_regex = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_REGEX);
-	if (!prdcr_regex) {
-		reqc->errcode = EINVAL;
-		cnt = Snprintf(&reqc->line_buf, &reqc->line_len,
-				"The attribute 'regex' is required by prdcr_start_regex.");
-		goto send_reply;
-	}
-
-	interval_str = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_INTERVAL);
-
-	ldmsd_req_ctxt_sec_get(reqc, &sctxt);
-
-	reqc->errcode = ldmsd_prdcr_start_regex(prdcr_regex, interval_str,
-					reqc->line_buf, reqc->line_len, &sctxt);
-	/* on error, reqc->line_buf will be filled */
-
-send_reply:
-	ldmsd_send_req_response(reqc, reqc->line_buf);
-	free(prdcr_regex);
-	free(interval_str);
-	return 0;
-}
-
-static int prdcr_stop_regex_handler(ldmsd_req_ctxt_t reqc)
-{
-	char *prdcr_regex = NULL;
-	size_t cnt = 0;
-	struct ldmsd_sec_ctxt sctxt;
-
-	reqc->errcode = 0;
-
-	prdcr_regex = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_REGEX);
-	if (!prdcr_regex) {
-		reqc->errcode = EINVAL;
-		cnt = Snprintf(&reqc->line_buf, &reqc->line_len,
-				"The attribute 'regex' is required by prdcr_stop_regex.");
-		goto send_reply;
-	}
-
-	ldmsd_req_ctxt_sec_get(reqc, &sctxt);
-	reqc->errcode = ldmsd_prdcr_stop_regex(prdcr_regex,
-				reqc->line_buf, reqc->line_len, &sctxt);
-	/* on error, reqc->line_buf will be filled */
-
-send_reply:
-	ldmsd_send_req_response(reqc, reqc->line_buf);
-	free(prdcr_regex);
-	return 0;
-}
-
 static int prdcr_subscribe_regex_handler(ldmsd_req_ctxt_t reqc)
 {
 	char *prdcr_regex;
@@ -1974,139 +1629,6 @@ send_reply:
 	free(prdcr_regex);
 	free(stream_name);
 	return 0;
-}
-
-int __prdcr_status_json_obj(ldmsd_req_ctxt_t reqc, ldmsd_prdcr_t prdcr, int prdcr_cnt)
-{
-	ldmsd_prdcr_set_t prv_set;
-	int set_count = 0;
-	int rc = 0;
-
-	/* Append the string to line_buf */
-	if (prdcr_cnt) {
-		rc = linebuf_printf(reqc, ",\n");
-		if (rc)
-			return rc;
-	}
-
-	ldmsd_prdcr_lock(prdcr);
-	rc = linebuf_printf(reqc,
-			"{ \"name\":\"%s\","
-			"\"type\":\"%s\","
-			"\"host\":\"%s\","
-			"\"port\":%hu,"
-			"\"transport\":\"%s\","
-			"\"reconnect_us\":\"%ld\","
-			"\"state\":\"%s\","
-			"\"sets\": [",
-			prdcr->obj.name, ldmsd_prdcr_type2str(prdcr->type),
-			prdcr->host_name, prdcr->port_no, prdcr->xprt_name,
-			prdcr->conn_intrvl_us,
-			prdcr_state_str(prdcr->conn_state));
-	if (rc)
-		goto out;
-
-	set_count = 0;
-	for (prv_set = ldmsd_prdcr_set_first(prdcr); prv_set;
-	     prv_set = ldmsd_prdcr_set_next(prv_set)) {
-		if (set_count) {
-			rc = linebuf_printf(reqc, ",\n");
-			if (rc)
-				goto out;
-		}
-
-		rc = linebuf_printf(reqc,
-			"{ \"inst_name\":\"%s\","
-			"\"schema_name\":\"%s\","
-			"\"state\":\"%s\"}",
-			prv_set->inst_name,
-			(prv_set->schema_name ? prv_set->schema_name : ""),
-			ldmsd_prdcr_set_state_str(prv_set->state));
-		if (rc)
-			goto out;
-		set_count++;
-	}
-	rc = linebuf_printf(reqc, "]}");
-out:
-	ldmsd_prdcr_unlock(prdcr);
-	return rc;
-}
-
-static int prdcr_status_handler(ldmsd_req_ctxt_t reqc)
-{
-	int rc = 0;
-	size_t cnt = 0;
-	struct ldmsd_req_attr_s attr;
-	ldmsd_prdcr_t prdcr = NULL;
-	char *name;
-	int count;
-
-	name = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_NAME);
-	if (name) {
-		prdcr = ldmsd_prdcr_find(name);
-		if (!prdcr) {
-			/* Do not report any status */
-			cnt = snprintf(reqc->line_buf, reqc->line_len,
-					"prdcr '%s' doesn't exist.", name);
-			reqc->errcode = ENOENT;
-			ldmsd_send_req_response(reqc, reqc->line_buf);
-			return 0;
-		}
-	}
-
-	/* Construct the json object of the producer(s) */
-	if (prdcr) {
-		rc = __prdcr_status_json_obj(reqc, prdcr, 0);
-		if (rc)
-			goto out;
-	} else {
-		count = 0;
-		ldmsd_cfg_lock(LDMSD_CFGOBJ_PRDCR);
-		for (prdcr = ldmsd_prdcr_first(); prdcr;
-				prdcr = ldmsd_prdcr_next(prdcr)) {
-			rc = __prdcr_status_json_obj(reqc, prdcr, count);
-			if (rc) {
-				ldmsd_cfg_unlock(LDMSD_CFGOBJ_PRDCR);
-				goto out;
-			}
-			count++;
-		}
-		ldmsd_cfg_unlock(LDMSD_CFGOBJ_PRDCR);
-	}
-	cnt = reqc->line_off + 2; /* +2 for '[' and ']' */
-
-	/* Send the json attribute header */
-	attr.discrim = 1;
-	attr.attr_len = cnt;
-	attr.attr_id = LDMSD_ATTR_JSON;
-	ldmsd_hton_req_attr(&attr);
-	rc = ldmsd_append_reply(reqc, (char *)&attr, sizeof(attr), LDMSD_REQ_SOM_F);
-	if (rc)
-		goto out;
-
-	/* Send the json object */
-	rc = ldmsd_append_reply(reqc, "[", 1, 0);
-	if (rc)
-		goto out;
-	if (reqc->line_off) {
-		rc = ldmsd_append_reply(reqc, reqc->line_buf, reqc->line_off, 0);
-		if (rc)
-			goto out;
-	}
-	rc = ldmsd_append_reply(reqc, "]", 1, 0);
-	if (rc) {
-		goto out;
-	}
-
-	/* Send the terminating attribute */
-	attr.discrim = 0;
-	rc = ldmsd_append_reply(reqc, (char *)&attr.discrim,
-			sizeof(uint32_t), LDMSD_REQ_EOM_F);
-out:
-	free(name);
-	if (prdcr)
-		ldmsd_prdcr_put(prdcr);
-	return rc;
 }
 
 size_t __prdcr_set_status(ldmsd_req_ctxt_t reqc, ldmsd_prdcr_set_t prd_set)
@@ -3560,7 +3082,7 @@ int __updtr_status_json_obj(ldmsd_req_ctxt_t reqc, ldmsd_updtr_t updtr,
 			       prdcr->host_name,
 			       prdcr->port_no,
 			       prdcr->xprt_name,
-			       prdcr_state_str(prdcr->conn_state));
+			       ldmsd_prdcr_state_str(prdcr->conn_state));
 		if (rc)
 			goto out;
 	}
@@ -3645,6 +3167,7 @@ out:
 	free(name);
 	if (updtr)
 		ldmsd_updtr_put(updtr);
+	ldmsd_req_ctxt_ref_put(reqc, "create");
 	return rc;
 }
 
@@ -6910,42 +6433,6 @@ static int set_default_authz_handler(ldmsd_req_ctxt_t reqc)
 }
 
 static int
-__deferred_start_regex_handler(ldmsd_req_ctxt_t reqc, enum ldmsd_cfgobj_type type)
-{
-	regex_t regex = {0};
-	ldmsd_cfgobj_t obj;
-	int rc;
-	char *val, *reg;
-
-	val = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_REGEX);
-	if (!val) {
-		ldmsd_log(LDMSD_LERROR, "`regex` attribute is required.\n");
-		return EINVAL;
-	}
-	reg = str_repl_env_vars(val);
-	if (!val) {
-		ldmsd_log(LDMSD_LERROR, "Not enough memory.\n");
-		return ENOMEM;
-	}
-	rc = regcomp(&regex, reg, REG_NOSUB);
-	if (rc) {
-		ldmsd_log(LDMSD_LERROR, "Bad regex: %s\n", val);
-		free(val);
-		return EBADMSG;
-	}
-	free(val);
-	ldmsd_cfg_lock(type);
-	LDMSD_CFGOBJ_FOREACH(obj, type) {
-		rc = regexec(&regex, obj->name, 0, NULL, 0);
-		if (rc == 0) {
-			obj->perm |= LDMSD_PERM_DSTART;
-		}
-	}
-	ldmsd_cfg_unlock(type);
-	return 0;
-}
-
-static int
 __deferred_start_handler(ldmsd_req_ctxt_t reqc, enum ldmsd_cfgobj_type type)
 {
 	ldmsd_cfgobj_t obj;
@@ -6972,16 +6459,6 @@ __deferred_start_handler(ldmsd_req_ctxt_t reqc, enum ldmsd_cfgobj_type type)
 	ldmsd_cfgobj_put(obj);
 	ldmsd_req_ctxt_ref_put(reqc, "create");
 	return 0;
-}
-
-static int prdcr_deferred_start_regex_handler(ldmsd_req_ctxt_t reqc)
-{
-	return __deferred_start_regex_handler(reqc, LDMSD_CFGOBJ_PRDCR);
-}
-
-static int prdcr_deferred_start_handler(ldmsd_req_ctxt_t reqc)
-{
-	return __deferred_start_handler(reqc, LDMSD_CFGOBJ_PRDCR);
 }
 
 static int strgp_deferred_start_handler(ldmsd_req_ctxt_t reqc)

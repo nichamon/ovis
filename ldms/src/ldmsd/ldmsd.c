@@ -104,6 +104,9 @@
 #define LDMSD_MEM_SIZE_STR "512kB"
 #define LDMSD_MEM_SIZE_DEFAULT 512L * 1024L
 
+#define LDMSD_NUM_PRDCR_WORKERS 1
+#define LDMSD_NUM_PRDSET_WORKERS 1
+
 char myname[512]; /* name to identify ldmsd */
 		  /* NOTE: fqdn limit: 255 characters */
 		  /* DEFAULT: myhostname:port */
@@ -117,6 +120,8 @@ char *bannerfile;
 int banner = 1;
 size_t max_mem_size;
 char *max_mem_sz_str;
+int num_prdcr_workers = -1;
+int num_prdset_workers = -1;
 
 /* NOTE: For determining version by dumping binary string */
 char *_VERSION_STR_ = "LDMSD_VERSION " OVIS_LDMS_VERSION;
@@ -161,6 +166,50 @@ uint8_t is_ldmsd_initialized = 0;
 uint8_t ldmsd_is_initialized()
 {
 	return is_ldmsd_initialized;
+}
+
+int ldmsd_time_dur_str2us(const char *s, unsigned long *x)
+{
+	int rc;
+	char unit[16];
+	unsigned long _x;
+	rc = sscanf(s, "%lu %s", &_x, unit);
+
+	if ((rc == 1) || (0 == strcmp(unit, "us")) || (0 == strncmp(unit, "micro", 5))) {
+		/* microseconds */
+		/* do nothing */
+	} else if ((0 == strcmp(unit, "ms")) || (0 == strncmp(unit, "milli", 5))) {
+		/* milliseconds */
+		_x *= 1000L;
+	} else if ((0 == strcmp(unit, "s")) || (0 == strncmp(unit, "sec", 3))) {
+		/* seconds */
+		_x *= 1000000L;
+	} else if (0 == strncmp(unit, "min", 3)) {
+		/* minutes */
+		_x *= (1000000L * 60L);
+	} else if (unit[0] == 'h') {
+		/* hours */
+		_x *= (1000000L * 60L * 60L);
+	} else if (0 == strncmp(unit, "day", 3)) {
+		/* days */
+		_x *= (1000000L * 60L * 60L * 24L);
+	} else {
+		return ENOTSUP;
+	}
+	if (0 > _x)
+		return EINVAL;
+	*x = _x;
+	return 0;
+}
+
+int ldmsd_num_prdcr_workers_get()
+{
+	return num_prdcr_workers;
+}
+
+int ldmsd_num_prdset_workers_get()
+{
+	return num_prdset_workers;
 }
 
 const char* ldmsd_loglevel_names[] = {
@@ -554,7 +603,8 @@ void usage_hint(char *argv[],char *hint)
 	printf("    -s setfile     Text file containing kernel metric sets to publish.\n"
 	       "		   [" LDMSD_SETFILE "]\n");
 	printf("  Thread Options\n");
-	printf("    -P thr_count   Count of event threads to start.\n");
+	printf("    -P count       Number of workers that work on Producers' tasks.\n");
+	printf("    -S count       Number of workers that work on Producer sets' task.\n");
 	printf("    -f count       The number of flush threads.\n");
 	printf("    -D num	 The dirty threshold.\n");
 	printf("  Configuration Options\n");
@@ -562,7 +612,6 @@ void usage_hint(char *argv[],char *hint)
 	printf("    -V	     Print LDMS version and exit\n.");
 	printf("    -H host_name   The host/producer name for metric sets.\n");
 	printf("   Deprecated Options\n");
-	printf("    -S     	   DEPRECATED.\n");
 	printf("    -p     	   DEPRECATED.\n");
 	if (hint) {
 		printf("\nHINT: %s\n",hint);
@@ -1688,6 +1737,37 @@ int main(int argc, char *argv[])
 	sigaddset(&sigset, SIGTERM);
 	sigaddset(&sigset, SIGABRT);
 
+	while ((op = getopt(argc, argv, FMT)) != -1) {
+		switch (op) {
+		case 'P':
+			if (check_arg("P", optarg, LO_UINT))
+				return 1;
+			num_prdcr_workers = atoi(optarg);
+			if (num_prdcr_workers < 1 )
+				num_prdcr_workers = 1;
+			if (num_prdcr_workers > EVTH_MAX)
+				num_prdcr_workers = EVTH_MAX;
+			break;
+		case 'S':
+			if (check_arg("S", optarg, LO_UINT))
+				return 1;
+			num_prdset_workers = atoi(optarg);
+			if (num_prdset_workers < 1 )
+				num_prdset_workers = 1;
+			if (num_prdset_workers > EVTH_MAX)
+				num_prdset_workers = EVTH_MAX;
+			break;
+		default:
+			/* do nothing */
+			break;
+		}
+	}
+
+	if (0 > num_prdcr_workers)
+		num_prdcr_workers = LDMSD_NUM_PRDCR_WORKERS;
+	if (0 > num_prdset_workers)
+		num_prdset_workers = LDMSD_NUM_PRDSET_WORKERS;
+
 	ret = ldmsd_ev_init();
 	if (ret) {
 		printf("Memory allocation failure.\n");
@@ -1705,9 +1785,10 @@ int main(int argc, char *argv[])
 		exit(1);
 	}
 
-	opterr = 0;
 	char * dup_auth = NULL;
 
+	opterr = 0;
+	optind = 0;
 	while ((op = getopt(argc, argv, FMT)) != -1) {
 		switch (op) {
 		case 'B':
@@ -1769,13 +1850,8 @@ int main(int argc, char *argv[])
 			foreground = 1;
 			break;
 		case 'P':
-			if (check_arg("P", optarg, LO_UINT))
-				return 1;
-			ev_thread_count = atoi(optarg);
-			if (ev_thread_count < 1 )
-				ev_thread_count = 1;
-			if (ev_thread_count > EVTH_MAX)
-				ev_thread_count = EVTH_MAX;
+		case 'S':
+			/* already processed */
 			break;
 		case 'm':
 			max_mem_sz_str = strdup(optarg);
