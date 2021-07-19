@@ -74,6 +74,21 @@ extern int
 prdcr_tree_cfg_rsp_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e);
 extern int
 prdcr_cfg_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e);
+extern int
+prdcr_connect_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e);
+extern int
+prdcr_xprt_event_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e);
+extern int
+prdcr_dir_complete_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e);
+
+extern int
+prdset_add_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e);
+
+extern int
+updtr_tree_prdset_add_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e);
+
+extern int
+strgp_tree_prdset_add_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e);
 
 int ldmsd_worker_init(void)
 {
@@ -108,17 +123,44 @@ int ldmsd_worker_init(void)
 	ev_dispatch(prdcr_tree_w, cfgobj_rsp_type, prdcr_tree_cfg_rsp_actor);
 
 	/* prdcr worker pool */
-	prdcr_pool = calloc(ldmsd_num_prdcr_workers_get(), sizeof(ev_worker_t));
+	prdcr_pool = malloc(ldmsd_num_prdcr_workers_get() * sizeof(ev_worker_t));
 	if (!prdcr_pool)
 		goto enomem;
 	for (i = 0; i < ldmsd_num_prdcr_workers_get(); i++) {
-		snprintf(s, 127, "prdcr_w-%d", i + 1);
+		snprintf(s, 127, "prdcr_w_%d", i + 1);
 		prdcr_pool[i] = ev_worker_new(s, default_actor);
 		if (!prdcr_pool[i])
 			goto enomem;
 
 		ev_dispatch(prdcr_pool[i], cfgobj_cfg_type, prdcr_cfg_actor);
+		ev_dispatch(prdcr_pool[i], prdcr_connect_type, prdcr_connect_actor);
+		ev_dispatch(prdcr_pool[i], prdcr_xprt_type, prdcr_xprt_event_actor);
+		ev_dispatch(prdcr_pool[i], dir_complete_type, prdcr_dir_complete_actor);
 	}
+
+	prdset_pool = malloc(ldmsd_num_prdset_workers_get() * sizeof(ev_worker_t));
+	if (!prdset_pool)
+		goto enomem;
+	for (i = 0; i < ldmsd_num_prdset_workers_get(); i++) {
+		snprintf(s, 127, "prdset_w_%d", i + 1);
+		prdset_pool[i] = ev_worker_new(s, default_actor);
+		if (!prdset_pool[i])
+			goto enomem;
+
+		ev_dispatch(prdset_pool[i], prdset_add_type, prdset_add_actor);
+	}
+
+	/* updtr_tree worker */
+	updtr_tree_w = ev_worker_new("updtr_tree", default_actor);
+	if (!updtr_tree_w)
+		goto enomem;
+	ev_dispatch(updtr_tree_w, prdset_add_type, updtr_tree_prdset_add_actor);
+
+	/* strgp_tree worker */
+	strgp_tree_w = ev_worker_new("strgp_tree", default_actor);
+	if (!strgp_tree_w)
+		goto enomem;
+	ev_dispatch(strgp_tree_w, prdset_add_type, strgp_tree_prdset_add_actor);
 
 	return 0;
 enomem:
@@ -136,7 +178,7 @@ int ldmsd_ev_init(void)
 	if (!xprt_term_type)
 		return ENOMEM;
 
-	dir_add_type = ev_type_new("ldms_xprt:dir_add", sizeof(struct dir_data));
+	dir_complete_type = ev_type_new("ldms_xprt:dir_add", sizeof(struct dir_data));
 	lookup_complete_type = ev_type_new("ldms_xprt:lookup_complete",
 					  sizeof(struct lookup_data));
 	update_complete_type = ev_type_new("ldms_xprt:update_complete",
@@ -148,6 +190,11 @@ int ldmsd_ev_init(void)
 
 	cfgobj_cfg_type = ev_type_new("cfgobj_tree:cfgobj:cfg_req", sizeof(struct cfgobj_data));
 	cfgobj_rsp_type = ev_type_new("cfgobj:cfgobj_tree:cfg_rsp", sizeof(struct cfgobj_rsp_data));
+
+	prdcr_connect_type = ev_type_new("prdcr:connect", sizeof(struct cfgobj_data));
+	prdcr_xprt_type = ev_type_new("ldms_xprt:prdcr:xprt_event", sizeof(struct cfgobj_data));
+
+	prdset_add_type = ev_type_new("prdcr:prdset:add", sizeof(struct prdset_data));
 
 	return 0;
 }
@@ -161,6 +208,18 @@ ev_worker_t assign_prdcr_worker()
 	ev_worker_t w = prdcr_pool[i];
 	i++;
 	i = i%ldmsd_num_prdcr_workers_get();
+	return w;
+}
+
+ev_worker_t assign_prdset_worker()
+{
+	/*
+	 * TODO: Use a more sophisticated than a round-robin
+	 */
+	static int i = 0;
+	ev_worker_t w = prdset_pool[i];
+	i++;
+	i = i%ldmsd_num_prdset_workers_get();
 	return w;
 }
 

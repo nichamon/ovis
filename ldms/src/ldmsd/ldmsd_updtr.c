@@ -1549,3 +1549,11 @@ ldmsd_updtr_task_t updtr_task_get(struct rbn *rbn)
 {
 	return container_of(rbn, struct ldmsd_updtr_task, rbn);
 }
+
+int updtr_tree_prdset_add_actor(ev_worker_t src, ev_worker_t dst,
+					ev_status_t status, ev_t e)
+{
+	/* TODO: implement this */
+	ev_put(e);
+	return 0;
+}

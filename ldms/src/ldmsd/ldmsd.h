@@ -258,6 +258,8 @@ typedef struct ldmsd_prdcr {
 	 * quick lookup by the logic that handles update schedule.
 	 */
 	struct rbt hint_set_tree;
+
+	ev_worker_t *prdset_worker_pool;
 #ifdef LDMSD_UPDATE_TIME
 	double sched_update_time;
 #endif /* LDMSD_UPDATE_TIME */
@@ -302,6 +304,7 @@ typedef struct ldmsd_prdcr_set {
 	LIST_HEAD(ldmsd_strgp_ref_list, ldmsd_strgp_ref) strgp_list;
 	struct rbn rbn;
 
+	ev_worker_t worker;
 	LIST_ENTRY(ldmsd_prdcr_set) updt_hint_entry;
 
 	struct ldmsd_updtr_schedule updt_hint;
@@ -1273,6 +1276,8 @@ int ldmsd_timespec_cmp(struct timespec *a, struct timespec *b);
 void ldmsd_timespec_diff(struct timespec *a, struct timespec *b, struct timespec *result);
 
 int ldmsd_num_prdcr_workers_get();
+int ldmsd_num_prdset_workers_get();
 ev_worker_t assign_prdcr_worker();
+ev_worker_t assign_prdset_worker();
 
 #endif

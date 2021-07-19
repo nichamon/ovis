@@ -105,6 +105,7 @@
 #define LDMSD_MEM_SIZE_DEFAULT 512L * 1024L
 
 #define LDMSD_NUM_PRDCR_WORKERS 1
+#define LDMSD_NUM_PRDSET_WORKERS 1
 
 char myname[512]; /* name to identify ldmsd */
 		  /* NOTE: fqdn limit: 255 characters */
@@ -119,7 +120,8 @@ char *bannerfile;
 int banner = 1;
 size_t max_mem_size;
 char *max_mem_sz_str;
-int num_prdcr_workers;
+int num_prdcr_workers = -1;
+int num_prdset_workers = -1;
 
 /* NOTE: For determining version by dumping binary string */
 char *_VERSION_STR_ = "LDMSD_VERSION " OVIS_LDMS_VERSION;
@@ -203,6 +205,11 @@ int ldmsd_time_dur_str2us(const char *s, unsigned long *x)
 int ldmsd_num_prdcr_workers_get()
 {
 	return num_prdcr_workers;
+}
+
+int ldmsd_num_prdset_workers_get()
+{
+	return num_prdset_workers;
 }
 
 const char* ldmsd_loglevel_names[] = {
@@ -596,7 +603,8 @@ void usage_hint(char *argv[],char *hint)
 	printf("    -s setfile     Text file containing kernel metric sets to publish.\n"
 	       "		   [" LDMSD_SETFILE "]\n");
 	printf("  Thread Options\n");
-	printf("    -P thr_count   Count of event threads to start.\n");
+	printf("    -P count       Number of workers that work on Producers' tasks.\n");
+	printf("    -S count       Number of workers that work on Producer sets' task.\n");
 	printf("    -f count       The number of flush threads.\n");
 	printf("    -D num	 The dirty threshold.\n");
 	printf("  Configuration Options\n");
@@ -604,7 +612,6 @@ void usage_hint(char *argv[],char *hint)
 	printf("    -V	     Print LDMS version and exit\n.");
 	printf("    -H host_name   The host/producer name for metric sets.\n");
 	printf("   Deprecated Options\n");
-	printf("    -S     	   DEPRECATED.\n");
 	printf("    -p     	   DEPRECATED.\n");
 	if (hint) {
 		printf("\nHINT: %s\n",hint);
@@ -1741,14 +1748,25 @@ int main(int argc, char *argv[])
 			if (num_prdcr_workers > EVTH_MAX)
 				num_prdcr_workers = EVTH_MAX;
 			break;
+		case 'S':
+			if (check_arg("S", optarg, LO_UINT))
+				return 1;
+			num_prdset_workers = atoi(optarg);
+			if (num_prdset_workers < 1 )
+				num_prdset_workers = 1;
+			if (num_prdset_workers > EVTH_MAX)
+				num_prdset_workers = EVTH_MAX;
+			break;
 		default:
 			/* do nothing */
 			break;
 		}
 	}
 
-	if (0 == num_prdcr_workers)
+	if (0 > num_prdcr_workers)
 		num_prdcr_workers = LDMSD_NUM_PRDCR_WORKERS;
+	if (0 > num_prdset_workers)
+		num_prdset_workers = LDMSD_NUM_PRDSET_WORKERS;
 
 	ret = ldmsd_ev_init();
 	if (ret) {
@@ -1832,6 +1850,7 @@ int main(int argc, char *argv[])
 			foreground = 1;
 			break;
 		case 'P':
+		case 'S':
 			/* already processed */
 			break;
 		case 'm':

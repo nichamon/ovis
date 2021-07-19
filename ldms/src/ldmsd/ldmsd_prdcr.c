@@ -118,6 +118,7 @@ static ldmsd_prdcr_set_t prdcr_set_new(const char *inst_name, const char *schema
 	rbn_init(&set->rbn, set->inst_name);
 
 	set->ref_count = 1;
+	set->worker = assign_prdset_worker();
 	return set;
  err_2:
 	free(set->inst_name);
@@ -172,6 +173,32 @@ static void prdcr_set_del(ldmsd_prdcr_set_t set)
 {
 	set->state = LDMSD_PRDCR_SET_STATE_START;
 	ldmsd_prdcr_set_ref_put(set);
+}
+
+int prdset_add_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e)
+{
+	ev_t updtr_ev, strgp_ev;
+	struct prdset_data *data = EV_DATA(e, struct prdset_data);
+
+	updtr_ev = ev_new(prdset_add_type);
+	if (!updtr_ev)
+		goto enomem;
+	strgp_ev = ev_new(prdset_add_type);
+	if (!strgp_ev)
+		goto enomem;
+
+	memcpy(EV_DATA(updtr_ev, struct prdset_data), data, sizeof(*data));
+	memcpy(EV_DATA(strgp_ev, struct prdset_data), data, sizeof(*data));
+
+	ev_post(dst, updtr_tree_w, updtr_ev, 0);
+	ev_post(dst, strgp_tree_w, strgp_ev, 0);
+
+	ev_put(e);
+	return 0;
+enomem:
+	ev_put(e);
+	ldmsd_log(LDMSD_LCRITICAL, "Out of memory\n");
+	return ENOMEM;
 }
 
 #define UPDT_HINT_TREE_ADD 1
@@ -236,7 +263,7 @@ static void prdcr_reset_sets(ldmsd_prdcr_t prdcr)
 	struct rbn *rbn;
 	while ((rbn = rbt_min(&prdcr->set_tree))) {
 		prd_set = container_of(rbn, struct ldmsd_prdcr_set, rbn);
-		prdcr_reset_set(prdcr, prd_set);
+		prdcr_reset_set(prdcr, prd_set); /* TODO: event-driven */
 	}
 }
 
@@ -377,9 +404,19 @@ static void _add_cb(ldms_t xprt, ldmsd_prdcr_t prdcr, ldms_dir_set_t dset)
 				&set->updt_hint, UPDT_HINT_TREE_ADD);
  	}
 
-	ldmsd_prdcr_unlock(prdcr);
-	ldmsd_prd_set_updtr_task_update(set);
-	ldmsd_prdcr_lock(prdcr);
+	ev_t prdset_add_ev = ev_new(prdset_add_type);
+	if (!prdset_add_ev) {
+		ldmsd_log(LDMSD_LCRITICAL, "Out of memory\n");
+		return;
+	}
+
+	EV_DATA(prdset_add_ev, struct prdset_data)->set_name = set->inst_name;
+	EV_DATA(prdset_add_ev, struct prdset_data)->prdcr_name = prdcr->obj.name;
+	EV_DATA(prdset_add_ev, struct prdset_data)->strgp_name = NULL;
+	EV_DATA(prdset_add_ev, struct prdset_data)->update_schedule = 0;
+	EV_DATA(prdset_add_ev, struct prdset_data)->updtr_name = NULL;
+
+	ev_post(prdcr->worker, set->worker, prdset_add_ev, 0);
 }
 
 /*
@@ -418,6 +455,7 @@ static void prdcr_dir_cb_del(ldms_t xprt, ldms_dir_t dir, ldmsd_prdcr_t prdcr)
 
 static void prdcr_dir_cb_upd(ldms_t xprt, ldms_dir_t dir, ldmsd_prdcr_t prdcr)
 {
+	/* TODO: event-driven */
 	ldmsd_prdcr_set_t set;
 	int i;
 	struct ldmsd_updtr_schedule prev_hint;
@@ -451,6 +489,31 @@ static void prdcr_dir_cb_upd(ldms_t xprt, ldms_dir_t dir, ldmsd_prdcr_t prdcr)
 	}
 }
 
+int
+prdcr_dir_complete_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e)
+{
+	ldmsd_prdcr_t prdcr = EV_DATA(e, struct dir_data)->prdcr;
+	ldms_dir_t dir = EV_DATA(e, struct dir_data)->dir;
+
+	switch (dir->type) {
+	case LDMS_DIR_LIST:
+		prdcr_dir_cb_list(prdcr->xprt, dir, prdcr);
+		break;
+	case LDMS_DIR_ADD:
+		prdcr_dir_cb_add(prdcr->xprt, dir, prdcr);
+		break;
+	case LDMS_DIR_DEL:
+		prdcr_dir_cb_del(prdcr->xprt, dir, prdcr);
+		break;
+	case LDMS_DIR_UPD:
+		prdcr_dir_cb_upd(prdcr->xprt, dir, prdcr);
+		break;
+	}
+	ev_put(e);
+	ldmsd_prdcr_put(prdcr); /* Put back the ref taken when the ev's posted */
+	return 0;
+}
+
 /*
  * The ldms_dir has completed. Decode the directory type and call the
  * appropriate handler function.
@@ -463,23 +526,19 @@ static void prdcr_dir_cb(ldms_t xprt, int status, ldms_dir_t dir, void *arg)
 			 status, prdcr->obj.name, prdcr->host_name);
 		return;
 	}
-	ldmsd_prdcr_lock(prdcr);
-	switch (dir->type) {
-	case LDMS_DIR_LIST:
-		prdcr_dir_cb_list(xprt, dir, prdcr);
-		break;
-	case LDMS_DIR_ADD:
-		prdcr_dir_cb_add(xprt, dir, prdcr);
-		break;
-	case LDMS_DIR_DEL:
-		prdcr_dir_cb_del(xprt, dir, prdcr);
-		break;
-	case LDMS_DIR_UPD:
-		prdcr_dir_cb_upd(xprt, dir, prdcr);
-		break;
-	}
-	ldmsd_prdcr_unlock(prdcr);
+	assert(xprt == prdcr->xprt);
+	ev_t dir_ev = ev_new(dir_complete_type);
+	if (!dir_ev)
+		goto enomem;
+	EV_DATA(dir_ev, struct dir_data)->dir = dir;
+	EV_DATA(dir_ev, struct dir_data)->prdcr = ldmsd_prdcr_get(prdcr);
+	ev_post(NULL, prdcr->worker, dir_ev, 0);
+	return ;
+
+enomem:
+	ldmsd_log(LDMSD_LCRITICAL, "Out of memory");
 	ldms_xprt_dir_free(xprt, dir);
+	return;
 }
 
 static int __on_subs_resp(ldmsd_req_cmd_t rcmd)
@@ -562,31 +621,52 @@ static const char *conn_state_str(int state)
 	return "UNKNOWN_STATE";
 }
 
-static void prdcr_connect_cb(ldms_t x, ldms_xprt_event_t e, void *cb_arg)
+
+static int prdcr_connect_ev(ldmsd_prdcr_t prdcr, unsigned long interval_us)
 {
-	ldmsd_prdcr_t prdcr = cb_arg;
-	ldmsd_prdcr_lock(prdcr);
+	struct timespec to;
+	ev_t conn_ev = ev_new(prdcr_connect_type);
+	if (!conn_ev)
+		return ENOMEM;
+
+	EV_DATA(conn_ev, struct cfgobj_data)->obj = &ldmsd_prdcr_get(prdcr)->obj;
+	EV_DATA(conn_ev, struct cfgobj_data)->ctxt = NULL;
+
+	clock_gettime(CLOCK_REALTIME, &to);
+	to.tv_sec += interval_us / 1000000;
+	to.tv_nsec += (interval_us % 1000000) * 1000;
+
+	ev_post(prdcr->worker, prdcr->worker, conn_ev, &to);
+	return 0;
+}
+
+int
+prdcr_xprt_event_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t ev)
+{
+	ldmsd_prdcr_t prdcr = (ldmsd_prdcr_t)EV_DATA(ev, struct cfgobj_data)->obj;
+	ldms_xprt_event_t xprt_ev = (ldms_xprt_event_t)EV_DATA(ev, struct cfgobj_data)->ctxt;
+
 	ldmsd_log(LDMSD_LINFO, "%s:%d Producer %s (%s %s:%d) conn_state: %d %s\n",
 				__func__, __LINE__,
 				prdcr->obj.name, prdcr->xprt_name,
 				prdcr->host_name, (int)prdcr->port_no,
 				prdcr->conn_state,
 				conn_state_str(prdcr->conn_state));
-	switch(e->type) {
+	switch(xprt_ev->type) {
 	case LDMS_XPRT_EVENT_DISCONNECTED:
-		x->disconnected = 1;
+		prdcr->xprt->disconnected = 1;
 		break;
 	default:
-		assert(x->disconnected == 0);
+		assert(prdcr->xprt->disconnected == 0);
 		break;
 	}
-	switch (e->type) {
+	switch (xprt_ev->type) {
 	case LDMS_XPRT_EVENT_CONNECTED:
 		ldmsd_log(LDMSD_LINFO, "Producer %s is connected (%s %s:%d)\n",
 				prdcr->obj.name, prdcr->xprt_name,
 				prdcr->host_name, (int)prdcr->port_no);
 		prdcr->conn_state = LDMSD_PRDCR_STATE_CONNECTED;
-		if (__prdcr_subscribe(prdcr)) {
+		if (__prdcr_subscribe(prdcr)) { /* TODO: look into this */
 			ldmsd_log(LDMSD_LERROR,
 				  "Could not subscribe to stream data on producer %s\n",
 				  prdcr->obj.name);
@@ -594,13 +674,12 @@ static void prdcr_connect_cb(ldms_t x, ldms_xprt_event_t e, void *cb_arg)
 		if (ldms_xprt_dir(prdcr->xprt, prdcr_dir_cb, prdcr,
 				  LDMS_DIR_F_NOTIFY))
 			ldms_xprt_close(prdcr->xprt);
-		ldmsd_task_stop(&prdcr->task);
 		break;
 	case LDMS_XPRT_EVENT_RECV:
-		ldmsd_recv_msg(x, e->data, e->data_len);
+		ldmsd_recv_msg(prdcr->xprt, xprt_ev->data, xprt_ev->data_len);
 		break;
 	case LDMS_XPRT_EVENT_SET_DELETE:
-		__prdcr_remote_set_delete(prdcr, e->set_delete.set);
+		__prdcr_remote_set_delete(prdcr, xprt_ev->set_delete.set);
 		break;
 	case LDMS_XPRT_EVENT_REJECTED:
 		ldmsd_log(LDMSD_LERROR, "Producer %s rejected the "
@@ -627,10 +706,13 @@ static void prdcr_connect_cb(ldms_t x, ldms_xprt_event_t e, void *cb_arg)
 	default:
 		assert(0);
 	}
-	ldmsd_prdcr_unlock(prdcr);
-	return;
+	ev_put(ev);
+	free(xprt_ev);
+	ldmsd_prdcr_put(prdcr);
+	return 0;
 
 reset_prdcr:
+	/* TODO: event-driven */
 	prdcr_reset_sets(prdcr);
 	switch (prdcr->conn_state) {
 	case LDMSD_PRDCR_STATE_STOPPING:
@@ -640,8 +722,8 @@ reset_prdcr:
 	case LDMSD_PRDCR_STATE_CONNECTING:
 	case LDMSD_PRDCR_STATE_CONNECTED:
 		prdcr->conn_state = LDMSD_PRDCR_STATE_DISCONNECTED;
-		ldmsd_task_start(&prdcr->task, prdcr_task_cb, prdcr,
-				 0, prdcr->conn_intrvl_us, 0);
+		if (prdcr_connect_ev(prdcr, prdcr->conn_intrvl_us))
+			ldmsd_log(LDMSD_LCRITICAL, "Out of memory.\n");
 		break;
 	case LDMSD_PRDCR_STATE_STOPPED:
 		assert(0 == "STOPPED shouldn't have xprt event");
@@ -661,7 +743,46 @@ reset_prdcr:
 				prdcr->host_name, (int)prdcr->port_no,
 				prdcr->conn_state,
 				conn_state_str(prdcr->conn_state));
-	ldmsd_prdcr_unlock(prdcr);
+	ev_put(ev);
+	free(xprt_ev);
+	ldmsd_prdcr_put(prdcr);
+	return 0;
+}
+
+static void prdcr_connect_cb(ldms_t x, ldms_xprt_event_t e, void *cb_arg)
+{
+	ldms_xprt_event_t xprt_ev;
+	ldmsd_prdcr_t prdcr = (ldmsd_prdcr_t)cb_arg;
+	assert(x == prdcr->xprt);
+
+	xprt_ev = malloc(sizeof(*xprt_ev));
+	if (!xprt_ev)
+		goto enomem;
+
+	/* copy the ldms_xprt event & its data */
+	if (LDMS_XPRT_EVENT_RECV == e->type) {
+		xprt_ev->data = malloc(e->data_len);
+		if (!xprt_ev->data) {
+			free(xprt_ev);
+			goto enomem;
+		}
+		memcpy(xprt_ev->data, e->data, e->data_len);
+	} else {
+		memcpy(xprt_ev, e, sizeof(*e));
+	}
+
+	ev_t ev = ev_new(prdcr_xprt_type);
+	if (!ev)
+		goto enomem;
+	EV_DATA(ev, struct cfgobj_data)->obj = &ldmsd_prdcr_get(prdcr)->obj;
+	EV_DATA(ev, struct cfgobj_data)->ctxt = xprt_ev;
+
+	ev_post(NULL, prdcr->worker, ev, 0);
+	return;
+
+enomem:
+	ldmsd_log(LDMSD_LCRITICAL, "Out of memory\n");
+	return;
 }
 
 extern const char *auth_name;
@@ -706,26 +827,29 @@ static void prdcr_connect(ldmsd_prdcr_t prdcr)
 		assert(0);
 	}
 }
-static void prdcr_task_cb(ldmsd_task_t task, void *arg)
-{
-	ldmsd_prdcr_t prdcr = arg;
 
-	ldmsd_prdcr_lock(prdcr);
+int
+prdcr_connect_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e)
+{
+	if (EV_OK != status)
+		return 0;
+
+	ldmsd_prdcr_t prdcr = (ldmsd_prdcr_t)EV_DATA(e, struct cfgobj_data)->obj;
+
 	switch (prdcr->conn_state) {
-	case LDMSD_PRDCR_STATE_STOPPED:
-	case LDMSD_PRDCR_STATE_STOPPING:
-		ldmsd_task_stop(&prdcr->task);
-		break;
 	case LDMSD_PRDCR_STATE_DISCONNECTED:
 		prdcr_connect(prdcr);
 		break;
+	case LDMSD_PRDCR_STATE_STOPPED:
+	case LDMSD_PRDCR_STATE_STOPPING:
 	case LDMSD_PRDCR_STATE_CONNECTING:
-		break;
 	case LDMSD_PRDCR_STATE_CONNECTED:
-		ldmsd_task_stop(&prdcr->task);
+		/* do nothing */
 		break;
 	}
-	ldmsd_prdcr_unlock(prdcr);
+	ev_put(e);
+	ldmsd_prdcr_put(prdcr); /* put back the reference taken when post \c e */
+	return 0;
 }
 
 static int set_cmp(void *a, const void *b)
@@ -907,6 +1031,26 @@ ldmsd_prdcr_t ldmsd_prdcr_next(struct ldmsd_prdcr *prdcr)
 	return (ldmsd_prdcr_t)ldmsd_cfgobj_next(&prdcr->obj);
 }
 
+static void prdcr_task_cb(ldmsd_task_t task, void *arg)
+{
+	ldmsd_prdcr_t prdcr = arg;
+	ldmsd_prdcr_lock(prdcr);
+	switch (prdcr->conn_state) {
+	case LDMSD_PRDCR_STATE_STOPPED:
+	case LDMSD_PRDCR_STATE_STOPPING:
+		ldmsd_task_stop(&prdcr->task);
+		break;
+	case LDMSD_PRDCR_STATE_DISCONNECTED:
+		prdcr_connect_ev(prdcr, prdcr->conn_intrvl_us);
+		break;
+	case LDMSD_PRDCR_STATE_CONNECTING:
+	case LDMSD_PRDCR_STATE_CONNECTED:
+		ldmsd_task_stop(&prdcr->task);
+		break;
+	}
+	ldmsd_prdcr_unlock(prdcr);
+}
+
 int __ldmsd_prdcr_start(ldmsd_prdcr_t prdcr, ldmsd_sec_ctxt_t ctxt)
 {
 	int rc;
@@ -922,6 +1066,11 @@ int __ldmsd_prdcr_start(ldmsd_prdcr_t prdcr, ldmsd_sec_ctxt_t ctxt)
 	prdcr->conn_state = LDMSD_PRDCR_STATE_DISCONNECTED;
 
 	prdcr->obj.perm |= LDMSD_PERM_DSTART;
+
+	/*
+	 * TODO: fix this
+	 */
+
 	ldmsd_task_start(&prdcr->task, prdcr_task_cb, prdcr,
 			 LDMSD_TASK_F_IMMEDIATE,
 			 prdcr->conn_intrvl_us, 0);
@@ -1401,12 +1550,10 @@ prdcr_stop_handler(ldmsd_prdcr_t prdcr, void *cfg_ctxt)
 	if (prdcr->type == LDMSD_PRDCR_TYPE_LOCAL)
 		prdcr_reset_sets(prdcr);
 
-	ldmsd_task_stop(&prdcr->task);
 	prdcr->obj.perm &= ~LDMSD_PERM_DSTART;
 	prdcr->conn_state = LDMSD_PRDCR_STATE_STOPPING;
 	if (prdcr->xprt)
 		ldms_xprt_close(prdcr->xprt);
-	ldmsd_task_join(&prdcr->task);
 	if (!prdcr->xprt)
 		prdcr->conn_state = LDMSD_PRDCR_STATE_STOPPED;
 out:
@@ -1455,10 +1602,8 @@ prdcr_start_handler(ldmsd_prdcr_t prdcr, void *cfg_ctxt)
 
 	if (!ctxt->is_deferred) {
 		prdcr->conn_state = LDMSD_PRDCR_STATE_DISCONNECTED;
-
-		ldmsd_task_start(&prdcr->task, prdcr_task_cb, prdcr,
-				 LDMSD_TASK_F_IMMEDIATE,
-				 prdcr->conn_intrvl_us, 0);
+		if (prdcr_connect_ev(prdcr, 0))
+			goto enomem;
 	}
 
 out:
@@ -1649,7 +1794,7 @@ err:
 }
 
 static int
-__tree_post_ev2prdcr(ldmsd_prdcr_t prdcr, ldmsd_req_ctxt_t reqc,
+__tree_cfg_ev_post(ldmsd_prdcr_t prdcr, ldmsd_req_ctxt_t reqc,
 					struct prdcr_cfg_ctxt *ctxt)
 {
 	int rc;
@@ -1844,7 +1989,7 @@ static int tree_prdcr_stop_regex_handler(ldmsd_req_ctxt_t reqc)
 			goto next;
 		if (!nxt_prdcr)
 			ctxt->is_all = 1;
-		rc = __tree_post_ev2prdcr(prdcr, reqc, ctxt);
+		rc = __tree_cfg_ev_post(prdcr, reqc, ctxt);
 		if (rc) {
 			if (ENOMEM == rc)
 				goto enomem;
@@ -1902,7 +2047,7 @@ static int __tree_forward2prdcr(ldmsd_req_ctxt_t reqc)
 	}
 
 	ctxt->is_all = 1;
-	rc = __tree_post_ev2prdcr(prdcr, reqc, ctxt);
+	rc = __tree_cfg_ev_post(prdcr, reqc, ctxt);
 	ldmsd_prdcr_put(prdcr); /* Put back ldmsd_prdcr_find()'s reference */
 	if (rc) {
 		if (ENOMEM == rc)
@@ -1987,7 +2132,7 @@ static int tree_prdcr_start_regex_handler(ldmsd_req_ctxt_t reqc)
 			goto next;
 		if (!nxt_prdcr)
 			ctxt->base.is_all = 1;
-		rc = __tree_post_ev2prdcr(prdcr, reqc, &ctxt->base);
+		rc = __tree_cfg_ev_post(prdcr, reqc, &ctxt->base);
 		if (rc) {
 			if (ENOMEM == rc)
 				goto enomem;
@@ -2059,7 +2204,7 @@ static int tree_prdcr_start_handler(ldmsd_req_ctxt_t reqc)
 	}
 
 	ctxt->base.is_all = 1;
-	rc = __tree_post_ev2prdcr(prdcr, reqc, &ctxt->base);
+	rc = __tree_cfg_ev_post(prdcr, reqc, &ctxt->base);
 	ldmsd_prdcr_put(prdcr); /* Put back ldmsd_prdcr_find()'s reference */
 	if (rc) {
 		if (ENOMEM == rc)
@@ -2106,7 +2251,7 @@ static int tree_prdcr_status_handler(ldmsd_req_ctxt_t reqc)
 			reqc->errcode = ENOENT;
 			(void) linebuf_printf(reqc, "prdcr '%s' not found.", name);
 		} else {
-			rc = __tree_post_ev2prdcr(prdcr, reqc, ctxt);
+			rc = __tree_cfg_ev_post(prdcr, reqc, ctxt);
 			ldmsd_prdcr_put(prdcr);
 			if (rc) {
 				if (ENOMEM == rc)
@@ -2124,7 +2269,7 @@ static int tree_prdcr_status_handler(ldmsd_req_ctxt_t reqc)
 			nxt_prdcr = ldmsd_prdcr_next(prdcr);
 			if (!nxt_prdcr)
 				ctxt->is_all = 1;
-			rc = __tree_post_ev2prdcr(prdcr, reqc, ctxt);
+			rc = __tree_cfg_ev_post(prdcr, reqc, ctxt);
 			if (rc) {
 				if (ENOMEM == rc)
 					goto enomem;

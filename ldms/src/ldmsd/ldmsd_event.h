@@ -69,7 +69,7 @@ ev_worker_t stream_sub_w;
 
 /* Pool of workers that own the same type of resources */
 ev_worker_t *prdcr_pool;
-ev_worker_t prd_set_pool;
+ev_worker_t *prdset_pool;
 ev_worker_t updtr_pool;
 ev_worker_t strgp_pool;
 ev_worker_t auth_pool;
@@ -161,9 +161,11 @@ struct set_del_data {
 };
 
 struct prdset_data {
-	ldmsd_prdcr_set_t prdset;
-	ldmsd_updtr_t updtr;
-	ldmsd_strgp_t strgp;
+	char *set_name;
+	char *prdcr_name;
+	char *updtr_name;
+	unsigned long update_schedule;
+	char *strgp_name;
 };
 
 struct updtr_def_data {
@@ -205,6 +207,7 @@ struct set_reg_data {
 
 struct dir_data {
 	ldms_dir_t dir;
+	ldmsd_prdcr_t prdcr;
 };
 
 struct lookup_data {
@@ -220,7 +223,7 @@ struct update_data {
 /* Event Types */
 
 /* ldms xprt */
-ev_type_t dir_add_type;
+ev_type_t dir_complete_type;
 ev_type_t lookup_complete_type;
 ev_type_t update_complete_type;
 
@@ -246,10 +249,7 @@ ev_type_t prdcr_start_rsp_type;
 
 /* prdcr connect */
 ev_type_t prdcr_connect_type;
-ev_type_t prdcr_connected_type;
-ev_type_t prdcr_disconnected_type;
-ev_type_t prdcr_conn_error_type;
-ev_type_t prdcr_rem_set_del_type;
+ev_type_t prdcr_xprt_type;
 
 /* producer sets */
 ev_type_t prdset_update_hint_type;
