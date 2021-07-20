@@ -62,6 +62,7 @@
 #include "ldmsd.h"
 #include "ldms_xprt.h"
 #include "ldmsd_request.h"
+#include "ldmsd_failover.h"
 #include "ldmsd_event.h"
 #include "ldmsd_cfgobj.h"
 #include "config.h"
@@ -1237,7 +1238,7 @@ prdcr_xprt_event_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_
 		assert(0);
 	}
 	ev_put(ev);
-	free(xprt_ev);
+	ldmsd_xprt_event_free(xprt_ev);
 	ldmsd_prdcr_put(prdcr);
 	return 0;
 
@@ -1284,21 +1285,9 @@ static void prdcr_connect_cb(ldms_t x, ldms_xprt_event_t e, void *cb_arg)
 	ldmsd_prdcr_t prdcr = (ldmsd_prdcr_t)cb_arg;
 	assert(x == prdcr->xprt);
 
-	xprt_ev = malloc(sizeof(*xprt_ev));
+	xprt_ev = ldmsd_xprt_event_get(e);
 	if (!xprt_ev)
 		goto enomem;
-
-	/* copy the ldms_xprt event & its data */
-	if (LDMS_XPRT_EVENT_RECV == e->type) {
-		xprt_ev->data = malloc(e->data_len);
-		if (!xprt_ev->data) {
-			free(xprt_ev);
-			goto enomem;
-		}
-		memcpy(xprt_ev->data, e->data, e->data_len);
-	} else {
-		memcpy(xprt_ev, e, sizeof(*e));
-	}
 
 	ev_t ev = ev_new(prdcr_xprt_type);
 	if (!ev)
@@ -1921,7 +1910,6 @@ prdcr_stream_handler(ldmsd_prdcr_t prdcr, void *cfg_ctxt)
 			goto enomem;
 		goto out;
 	}
-
 	rsp->errcode = __prdcr_stream(prdcr, ctxt->stream_name,
 				      ctxt->base.reqc->req_id, rsp);
 	if (ENOMEM == rsp->errcode)
@@ -2185,6 +2173,11 @@ enomem:
 	return NULL;
 }
 
+extern struct ldmsd_cfgobj_cfg_rsp *
+prdcr_failover_peercfg_handler(ldmsd_prdcr_t prdcr, void *cfg_ctxt);
+extern struct ldmsd_cfgobj_cfg_rsp *
+prdcr_failover_cfgprdcr_handler(ldmsd_prdcr_t prdcr, void *cfg_ctxt);
+
 int prdcr_cfg_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e)
 {
 	if (EV_OK != status)
@@ -2228,6 +2221,12 @@ int prdcr_cfg_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e
 	case LDMSD_SET_ROUTE_REQ:
 		rsp = prdcr_set_route_handler(prdcr, cfg_ctxt);
 		goto out;
+	case LDMSD_FAILOVER_PEERCFG_REQ:
+		rsp = prdcr_failover_peercfg_handler(prdcr, cfg_ctxt);
+		break;
+	case LDMSD_FAILOVER_CFGPRDCR_REQ:
+		rsp = prdcr_failover_cfgprdcr_handler(prdcr, cfg_ctxt);
+		break;
 	default:
 		ldmsd_log(LDMSD_LERROR, "%s received an unsupported request ID %d.\n",
 							__func__, reqc->req_id);
@@ -2239,7 +2238,12 @@ int prdcr_cfg_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e
 	if (!rsp_ev)
 		goto enomem;
 
-	ev_put(e);
+	if (!rsp)
+		goto enomem;
+
+	rsp_ev = ev_new(cfgobj_rsp_type);
+	if (!rsp_ev)
+		goto enomem;
 
 	EV_DATA(rsp_ev, struct cfgobj_rsp_data)->ctxt = cfg_ctxt;
 	EV_DATA(rsp_ev, struct cfgobj_rsp_data)->rsp = rsp;
@@ -2253,6 +2257,7 @@ enomem:
 	LDMSD_LOG_ENOMEM();
 	rc = ENOMEM;
 err:
+	ldmsd_prdcr_put(prdcr);
 	ev_put(e);
 	free(rsp);
 	return rc;
@@ -2385,13 +2390,14 @@ tree_status_rsp_handler(ldmsd_req_ctxt_t reqc, struct ldmsd_cfgobj_cfg_rsp *rsp,
 
 out:
 	ldmsd_msg_buf_free(buf);
+	free(rsp->errmsg);
 	free(rsp);
 	return 0;
 }
 
 static int
 tree_cfg_rsp_handler(ldmsd_req_ctxt_t reqc, struct ldmsd_cfgobj_cfg_rsp *rsp,
-					  struct ldmsd_cfgobj_cfg_ctxt *ctxt)
+					struct ldmsd_cfgobj_cfg_ctxt *ctxt)
 {
 	if (rsp->errcode) {
 		if (!reqc->errcode)
@@ -2411,6 +2417,13 @@ extern int ldmsd_cfgobj_tree_del_rsp_handler(ldmsd_req_ctxt_t reqc,
 				struct ldmsd_cfgobj_cfg_rsp *rsp,
 				struct ldmsd_cfgobj_cfg_ctxt *ctxt,
 				enum ldmsd_cfgobj_type type);
+extern int tree_failover_peercfg_rsp_handler(ldmsd_req_ctxt_t reqc,
+					     struct ldmsd_cfgobj_cfg_rsp *rsp,
+					     struct ldmsd_cfgobj_cfg_ctxt *ctxt,
+					     enum ldmsd_cfgobj_type type);
+extern int tree_failover_cfgobj_rsp_handler(ldmsd_req_ctxt_t reqc,
+					     struct ldmsd_cfgobj_cfg_rsp *rsp,
+					     struct ldmsd_cfgobj_cfg_ctxt *ctxt);
 int prdcr_tree_cfg_rsp_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e)
 {
 	if (EV_OK != status)
@@ -2458,6 +2471,12 @@ int prdcr_tree_cfg_rsp_actor(ev_worker_t src, ev_worker_t dst, ev_status_t statu
 		if (ldmsd_cfgtree_done(ctxt)) {
 			ref_put(&ctxt->ref, "create");
 		}
+		goto out;
+	case LDMSD_FAILOVER_PEERCFG_REQ:
+		rc = tree_failover_peercfg_rsp_handler(reqc, rsp, ctxt, LDMSD_CFGOBJ_PRDCR);
+		break;
+	case LDMSD_FAILOVER_CFGPRDCR_REQ:
+		rc = tree_failover_cfgobj_rsp_handler(reqc, rsp, ctxt);
 		goto out;
 	default:
 		assert(0 == "impossible case");
@@ -3329,6 +3348,8 @@ static int tree_prdcr_stats_handler(ldmsd_req_ctxt_t reqc)
 	return 0;
 }
 
+extern int tree_failover_peercfg_handler(ldmsd_req_ctxt_t reqc, enum ldmsd_cfgobj_type type);
+extern int tree_failover_cfgprdcr_handler(ldmsd_req_ctxt_t reqc, void *fctxt);
 int prdcr_tree_cfg_actor(ev_worker_t src, ev_worker_t dst,
 					ev_status_t status, ev_t e)
 {
@@ -3378,6 +3399,12 @@ int prdcr_tree_cfg_actor(ev_worker_t src, ev_worker_t dst,
 		break;
 	case LDMSD_SET_ROUTE_REQ:
 		rc = tree_set_route_handler(reqc, ctxt);
+		break;
+	case LDMSD_FAILOVER_PEERCFG_REQ:
+		rc = tree_failover_peercfg_handler(reqc, LDMSD_CFGOBJ_PRDCR);
+		break;
+	case LDMSD_FAILOVER_CFGPRDCR_REQ:
+		rc = tree_failover_cfgprdcr_handler(reqc, ctxt);
 		break;
 	default:
 		ldmsd_log(LDMSD_LERROR, "%s not support req_id %d\n",
