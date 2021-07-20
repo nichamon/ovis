@@ -67,6 +67,7 @@ ev_worker_t auth_tree_w;
 ev_worker_t ldmsd_set_tree_w;
 ev_worker_t stream_pub_w;
 ev_worker_t stream_sub_w;
+ev_worker_t failover_w;
 
 /* Pool of workers that own the same type of resources */
 ev_worker_t *prdcr_pool;
@@ -241,6 +242,12 @@ struct update_data {
 	ldms_set_t set;
 };
 
+typedef struct ldmsd_failover *ldmsd_failover_t;
+struct failover_data {
+	ldmsd_failover_t f;
+	void *ctxt;
+};
+
 /* Event Types */
 
 /* ldms xprt */
@@ -317,6 +324,10 @@ struct ldmsd_cfg_ctxt {
 	ldmsd_req_ctxt_t reqc;
 	struct ldmsd_sec_ctxt sctxt;
 };
+
+/* Failover */
+ev_type_t failover_routine_type;
+ev_type_t failover_xprt_type;
 
 int ldmsd_ev_init(void);
 int ldmsd_worker_init(void);

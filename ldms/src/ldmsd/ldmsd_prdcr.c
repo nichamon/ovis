@@ -62,6 +62,7 @@
 #include "ldmsd.h"
 #include "ldms_xprt.h"
 #include "ldmsd_request.h"
+#include "ldmsd_failover.h"
 #include "ldmsd_event.h"
 #include "config.h"
 
@@ -707,7 +708,7 @@ prdcr_xprt_event_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_
 		assert(0);
 	}
 	ev_put(ev);
-	free(xprt_ev);
+	ldmsd_xprt_event_free(xprt_ev);
 	ldmsd_prdcr_put(prdcr);
 	return 0;
 
@@ -755,21 +756,9 @@ static void prdcr_connect_cb(ldms_t x, ldms_xprt_event_t e, void *cb_arg)
 	ldmsd_prdcr_t prdcr = (ldmsd_prdcr_t)cb_arg;
 	assert(x == prdcr->xprt);
 
-	xprt_ev = malloc(sizeof(*xprt_ev));
+	xprt_ev = ldmsd_xprt_event_get(e);
 	if (!xprt_ev)
 		goto enomem;
-
-	/* copy the ldms_xprt event & its data */
-	if (LDMS_XPRT_EVENT_RECV == e->type) {
-		xprt_ev->data = malloc(e->data_len);
-		if (!xprt_ev->data) {
-			free(xprt_ev);
-			goto enomem;
-		}
-		memcpy(xprt_ev->data, e->data, e->data_len);
-	} else {
-		memcpy(xprt_ev, e, sizeof(*e));
-	}
 
 	ev_t ev = ev_new(prdcr_xprt_type);
 	if (!ev)
@@ -1732,6 +1721,24 @@ enomem:
 	return NULL;
 }
 
+extern int __failover_send_prdcr(ldmsd_failover_t f, ldms_t x, ldmsd_prdcr_t p);
+static struct prdcr_cfg_rsp *
+prdcr_failover_peercfg_handler(ldmsd_prdcr_t prdcr, void *cfg_ctxt)
+{
+	int rc;
+	struct prdcr_cfg_rsp *rsp;
+	struct prdcr_cfg_ctxt *ctxt = (struct prdcr_cfg_ctxt *)cfg_ctxt;
+	ldmsd_req_ctxt_t reqc = ctxt->reqc;
+	struct fo_peercfg_ctxt *fo_ctxt = (struct fo_peercfg_ctxt *)reqc->ctxt;
+
+	rsp = malloc(sizeof(*rsp));
+	if (!rsp)
+		return NULL;
+	rc = __failover_send_prdcr(NULL, fo_ctxt->x, prdcr);
+	rsp->errcode = rc;
+	return rsp;
+}
+
 int prdcr_cfg_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e)
 {
 	if (EV_OK != status)
@@ -1762,27 +1769,31 @@ int prdcr_cfg_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e
 	case LDMSD_PRDCR_STATUS_REQ:
 		rsp = prdcr_status_handler(prdcr, cfg_ctxt);
 		break;
+	case LDMSD_FAILOVER_PEERCFG_REQ:
+		rsp = prdcr_failover_peercfg_handler(prdcr, cfg_ctxt);
+		break;
 	default:
 		ldmsd_log(LDMSD_LERROR, "%s received an unsupported request ID %d.\n",
 							__func__, reqc->req_id);
 		assert(0);
-		return ENOTSUP;
+		rc = EINTR;
+		goto err;
+
 	}
+
+	if (!rsp)
+		goto enomem;
 
 	rsp_ev = ev_new(cfgobj_rsp_type);
-	if (!rsp_ev) {
-		ldmsd_log(LDMSD_LCRITICAL, "Out of memory\n");
-		rc = ENOMEM;
-		goto err;
-	}
-
-	ev_put(e);
+	if (!rsp_ev)
+		goto enomem;
 
 	EV_DATA(rsp_ev, struct cfgobj_rsp_data)->ctxt = cfg_ctxt;
 	EV_DATA(rsp_ev, struct cfgobj_rsp_data)->rsp = rsp;
 
 	ev_post(prdcr->worker, prdcr_tree_w, rsp_ev, 0);
 	ldmsd_prdcr_put(prdcr); /* Take in prdcr_cfg_actor() */
+	ev_put(e);
 	return 0;
 enomem:
 	ldmsd_log(LDMSD_LCRITICAL, "Out of memory\n");
@@ -1835,6 +1846,7 @@ tree_status_rsp_handler(ldmsd_req_ctxt_t reqc, struct prdcr_cfg_rsp *rsp,
 
 out:
 	ldmsd_msg_buf_free(buf);
+	free(rsp->errmsg);
 	free(rsp);
 	return 0;
 }
@@ -1859,6 +1871,7 @@ tree_del_rsp_handler(ldmsd_req_ctxt_t reqc, struct prdcr_cfg_rsp *rsp,
 
 out:
 	ldmsd_prdcr_put(prdcr); /* Put back the 'del_rsp' reference */
+	free(rsp->errmsg);
 	free(rsp);
 
 	if (ldmsd_cfgtree_done(ctxt)) {
@@ -1870,6 +1883,29 @@ out:
 	return 0;
 }
 
+static int tree_failover_peercfg_rsp_handler(ldmsd_req_ctxt_t reqc,
+					     struct prdcr_cfg_rsp *rsp,
+					     struct prdcr_cfg_ctxt *ctxt)
+{
+	ev_t ev;
+	struct fo_peercfg_ctxt *fo_ctxt = reqc->ctxt;
+	if (rsp->errcode)
+		fo_ctxt->is_prdcr_error = EINTR;
+	free(rsp);
+	free(rsp->errmsg);
+
+	if (!__prdcr_tree_done(ctxt))
+		return 0;
+
+	fo_ctxt->is_prdcr_done = 1;
+
+	ev = ev_new(cfgobj_rsp_type);
+	if (!ev)
+		return ENOMEM;
+	EV_DATA(ev, struct cfgobj_rsp_data)->rsp = NULL;
+	EV_DATA(ev, struct cfgobj_rsp_data)->ctxt = reqc;
+	return ev_post(prdcr_tree_w, failover_w, ev, 0);
+}
 
 static int
 tree_cfg_rsp_handler(ldmsd_req_ctxt_t reqc, struct prdcr_cfg_rsp *rsp,
@@ -1927,6 +1963,9 @@ int prdcr_tree_cfg_rsp_actor(ev_worker_t src, ev_worker_t dst, ev_status_t statu
 	case LDMSD_PRDCR_STATUS_REQ:
 		rc = tree_status_rsp_handler(reqc, rsp, ctxt);
 		break;
+	case LDMSD_FAILOVER_PEERCFG_REQ:
+		rc = tree_failover_peercfg_rsp_handler(reqc, rsp, ctxt);
+		break;
 	default:
 		assert(0 == "impossible case");
 	}
@@ -1938,12 +1977,6 @@ int prdcr_tree_cfg_rsp_actor(ev_worker_t src, ev_worker_t dst, ev_status_t statu
 	}
 
 out:
-	if (ctxt->is_all && (ctxt->num_sent == ctxt->num_recv)) {
-		/* All producers have sent back the responses */
-		ldmsd_send_req_response(reqc, reqc->line_buf);
-		free(ctxt);
-	}
-
 	ev_put(e);
 	return 0;
 }
@@ -2434,6 +2467,30 @@ send_reply:
 	return 0;
 }
 
+int tree_failover_peercfg_handler(ldmsd_req_ctxt_t reqc)
+{
+	int rc;
+	ldmsd_prdcr_t prdcr;
+	struct prdcr_cfg_ctxt *ctxt = calloc(1, sizeof(*ctxt));
+	if (!ctxt) {
+		ldmsd_log(LDMSD_LCRITICAL, "Out of memory\n");
+		return ENOMEM;
+	}
+
+	for (prdcr = ldmsd_prdcr_first(); prdcr; prdcr = ldmsd_prdcr_next(prdcr)) {
+		if (!ldmsd_cfgobj_is_failover(&prdcr->obj))
+			continue;
+		rc = __tree_cfg_ev_post(prdcr, reqc, ctxt);
+		if (rc) {
+			/*
+			 * TODO: handle this
+			 */
+		}
+	}
+
+	return 0;
+}
+
 int prdcr_tree_cfg_actor(ev_worker_t src, ev_worker_t dst,
 					ev_status_t status, ev_t e)
 {
@@ -2466,6 +2523,9 @@ int prdcr_tree_cfg_actor(ev_worker_t src, ev_worker_t dst,
 		break;
 	case LDMSD_PRDCR_STATUS_REQ:
 		rc = tree_prdcr_status_handler(reqc);
+		break;
+	case LDMSD_FAILOVER_PEERCFG_REQ:
+		rc = tree_failover_peercfg_handler(reqc);
 		break;
 	default:
 		ldmsd_log(LDMSD_LERROR, "%s doesn't handle req_id %d\n",

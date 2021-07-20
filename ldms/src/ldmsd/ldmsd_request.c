@@ -876,6 +876,12 @@ int ldmsd_handle_request(ldmsd_req_ctxt_t reqc)
 		EV_DATA(ev, struct cfg_data)->reqc = reqc;
 		EV_DATA(ev, struct cfg_data)->ctxt = NULL;
 		break;
+	case LDMSD_FAILOVER_START_REQ:
+		ev = ev_new(cfg_type);
+		dst = failover_w;
+		EV_DATA(ev, struct cfg_data)->reqc = reqc;
+		EV_DATA(ev, struct cfg_data)->ctxt = NULL;
+		break;
 	default:
 		goto traditional;
 	}

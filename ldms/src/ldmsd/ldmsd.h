@@ -1287,9 +1287,13 @@ void ldmsd_timespec_add(struct timespec *a, struct timespec *b, struct timespec 
 int ldmsd_timespec_cmp(struct timespec *a, struct timespec *b);
 void ldmsd_timespec_diff(struct timespec *a, struct timespec *b, struct timespec *result);
 
+ldms_xprt_event_t ldmsd_xprt_event_get(ldms_xprt_event_t e);
+void ldmsd_xprt_event_free(ldms_xprt_event_t e);
+
 int ldmsd_num_prdcr_workers_get();
 int ldmsd_num_prdset_workers_get();
 ev_worker_t assign_prdcr_worker();
 ev_worker_t assign_prdset_worker();
+ev_worker_t assign_failover_worker();
 
 #endif

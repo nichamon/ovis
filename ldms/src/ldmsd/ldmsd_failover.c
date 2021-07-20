@@ -61,9 +61,11 @@
 
 #include "coll/rbt.h"
 #include "ovis_event/ovis_event.h"
+#include "ovis_ev/ev.h"
 
 #include "ldmsd.h"
 #include "ldmsd_request.h"
+#include "ldmsd_event.h"
 
 #include "config.h"
 
@@ -145,6 +147,16 @@ typedef enum {
 
 #define __F_GET(f, x) ((f)->flags & x)
 
+struct failover_req_ctxt {
+	struct str_rbn *srbn;
+	struct rbn rbn;
+};
+
+static int req_cmp(void *a, const void *b)
+{
+	return (uint32_t)(uint64_t)a - (uint32_t)(uint64_t)b;
+}
+
 typedef
 struct ldmsd_failover {
 	uint64_t flags;
@@ -184,6 +196,10 @@ struct ldmsd_failover {
 	double ping_sd;       /* ping round-trip time standard deviation */
 
 	int ping_skipped; /* the number of ping skipped due to outstanding */
+
+	ev_worker_t worker;
+	ev_t routine_ev;
+	struct rbt cfg_tree;
 } *ldmsd_failover_t;
 
 struct str_rbn {
@@ -336,6 +352,8 @@ void __failover_init(ldmsd_failover_t f)
 	f->timeout_factor = DEFAULT_TIMEOUT_FACTOR;
 
 	__failover_set_ping_interval(f, DEFAULT_PING_INTERVAL);
+
+	rbt_init(&f->cfg_tree, req_cmp);
 }
 
 static inline
@@ -357,8 +375,7 @@ int __name_is_failover(const char *name)
 			    sizeof(LDMSD_FAILOVER_NAME_PREFIX)-1);
 }
 
-static inline
-int __cfgobj_is_failover(ldmsd_cfgobj_t obj)
+int ldmsd_cfgobj_is_failover(ldmsd_cfgobj_t obj)
 {
 	return __name_is_failover(obj->name);
 }
@@ -380,7 +397,6 @@ void __failover_unlock(ldmsd_failover_t f)
 	pthread_mutex_unlock(&f->mutex);
 }
 
-static
 int __failover_send_prdcr(ldmsd_failover_t f, ldms_t x, ldmsd_prdcr_t p)
 {
 	/* f->lock is held */
@@ -389,11 +405,6 @@ int __failover_send_prdcr(ldmsd_failover_t f, ldms_t x, ldmsd_prdcr_t p)
 	char buff[128];
 	const char *cstr;
 	ldmsd_prdcr_stream_t s;
-
-	if (__cfgobj_is_failover(&p->obj)) {
-		rc = EINVAL;
-		goto err;
-	}
 
 	rcmd = ldmsd_req_cmd_new(x, LDMSD_FAILOVER_CFGPRDCR_REQ,
 				   NULL, NULL, NULL);
@@ -834,7 +845,7 @@ int __failover_send_cfgobjs(ldmsd_failover_t f, ldms_t x)
 	/* Send PRDCR update */
 	ldmsd_cfg_lock(LDMSD_CFGOBJ_PRDCR);
 	for (p = ldmsd_prdcr_first(); p; p = ldmsd_prdcr_next(p)) {
-		if (__cfgobj_is_failover(&p->obj))
+		if (ldmsd_cfgobj_is_failover(&p->obj))
 			continue;
 		rc = __failover_send_prdcr(f, x, p);
 		if (rc) {
@@ -848,7 +859,7 @@ int __failover_send_cfgobjs(ldmsd_failover_t f, ldms_t x)
 	/* Send UPDTR update */
 	ldmsd_cfg_lock(LDMSD_CFGOBJ_UPDTR);
 	for (u = ldmsd_updtr_first(); u; u = ldmsd_updtr_next(u)) {
-		if (__cfgobj_is_failover(&u->obj))
+		if (ldmsd_cfgobj_is_failover(&u->obj))
 			continue;
 		rc = __failover_send_updtr(f, x, u);
 		if (rc) {
@@ -861,7 +872,7 @@ int __failover_send_cfgobjs(ldmsd_failover_t f, ldms_t x)
 
 	ldmsd_cfg_lock(LDMSD_CFGOBJ_STRGP);
 	for (s = ldmsd_strgp_first(); s; s = ldmsd_strgp_next(s)) {
-		if (__cfgobj_is_failover(&s->obj))
+		if (ldmsd_cfgobj_is_failover(&s->obj))
 			continue;
 		rc = __failover_send_strgp(f, x, s);
 		if (rc) {
@@ -876,11 +887,8 @@ out:
 	return rc;
 }
 
-int __on_peercfg_resp(ldmsd_req_cmd_t rcmd)
+static int failover_pair_rsp_handler(ldmsd_failover_t f, ldmsd_req_hdr_t hdr)
 {
-	ldmsd_failover_t f = rcmd->ctxt;
-	ldmsd_req_hdr_t hdr = (void*)rcmd->reqc->recv_buf;
-	__failover_lock(f);
 	if (hdr->rsp_err) {
 		ldmsd_lerror("Failover: peer config request remote error: %d\n",
 			     hdr->rsp_err);
@@ -892,7 +900,6 @@ int __on_peercfg_resp(ldmsd_req_cmd_t rcmd)
 		f->conn_state = FAILOVER_CONN_STATE_CONFIGURED;
 		ldmsd_linfo("Failover: peer config recv success\n");
 	}
-	__failover_unlock(f);
 	return 0;
 }
 
@@ -906,7 +913,7 @@ int __failover_request_peercfg(ldmsd_failover_t f)
 	ldmsd_linfo("Failover: requesting peer config\n");
 
 	rcmd = ldmsd_req_cmd_new(f->ax, LDMSD_FAILOVER_PEERCFG_REQ,
-				 NULL, __on_peercfg_resp, f);
+				 NULL, __on_resp, f);
 	if (!rcmd) {
 		rc = errno;
 		goto out;
@@ -935,14 +942,10 @@ int __failover_reset_and_request_peercfg(ldmsd_failover_t f)
 	return __failover_request_peercfg(f);
 }
 
-static
-int __on_pair_resp(ldmsd_req_cmd_t rcmd)
+static int failover_pair_rsp_handler(ldmsd_failover_t f, ldmsd_req_hdr_t hdr)
 {
-	ldmsd_failover_t f = rcmd->ctxt;
-	ldmsd_req_hdr_t hdr = (void*)rcmd->reqc->recv_buf;
 	int rc = 0;
 
-	__failover_lock(f);
 	__ASSERT(f->conn_state == FAILOVER_CONN_STATE_PAIRING);
 
 	if (hdr->rsp_err) {
@@ -966,8 +969,20 @@ err:
 		/* the disconnect path will handle the state change */
 	}
 out:
-	__failover_unlock(f);
+	ldmsd_req_cmd_free(rcmd);
 	return rc;
+}
+
+static
+int __on_resp(ldmsd_req_cmd_t rcmd)
+{
+	ev_t e;
+
+	e = ev_new(rsp_type);
+	EV_DATA(e, struct cfg_data)->reqc = rcmd->reqc;
+	EV_DATA(e, struct cfg_data)->ctxt = NULL;
+
+	return ev_post(cfg_w, failover_w, e, 0);
 }
 
 static
@@ -992,7 +1007,7 @@ void __failover_pair(ldmsd_failover_t f)
 	/* just become connected ... request pairing */
 	myname = ldmsd_myname_get();
 	rcmd = ldmsd_req_cmd_new(f->ax, LDMSD_FAILOVER_PAIR_REQ,
-				 NULL, __on_pair_resp, f);
+				 NULL, __on_resp, f);
 	rc = ldmsd_req_cmd_attr_append_str(rcmd, LDMSD_ATTR_PEER_NAME, myname);
 	if (rc)
 		goto err;
@@ -1012,19 +1027,51 @@ err:
 	ldms_xprt_close(f->ax);
 }
 
-static
-void __failover_xprt_cb(ldms_t x, ldms_xprt_event_t e, void *cb_arg)
+int __failover_post_routine(ldmsd_failover_t f)
+{
+	struct timespec to;
+	int rc;
+	int is_post = 1;
+
+	clock_gettime(CLOCK_REALTIME, &to);
+	to.tv_sec += f->task_interval/1000000;
+	to.tv_nsec += (f->task_interval%1000000)*1000;
+
+	if (ev_posted(f->routine_ev)) {
+		rc = ev_cancel(f->routine_ev);
+		if (EBUSY == rc) {
+			/*
+			 * Failed to cancel the event and
+			 * it is soon to be delivered.
+			 */
+			is_post = 0;
+		}
+		rc = 0;
+	}
+
+	if (is_post)
+		rc = ev_post(f->worker, f->worker, f->routine_ev, &to);
+	return rc;
+}
+
+int failover_xprt_event_actor(ev_worker_t src, ev_worker_t dst,
+					ev_status_t status, ev_t e)
 {
 	int need_start;
-	ldmsd_failover_t f = cb_arg;
-	switch (e->type) {
+	ldmsd_failover_t f;
+	ldms_xprt_event_t xprt_ev;
+
+	f = EV_DATA(e, struct failover_data)->f;
+	xprt_ev = (ldms_xprt_event_t)EV_DATA(e, struct failover_data)->ctxt;
+
+	switch (xprt_ev->type) {
 	case LDMS_XPRT_EVENT_CONNECTED:
 		__dlog("Failover: xprt connected\n");
 		ldms_xprt_priority_set(f->ax, 1);
 		__failover_lock(f);
 		/* so that retry operations can follow up not too slow */
 		f->task_interval = 1000000;
-		__failover_task_resched(f);
+		__failover_post_routine(f); /* TODO: Check with narate -- do we really need to reschedule here? */
 		__ASSERT(f->conn_state == FAILOVER_CONN_STATE_CONNECTING);
 		__failover_pair(f);
 		__failover_unlock(f);
@@ -1049,7 +1096,7 @@ void __failover_xprt_cb(ldms_t x, ldms_xprt_event_t e, void *cb_arg)
 		}
 		break;
 	case LDMS_XPRT_EVENT_RECV:
-		ldmsd_recv_msg(x, e->data, e->data_len);
+		ldmsd_recv_msg(f->ax, xprt_ev->data, xprt_ev->data_len);
 		break;
 	case LDMS_XPRT_EVENT_SET_DELETE:
 	case LDMS_XPRT_EVENT_SEND_COMPLETE:
@@ -1058,6 +1105,35 @@ void __failover_xprt_cb(ldms_t x, ldms_xprt_event_t e, void *cb_arg)
 	default:
 		__ASSERT(0 == "Unknown Event");
 	}
+	ev_put(e);
+	ldmsd_xprt_event_free(xprt_ev);
+	return 0;
+}
+
+static
+void __failover_xprt_cb(ldms_t x, ldms_xprt_event_t e, void *cb_arg)
+{
+	ev_t ev;
+	ldms_xprt_event_t xprt_ev;
+	ldmsd_failover_t f = cb_arg;
+
+	xprt_ev = ldmsd_xprt_event_get(e);
+	if (!xprt_ev)
+		goto enomem;
+
+	ev = ev_new(failover_xprt_type);
+	if (!ev)
+		goto enomem;
+
+	EV_DATA(ev, struct failover_data)->f = f;
+	EV_DATA(ev, struct failover_data)->ctxt = (void*)xprt_ev;
+	ev_post(NULL, f->worker, ev, 0);
+	return;
+
+enomem:
+	free(xprt_ev);
+	ldmsd_log(LDMSD_LCRITICAL, "Out of memory\n");
+	return;
 }
 
 extern const char *auth_name;
@@ -1253,39 +1329,232 @@ err:
 	return;
 }
 
+static int __start_rsp(ldmsd_req_hdr_t reply, struct str_rbn *srbn)
+{
+	char *s;
+	struct ldmsd_req_attr_s *attr;
+
+	switch (reply->req_id) {
+	case LDMSD_PRDCR_START_REQ:
+		s = "prdcr";
+		break;
+	case LDMSD_UPDTR_START_REQ:
+		s = "updtr";
+		break;
+	default:
+		ldmsd_log(LDMSD_LINFO, "Failover received an unrecognized "
+				"config response with ID %d.\n", reply->req_id);
+		assert(0 == ENOTSUP);
+		return 0;
+	}
+
+	attr = ldmsd_first_attr(reply);
+
+	if (reply->rsp_err && (attr->attr_id == LDMSD_ATTR_STRING)) {
+		/* Print the error message to the log */
+		ldmsd_log(LDMSD_LERROR, "failover: failed to start %s '%s'\n",
+								s,  srbn->str);
+	} else if (0 == reply->rsp_err) {
+		srbn->started = 1;
+	}
+	return reply->rsp_err;
+}
+
+static int __stop_rsp(ldmsd_req_hdr_t reply, struct str_rbn *srbn)
+{
+	char *s;
+	struct ldmsd_req_attr_s *attr;
+
+	switch (reply->req_id) {
+	case LDMSD_PRDCR_STOP_REQ:
+		s = "prdcr";
+		break;
+	case LDMSD_UPDTR_STOP_REQ:
+		s = "updtr";
+		break;
+	default:
+		ldmsd_log(LDMSD_LINFO, "Failover received an unrecognized "
+				"config response with ID %d.\n", reply->req_id);
+		assert(0 == ENOTSUP);
+		return 0;
+	}
+
+	attr = ldmsd_first_attr(reply);
+
+	if (reply->rsp_err && (attr->attr_id == LDMSD_ATTR_STRING)) {
+		/* Print the error message to the log */
+		ldmsd_log(LDMSD_LERROR, "failover: failed to stop %s '%s'\n",
+								s, srbn->str);
+	} else if (0 == reply->rsp_err) {
+		srbn->started = 0;
+	}
+	return reply->rsp_err;
+}
+
+//static int __del_rsp(ldmsd_req_hdr_t reply, struct str_rbn *srbn)
+//{
+//	return 0;
+//}
+
+struct failover_xprt_ctxt {
+	ldmsd_failover_t f;
+	enum failover_xprt_ctxt_type {
+		FAILOVER_PEERCFG_START = 1,
+		FAILOVER_PEERCFG_STOP = 2,
+		FAILOVER_PEERCFG_DEL = 3,
+	} type;
+	struct rbt req_tree;
+
+	int is_all_sent;
+	int req_count;
+	int rsp_count;
+};
+
+static int __is_cfg_done(struct failover_xprt_ctxt *ctxt)
+{
+	if (ctxt->is_all_sent && rbt_empty(&ctxt->req_tree))
+		return 1;
+	return 0;
+}
+
+static int failover_response_fn(void *_xprt, char *data, size_t data_len)
+{
+	int rc;
+	ev_t e;
+	ldmsd_req_hdr_t req_reply = (ldmsd_req_hdr_t)data;
+	struct ldmsd_cfg_xprt_s *xprt = _xprt;
+	struct failover_xprt_ctxt *xprt_ctxt = xprt->ctxt;
+
+	ldmsd_failover_t f = xprt_ctxt->f;
+	struct failover_req_ctxt *ctxt;
+	struct rbn *rbn;
+
+	ldmsd_ntoh_req_msg(req_reply);
+
+	e = ev_new(ob_rsp_type);
+	if (!e) {
+		ldmsd_log(LDMSD_LCRITICAL, "Out of memory\n");
+		return ENOMEM;
+	}
+	EV_DATA(e, struct ob_rsp_data)->hdr = req_reply;
+	EV_DATA(e, struct ob_rsp_data)->ctxt = xprt_ctxt;
+	return ev_post(NULL, failover_w, e, 0);
+}
+
+extern int post_recv_rec_ev(ldmsd_cfg_xprt_t xprt, struct ldmsd_req_hdr_s *reqc);
+static int
+__cfg_post(ldmsd_cfg_xprt_t xprt, enum ldmsd_request req_id, struct str_rbn *srbn)
+{
+	int rc;
+	struct failover_req_ctxt *ctxt;
+	ldmsd_req_hdr_t req;
+	struct ldmsd_req_attr_s attr;
+	struct failover_xprt_ctxt *fctxt = xprt->ctxt;
+
+	struct ldmsd_msg_buf *buf = ldmsd_msg_buf_new(512);
+	if (!buf)
+		goto enomem;
+
+	ctxt = malloc(sizeof(*ctxt));
+	if (!ctxt)
+		goto enomem;
+
+	req = (ldmsd_req_hdr_t)buf->buf;
+	buf->off = sizeof(*req);
+
+	attr.attr_id = LDMSD_ATTR_NAME;
+	attr.discrim = 1;
+	attr.attr_len = strlen(srbn->str) + 1;
+
+	memcpy(&buf->buf[buf->off], &attr, sizeof(attr));
+	buf->off += sizeof(attr);
+	ldmsd_msg_buf_append(buf, "%s", srbn->str);
+	buf->buf[buf->off] = '\0';
+	buf->off++;
+
+	attr.discrim = 0;
+	memcpy(&buf->buf[buf->off], &attr.discrim, sizeof(attr.discrim));
+	buf->off += sizeof(attr.discrim);
+
+	req->flags = LDMSD_REQ_SOM_F | LDMSD_REQ_EOM_F;
+	req->rec_len = buf->off;
+	req->marker = LDMSD_RECORD_MARKER;
+	req->msg_no = ldmsd_msg_no_get();
+	req->type = LDMSD_REQ_TYPE_CONFIG_CMD;
+	req->req_id = req_id;
+
+	rbn_init(&ctxt->rbn, (void *)(uint64_t)req->msg_no);
+	ldmsd_hton_req_msg(req);
+
+	ctxt->srbn = srbn;
+
+	rbt_ins(&fctxt->req_tree, &ctxt->rbn);
+	rc = post_recv_rec_ev(xprt, req);
+	if (rc) {
+		rbt_del(&fctxt->req_tree, &ctxt->rbn);
+		ldmsd_log(LDMSD_LERROR, "failover: Failed to post an internal request.\n");
+		goto err;
+	}
+
+	(void) ldmsd_msg_buf_detach(buf);
+	ldmsd_msg_buf_free(buf);
+
+	return 0;
+enomem:
+	ldmsd_log(LDMSD_LCRITICAL, "Out of memory\n");
+	rc = ENOMEM;
+err:
+	ldmsd_msg_buf_free(buf);
+	free(ctxt);
+	return rc;
+}
+
 static
 int __peercfg_delete(ldmsd_failover_t f)
 {
 	/* f->lock is held */
-	int rc, i;
+	int rc = 0, _rc, i;
 	struct rbn *rbn;
 	struct str_rbn *ent;
-	struct ldmsd_sec_ctxt sctxt = __get_sec_ctxt(NULL);
+	enum ldmsd_request req_ids[] = { LDMSD_STRGP_DEL_REQ,
+					 LDMSD_UPDTR_DEL_REQ,
+					 LDMSD_PRDCR_DEL_REQ };
 	struct rbt *t[] = {&f->strgp_rbt, &f->updtr_rbt, &f->prdcr_rbt};
-	void *del[] = {ldmsd_strgp_del, ldmsd_updtr_del, ldmsd_prdcr_del};
-	int (*fn)(void*, void*);
+	struct ldmsd_cfg_xprt_s xprt = {0};
+	struct failover_xprt_ctxt *fctxt;
+
+	fctxt = calloc(1, sizeof(*fctxt));
+	if (!fctxt) {
+		ldmsd_log(LDMSD_LCRITICAL, "out of memory\n");
+		return ENOMEM;
+	}
+
+	fctxt->f = f;
+	fctxt->type = FAILOVER_PEERCFG_DEL;
+	rbt_init(&fctxt->req_tree, req_cmp);
+
+	xprt.type = LDMSD_CFG_TYPE_INTR;
+	xprt.max_msg = LDMSD_CFG_FILE_XPRT_MAX_REC;
+	xprt.send_fn = failover_response_fn;
+	xprt.trust = 1;
+	xprt.ctxt = fctxt;
 
 	ldmsd_linfo("Failover: deleting peer config\n");
 
 	/* cfgobjs have all already stopped */
 	for (i = 0; i < 3; i++) {
-		fn = del[i];
 		while ((rbn = rbt_min(t[i]))) {
 			ent = STR_RBN(rbn);
-			rc = fn(ent->str, &sctxt);
-			if (rc) {
-				ldmsd_linfo("Failover: peer config deletion "
-					    "failed, rc: %d\n", rc);
-				return rc;
-			}
-			rbt_del(t[i], rbn);
-			str_rbn_free((void*)rbn);
+			_rc = __cfg_post(&xprt, req_ids[i], ent);
+			if (_rc)
+				rc = EAGAIN;
+			else
+				__sync_fetch_and_add(&fctxt->req_count, 1);
 		}
 	}
 
-	ldmsd_linfo("Failover: peer config deleted\n");
-
-	return 0;
+	fctxt->is_all_sent = 1;
+	return rc;
 }
 
 static
@@ -1295,34 +1564,52 @@ int __peercfg_stop(ldmsd_failover_t f)
 	int rc = 0, _rc, i;
 	struct rbn *rbn;
 	struct str_rbn *ent;
-	struct ldmsd_sec_ctxt sctxt = __get_sec_ctxt(NULL);
 	struct rbt *t[] = {&f->updtr_rbt, &f->prdcr_rbt};
-	void *stop[] = {ldmsd_updtr_stop, ldmsd_prdcr_stop};
-	int (*fn)(void*, void*);
+	enum ldmsd_request req[] = {LDMSD_PRDCR_STOP_REQ, LDMSD_UPDTR_STOP_REQ};
+	enum ldmsd_request req_id;
+	struct ldmsd_cfg_xprt_s xprt = {0};
+	struct failover_xprt_ctxt *fctxt;
+
+	fctxt = calloc(1, sizeof(*fctxt));
+	if (!fctxt) {
+		ldmsd_log(LDMSD_LCRITICAL, "Out of memory\n");
+		return ENOMEM;
+	}
+
+	fctxt->f = f;
+	fctxt->type = FAILOVER_PEERCFG_STOP;
+	rbt_init(&fctxt->req_tree, req_cmp);
+	xprt.type = LDMSD_CFG_TYPE_INTR;
+	xprt.max_msg = LDMSD_CFG_FILE_XPRT_MAX_REC;
+	xprt.send_fn = failover_response_fn;
+	xprt.trust = 1;
+	xprt.ctxt = fctxt;
 
 	/* NOTE: Leaving out peer storage policy in the favor of letting our
 	 *       storage policy picks up the data. */
 
 	ldmsd_linfo("Failover: stopping peercfg\n");
 	for (i = 0; i < ARRAY_LEN(t); i++) {
-		fn = stop[i];
+		req_id = req[i];
 		RBT_FOREACH(rbn, t[i]) {
 			ent = STR_RBN(rbn);
-			_rc = fn(ent->str, &sctxt);
-			if (0 == _rc)
-				ent->started = 0;
-			else
+			_rc = __cfg_post(&xprt, req_id, ent);
+			if (_rc)
 				rc = EAGAIN;
+			else
+				__sync_fetch_and_add(&fctxt->req_count, 1);
 		}
 	}
-
+	fctxt->is_all_sent = 1;
 	if (rc) {
 		ldmsd_linfo("Failover: peer config stopping failed: %d\n", rc);
 	} else {
+		/*
+		 * TODO: Move to the failover's response function.
+		 */
 		ldmsd_linfo("Failover: peer config stopped\n");
 		f->timeout_ts.tv_sec = INT64_MAX;
 	}
-
 	return rc;
 }
 
@@ -1383,32 +1670,6 @@ int __try_stop(ldmsd_failover_t f)
 	return 0;
 }
 
-static
-void __failover_active_routine(ldmsd_failover_t f);
-static
-void __failover_task(ldmsd_task_t task, void *arg)
-{
-	ldmsd_failover_t f = arg;
-	__failover_lock(f);
-	switch (f->state) {
-	case FAILOVER_STATE_STOP:
-		__ASSERT(0 == "BAD STATE");
-		break;
-	case FAILOVER_STATE_START:
-		__failover_active_routine(f);
-		break;
-	case FAILOVER_STATE_STOPPING:
-		__try_stop(f);
-		break;
-	default:
-		__ASSERT(0 == "BAD FAILOVER STATE");
-	}
-	if (f->state != FAILOVER_STATE_STOP) {
-		__failover_task_resched(f);
-	}
-	__failover_unlock(f);
-}
-
 /*
  * Check if conditions are right, then start peercfg.
  */
@@ -1422,6 +1683,9 @@ void __try_start_peercfg(ldmsd_failover_t f)
 	if (!f->auto_switch)
 		return; /* do not start peercfg automatically */
 
+	/*
+	 * TODO: Check with __FAILOVER_PEERCFG_COMPLETE instead
+	 */
 	if (!__F_GET(f, __FAILOVER_PEERCFG_RECEIVED))
 		return; /* no peercfg ... can't do anything */
 
@@ -1434,8 +1698,7 @@ void __try_start_peercfg(ldmsd_failover_t f)
 	__peercfg_start(f);
 }
 
-static
-void __failover_active_routine(ldmsd_failover_t f)
+static int __failover_active_routine(ldmsd_failover_t f)
 {
 	/* f->lock is held */
 	switch (f->conn_state) {
@@ -1464,6 +1727,29 @@ void __failover_active_routine(ldmsd_failover_t f)
 		break;
 	}
 	__try_start_peercfg(f);
+
+	return 0;
+}
+
+int failover_routine_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e)
+{
+	ldmsd_failover_t f = EV_DATA(e, struct failover_data)->f;
+	switch (f->state) {
+	case FAILOVER_STATE_STOP:
+		__ASSERT(0 == "BAD STATE");
+		break;
+	case FAILOVER_STATE_START:
+		__failover_active_routine(f);
+		break;
+	case FAILOVER_STATE_STOPPING:
+		__try_stop(f);
+		break;
+	default:
+		__ASSERT(0 == "BAD FAILOVER STATE");
+	}
+	if (f->state != FAILOVER_STATE_STOP)
+		return __failover_post_routine(f);
+	return 0;
 }
 
 static
@@ -1519,7 +1805,14 @@ int __peercfg_start(ldmsd_failover_t f)
 	int rc = 0;
 	struct rbn *rbn;
 	struct str_rbn *srbn;
-	struct ldmsd_sec_ctxt sctxt = __get_sec_ctxt(NULL);
+	struct ldmsd_cfg_xprt_s xprt = {0};
+
+	xprt.type = LDMSD_CFG_TYPE_INTR;
+	xprt.max_msg = LDMSD_CFG_FILE_XPRT_MAX_REC;
+	xprt.send_fn = failover_response_fn;
+	xprt.trust = 1;
+	xprt.ctxt = f;
+
 
 	ldmsd_linfo("Failover: starting peercfg, flags: %#lo\n", f->flags);
 
@@ -1527,28 +1820,14 @@ int __peercfg_start(ldmsd_failover_t f)
 		srbn = STR_RBN(rbn);
 		if (srbn->started)
 			continue;
-		rc = ldmsd_prdcr_start(srbn->str, NULL, &sctxt);
-		if (rc) {
-			ldmsd_log(LDMSD_LERROR,
-				  "failover: prdcr_start(%s) failed, "
-				  "rc: %d\n", srbn->str, rc);
-			continue;
-		}
-		srbn->started = 1;
+		(void) __cfg_post(&xprt, LDMSD_PRDCR_START_REQ, srbn);
 	}
 
 	RBT_FOREACH(rbn, &f->updtr_rbt) {
 		srbn = STR_RBN(rbn);
 		if (srbn->started)
 			continue;
-		rc = ldmsd_updtr_start(srbn->str, NULL, NULL, NULL, &sctxt);
-		if (rc) {
-			ldmsd_log(LDMSD_LERROR,
-				  "failover: updtr_start(%s) failed, "
-				  "rc: %d\n", srbn->str, rc);
-			continue;
-		}
-		srbn->started = 1;
+		(void) __cfg_post(&xprt, LDMSD_UPDTR_START_REQ, srbn);
 	}
 
 	__dlog("Failover: __peercfg_start(), flags: %#lx, rc: %d\n",
@@ -1659,6 +1938,9 @@ int failover_config_handler(ldmsd_req_ctxt_t req)
 	if (interval) {
 		__failover_set_ping_interval(f, strtoul(interval, NULL, 0));
 	}
+
+	f->worker = assign_failover_worker();
+	ev_dispatch(f->worker, failover_routine_type, failover_routine_actor);
 
 	__F_ON(f, __FAILOVER_CONFIGURED);
 
@@ -1883,6 +2165,10 @@ int failover_peercfg_start_handler(ldmsd_req_ctxt_t req)
 	ldmsd_failover_t f = __ldmsd_req_failover_get(req);
 
 	__failover_lock(f);
+
+	/*
+	 * TODO: check if state in CONFIGURED
+	 */
 
 	rc = __peercfg_start(f);
 	if (rc) {
@@ -2384,48 +2670,247 @@ err:
 	return rc;
 }
 
-int failover_peercfg_handler(ldmsd_req_ctxt_t req)
+int failover_peercfg_handler(ldmsd_req_ctxt_t reqc)
 {
 	int rc = 0;
 	ldmsd_failover_t f;
+	ev_worker_t dsts[] = {prdcr_tree_w, updtr_tree_w, strgp_tree_w};
+	ev_t e;
+	int i;
 
-	f = __ldmsd_req_failover_get(req);
+	f = __ldmsd_req_failover_get(reqc);
 	if (!f) {
 		rc = ENOENT;
 		goto out;
 	}
-	__failover_lock(f);
-	rc = __failover_send_cfgobjs(f, req->xprt->ldms.ldms);
-	__failover_unlock(f);
+
+	struct fo_peercfg_ctxt *ctxt = calloc(1, sizeof(*ctxt));
+	if (!ctxt)
+		goto enomem;
+	ctxt->x = ldms_xprt_get(f->ax);
+	reqc->ctxt = ctxt;
+
+	for (i = 0; i < ARRAY_LEN(dsts); i++) {
+		e = ev_new(cfg_type);
+		if (!e)
+			goto enomem;
+		EV_DATA(e, struct cfg_data)->reqc = reqc;
+		EV_DATA(e, struct cfg_data)->ctxt = NULL;
+		rc = ev_post(failover_w, dsts[i], e, 0);
+		if (rc) {
+			rc = EINTR;
+			goto out;
+		}
+
+	}
 out:
-	req->errcode = rc;
-	ldmsd_send_req_response(req, NULL);
+	reqc->errcode = rc;
+	ldmsd_send_req_response(reqc, NULL);
 	return rc;
+enomem:
+	free(ctxt);
+	ldmsd_log(LDMSD_LCRITICAL, "Out of memory\n");
+	return ENOMEM;
 }
 
 int ldmsd_failover_start()
 {
 	int rc;
 	ldmsd_failover_t f;
+
 	f = &__failover;
-	__failover_lock(f);
 	if (f->state != FAILOVER_STATE_STOP) {
 		rc = EBUSY;
 		goto out;
 	}
 	f->task_interval = f->ping_interval;
-	rc = ldmsd_task_start(&f->task, __failover_task, f,
-			      LDMSD_TASK_F_IMMEDIATE, f->task_interval, 0);
-	if (rc)
+
+	f->routine_ev = ev_new(failover_routine_type);
+	if (!f->routine_ev) {
+		ldmsd_log(LDMSD_LCRITICAL, "Out of memory\n");
+		rc = ENOMEM;
 		goto out;
+	}
+	EV_DATA(f->routine_ev, struct failover_data)->f = f;
 
 	f->state = FAILOVER_STATE_START;
 	/* allows only failover-safe and failover-internal commands */
 	ldmsd_inband_cfg_mask_set(LDMSD_PERM_FAILOVER_ALLOWED |
 				  LDMSD_PERM_FAILOVER_INTERNAL);
+
+	rc = ev_post(f->worker, f->worker, f->routine_ev, 0);
 out:
-	__failover_unlock(f);
 	return rc;
+}
+
+int failover_cfg_actor(ev_worker_t dst, ev_worker_t src, ev_status_t status, ev_t e)
+{
+	int rc;
+	ldmsd_req_ctxt_t reqc = EV_DATA(e, struct cfg_data)->reqc;
+
+	switch (reqc->req_id) {
+	case LDMSD_FAILOVER_MOD_REQ:
+		break;
+	case LDMSD_FAILOVER_START_REQ:
+		rc = failover_start_handler(reqc);
+		break;
+	case LDMSD_FAILOVER_PAIR_REQ:
+		rc = failover_pair_handler(reqc);
+		break;
+	case LDMSD_FAILOVER_PEERCFG_REQ:
+		rc = failover_peercfg_handler(reqc);
+		break;
+	case LDMSD_FAILOVER_PING_REQ:
+		rc = failover_ping_handler(reqc);
+		break;
+	case LDMSD_FAILOVER_CFGPRDCR_REQ:
+		rc = failover_cfgprdcr_handler(reqc);
+		break;
+	case LDMSD_FAILOVER_CFGUPDTR_REQ:
+		rc = failover_cfgupdtr_handler(reqc);
+		break;
+	case LDMSD_FAILOVER_CFGSTRGP_REQ:
+		rc = failover_cfgstrgp_handler(reqc);
+		break;
+	case LDMSD_FAILOVER_PEERCFG_START_REQ:
+		rc = failover_peercfg_start_handler(reqc);
+		break;
+	case LDMSD_FAILOVER_PEERCFG_STOP_REQ:
+		rc = failover_peercfg_stop_handler(reqc);
+		break;
+	default:
+		break;
+	}
+	ev_put(e);
+	return rc;
+}
+
+int __failover_cfgobj_peercfg_rsp_handler(ldmsd_req_ctxt_t reqc)
+{
+	struct fo_peercfg_ctxt *ctxt = reqc->ctxt;
+
+	if (!ctxt->is_prdcr_done)
+		return 0;
+
+	if (!ctxt->is_updtr_done)
+		return 0;
+
+	if (!ctxt->is_strgp_done)
+		return 0;
+
+	if (ctxt->is_prdcr_error || ctxt->is_updtr_error || ctxt->is_strgp_error) {
+		reqc->errcode = EINTR;
+	}
+	ldmsd_send_req_response(reqc, NULL);
+
+	return 0;
+}
+
+int failover_cfgobj_rsp_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e)
+{
+	if (EV_OK != status)
+		return 0;
+
+	int rc;
+	ldmsd_req_ctxt_t reqc = EV_DATA(e, struct cfgobj_rsp_data)->ctxt;
+
+	switch (reqc->req_id) {
+	case LDMSD_FAILOVER_PEERCFG_REQ:
+		rc = __failover_cfgobj_peercfg_rsp_handler(reqc);
+		break;
+	default:
+		break;
+	}
+
+	return 0;
+}
+
+int failover_ob_rsp_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e)
+{
+	if (EV_OK != status)
+		return 0;
+
+	int rc;
+	ldmsd_req_hdr_t hdr;
+	struct failover_xprt_ctxt *fctxt;
+	ldmsd_failover_t f;
+	struct failover_req_ctxt *ctxt;
+	struct rbn *rbn;
+
+	hdr = EV_DATA(e, struct ob_rsp_data)->hdr;
+	fctxt = (struct failover_xprt_ctxt *)EV_DATA(e, struct ob_rsp_data)->ctxt;
+
+	rbn = rbt_find(&f->cfg_tree, (void *)(uint64_t)hdr->msg_no);
+	assert(rbn);
+	rbt_del(&f->cfg_tree, rbn);
+	ctxt = container_of(rbn, struct failover_req_ctxt, rbn);
+
+	switch (hdr->req_id) {
+	case LDMSD_PRDCR_START_REQ:
+	case LDMSD_UPDTR_START_REQ:
+		rc = __start_rsp(hdr, ctxt->srbn);
+		break;
+	case LDMSD_PRDCR_STOP_REQ:
+	case LDMSD_UPDTR_STOP_REQ:
+	case LDMSD_STRGP_STOP_REQ:
+		rc = __stop_rsp(hdr, ctxt->srbn);
+		break;
+	case LDMSD_STRGP_DEL_REQ:
+	case LDMSD_PRDCR_DEL_REQ:
+	case LDMSD_UPDTR_DEL_REQ:
+		break;
+	default:
+		ldmsd_log(LDMSD_LINFO, "Failover received an unrecognized "
+				"config response with ID %d.\n", hdr->req_id);
+		return 0;
+	}
+	if (__is_cfg_done(fctxt)) {
+		switch (fctxt->type) {
+		case FAILOVER_PEERCFG_STOP:
+			if (!rc) {
+				ldmsd_linfo("Failover: peer config stopped\n");
+				f->timeout_ts.tv_sec = INT64_MAX;
+			}
+			break;
+		case FAILOVER_PEERCFG_START:
+			/* do nothing */
+			break;
+		case FAILOVER_PEERCFG_DEL:
+			if (!rc)
+				ldmsd_linfo("Failover: peer config deleted\n");
+			break;
+		default:
+			break;
+		}
+	}
+
+	free(ctxt);
+	return 0;
+}
+
+int failover_ib_rsp_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e)
+{
+	if (EV_OK != status)
+		return 0;
+
+	ldmsd_req_cmd_t rcmd = EV_DATA(e, struct rsp_data)->rcmd;
+	ldmsd_req_hdr_t hdr = (ldmsd_req_hdr_t)rcmd->reqc->recv_buf;
+	uint32_t req_id = rcmd->reqc->req_id;
+	ldmsd_failover_t f = (ldmsd_failover_t)rcmd->ctxt;
+
+	switch (req_id) {
+	case LDMSD_FAILOVER_PAIR_REQ:
+		(void) failover_pair_rsp_handler(f, hdr);
+		break;
+	case LDMSD_FAILOVER_PEERCFG_REQ:
+		(void) failover_pair_rsp_handler(f, hdr);
+		break;
+	default:
+		break;
+	}
+
+	ev_put(e);
+	return 0;
 }
 
 __attribute__((constructor))
