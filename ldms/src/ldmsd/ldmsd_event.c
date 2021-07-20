@@ -59,6 +59,10 @@ ev_worker_t prdcr_tree_w;
 ev_worker_t updtr_tree_w;
 ev_worker_t strgp_tree_w;
 
+#ifdef LDMSD_FAILOVER
+ev_worker_t failover_w;
+#endif /* LDMSD_FAILOVER */
+
 ev_worker_t *prdcr_pool;
 ev_worker_t *strgp_pool;
 ev_worker_t *prdset_pool;
@@ -93,6 +97,11 @@ ev_type_t updtr_state_type;
 
 ev_type_t cleanup_type;
 ev_type_t strgp_cleanup_type;
+
+#ifdef LDMSD_FAILOVER
+ev_type_t failover_routine_type;
+ev_type_t failover_xprt_type;
+#endif /* LDMSD_FAILOVER */
 
 int default_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t ev)
 {
@@ -177,6 +186,21 @@ strgp_cleanup_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e
 
 extern int
 strgp_tree_cleanup_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e);
+
+#ifdef LDMSD_FAILOVER
+extern int
+failover_routine_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e);
+extern int
+failover_xprt_event_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e);
+extern int
+failover_ib_rsp_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e);
+extern int
+failover_ob_rsp_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e);
+extern int
+failover_cfgobj_rsp_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e);
+extern int
+failover_cfg_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e);
+#endif /* LDMSD_FAILOVER */
 
 int ldmsd_worker_init(void)
 {
@@ -296,6 +320,18 @@ int ldmsd_worker_init(void)
 		ev_dispatch(strgp_pool[i], strgp_cleanup_type, strgp_cleanup_actor);
 	}
 
+#ifdef LDMSD_FAILOVER
+	/* failover worker */
+	failover_w = ev_worker_new("failover", default_actor);
+	if (!failover_w)
+		goto enomem;
+	ev_dispatch(failover_w, failover_routine_type, failover_routine_actor);
+	ev_dispatch(failover_w, failover_xprt_type, failover_xprt_event_actor);
+	ev_dispatch(failover_w, ib_cfg_type, failover_cfg_actor);
+	ev_dispatch(failover_w, ib_rsp_type, failover_ib_rsp_actor);
+	ev_dispatch(failover_w, cfgobj_rsp_type, failover_cfgobj_rsp_actor);
+	ev_dispatch(failover_w, ob_rsp_type, failover_ob_rsp_actor);
+#endif /* LDMSD_FAILOVER */
 	return 0;
 enomem:
 	return ENOMEM;
@@ -338,6 +374,11 @@ int ldmsd_ev_init(void)
 
 	cleanup_type = ev_type_new("cleanup", sizeof(struct cleanup_data));
 	strgp_cleanup_type = ev_type_new("strgp_clean", sizeof(struct strgp_data));
+
+#ifdef LDMSD_FAILOVER
+	failover_routine_type = ev_type_new("failover:routine", sizeof(struct failover_data));
+	failover_xprt_type = ev_type_new("ldms_xprt:failover:xprt_event", sizeof(struct failover_data));
+#endif /* LDMSD_FAILOVER */
 	return 0;
 }
 
@@ -380,6 +421,13 @@ ev_worker_t assign_strgp_worker()
 	static int i = 0;
 	return __assign_worker(strgp_pool, &i, ldmsd_num_strgp_workers_get());
 }
+
+#ifdef LDMSD_FAILOVER
+ev_worker_t assign_failover_worker()
+{
+	return failover_w;
+}
+#endif /* LDMSD_FAILOVER */
 
 struct filt_ent *ldmsd_filter_first(struct filter_data *filt)
 {
