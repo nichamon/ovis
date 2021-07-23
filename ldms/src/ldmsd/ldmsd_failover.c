@@ -1253,6 +1253,196 @@ err:
 	return;
 }
 
+struct failover_cfg_ctxt {
+	struct str_rbn *srbn;
+	struct rbn rbn;
+};
+
+static int cfg_ctxt_cmp(void *a, const void *b)
+{
+	return (uint32_t)(uint64_t)a - (uint32_t)(uint64_t)b;
+}
+
+struct rbt cfg_tree = RBT_INITIALIZER(cfg_ctxt_cmp);
+
+static int __start_rsp(ldmsd_req_hdr_t reply, struct str_rbn *srbn)
+{
+	char *s;
+	struct ldmsd_req_attr_s *attr;
+
+	switch (reply->req_id) {
+	case LDMSD_PRDCR_START_REQ:
+		s = "prdcr_start()";
+		break;
+	case LDMSD_UPDTR_START_REQ:
+		s = "updtr_start()";
+		break;
+	default:
+		ldmsd_log(LDMSD_LINFO, "Failover received an unrecognized "
+				"config response with ID %d.\n", reply->req_id);
+		return 0;
+	}
+
+	attr = ldmsd_first_attr(reply);
+
+	if (reply->rsp_err && (attr->attr_id == LDMSD_ATTR_STRING)) {
+		/* Print the error message to the log */
+		ldmsd_log(LDMSD_LERROR, "failover: %s: %s\n", s,  attr->attr_value);
+	} else if (0 == reply->rsp_err) {
+		srbn->started = 1;
+	}
+	return 0;
+}
+
+static int __stop_rsp()
+{
+	char *s;
+	struct ldmsd_req_attr_s *attr;
+
+	switch (reply->req_id) {
+	case LDMSD_PRDCR_START_REQ:
+		s = "prdcr_start()";
+		break;
+	case LDMSD_UPDTR_START_REQ:
+		s = "updtr_start()";
+		break;
+	default:
+		ldmsd_log(LDMSD_LINFO, "Failover received an unrecognized "
+				"config response with ID %d.\n", reply->req_id);
+		return 0;
+	}
+
+	attr = ldmsd_first_attr(reply);
+
+	if (reply->rsp_err && (attr->attr_id == LDMSD_ATTR_STRING)) {
+		/* Print the error message to the log */
+		ldmsd_log(LDMSD_LERROR, "failover: %s: %s\n", s,  attr->attr_value);
+	} else if (0 == reply->rsp_err) {
+		srbn->started = 1;
+	}
+	return 0;
+}
+
+static int __del_rsp()
+{
+	return 0;
+}
+
+static int failover_cfg_response_fn(void *_xprt, char *data, size_t data_len)
+{
+	struct failover_cfg_ctxt *ctxt;
+	struct rbn *rbn;
+	ldmsd_req_attr_t attr;
+	ldmsd_cfg_xprt_t xprt = (ldmsd_cfg_xprt_t)_xprt;
+	ldmsd_req_hdr_t req_reply = (ldmsd_req_hdr_t)data;
+	int started;
+	ldmsd_ntoh_req_msg(req_reply);
+
+	rbn = rbt_find(&cfg_tree, (void *)(uint64_t)req_reply->msg_no);
+	assert(rbn);
+	rbt_del(&cfg_tree, rbn);
+	ctxt = container_of(rbn, struct failover_cfg_ctxt, rbn);
+
+	char *s;
+
+	switch (req_reply->req_id) {
+	case LDMSD_PRDCR_START_REQ:
+		s = "prdcr_start()";
+		started = 1;
+		break;
+	case LDMSD_UPDTR_START_REQ:
+		s = "updtr_start()";
+		started = 1;
+		break;
+	case LDMSD_PRDCR_STOP_REQ:
+		s = "prdcr_stop()";
+		started = 0;
+		break;
+	case LDMSD_UPDTR_STOP_REQ:
+		s = "updtr_stop()";
+		started = 0;
+		break;
+	default:
+		ldmsd_log(LDMSD_LINFO, "Failover received an unrecognized "
+				"config response with ID %d.\n", req_reply->req_id);
+		return 0;
+	}
+
+	attr = ldmsd_first_attr(req_reply);
+
+	if (req_reply->rsp_err && (attr->attr_id == LDMSD_ATTR_STRING)) {
+		/* Print the error message to the log */
+		ldmsd_log(LDMSD_LERROR, "failover: %s: %s\n", s,  attr->attr_value);
+	} else if (0 == req_reply->rsp_err) {
+		ctxt->srbn->started = started;
+	}
+	xprt->rsp_err = req_reply->rsp_err;
+	free(ctxt);
+	return 0;
+}
+
+extern int post_recv_rec_ev(ldmsd_cfg_xprt_t xprt, struct ldmsd_req_hdr_s *req);
+static int
+__cfg_post(ldmsd_cfg_xprt_t xprt, enum ldmsd_request req_id, struct str_rbn *srbn)
+{
+	int rc;
+	struct failover_cfg_ctxt *ctxt;
+	ldmsd_req_hdr_t req;
+	struct ldmsd_req_attr_s attr;
+	struct ldmsd_msg_buf *buf = ldmsd_msg_buf_new(512);
+	if (!buf)
+		goto enomem;
+
+	ctxt = malloc(sizeof(*ctxt));
+	if (!ctxt)
+		goto enomem;
+
+	req = (ldmsd_req_hdr_t)buf->buf;
+	buf->off = sizeof(*req);
+
+	attr.attr_id = LDMSD_ATTR_NAME;
+	attr.discrim = 1;
+	attr.attr_len = strlen(srbn->str) + 1;
+
+	ldmsd_msg_buf_append(buf, "%s", (char *)&attr);
+	ldmsd_msg_buf_append(buf, "%s", srbn->str);
+
+	attr.discrim = 0;
+	memcpy(&buf->buf[buf->off], &attr.discrim, sizeof(attr.discrim));
+	buf->off += sizeof(attr.discrim);
+
+	req->flags = LDMSD_REQ_SOM_F | LDMSD_REQ_EOM_F;
+	req->rec_len = buf->off;
+	req->marker = LDMSD_RECORD_MARKER;
+	req->msg_no = ldmsd_msg_no_get();
+	req->type = LDMSD_REQ_TYPE_CONFIG_CMD;
+	req->req_id = req_id;
+
+	rbn_init(&ctxt->rbn, (void *)(uint64_t)req->msg_no);
+	ldmsd_hton_req_msg(req);
+
+	ctxt->srbn = srbn;
+
+	rc = post_recv_rec_ev(xprt, req);
+	if (rc) {
+		ldmsd_log(LDMSD_LERROR, "failover: Failed to post an internal request.\n");
+		goto err;
+	}
+	rbt_ins(&cfg_tree, &ctxt->rbn);
+
+	(void) ldmsd_msg_buf_detach(buf);
+	ldmsd_msg_buf_free(buf);
+
+	return 0;
+enomem:
+	ldmsd_log(LDMSD_LCRITICAL, "Out of memory\n");
+	rc = ENOMEM;
+err:
+	ldmsd_msg_buf_free(buf);
+	free(ctxt);
+	return rc;
+}
+
 static
 int __peercfg_delete(ldmsd_failover_t f)
 {
@@ -1297,21 +1487,26 @@ int __peercfg_stop(ldmsd_failover_t f)
 	struct str_rbn *ent;
 	struct ldmsd_sec_ctxt sctxt = __get_sec_ctxt(NULL);
 	struct rbt *t[] = {&f->updtr_rbt, &f->prdcr_rbt};
-	void *stop[] = {ldmsd_updtr_stop, ldmsd_prdcr_stop};
+	enum ldmsd_request req[] = {LDMSD_PRDCR_STOP_REQ, LDMSD_UPDTR_STOP_REQ};
 	int (*fn)(void*, void*);
+	enum ldmsd_request req_id;
+	struct ldmsd_cfg_xprt_s xprt = {0};
+
+	xprt.type = LDMSD_CFG_TYPE_INTR;
+	xprt.max_msg = LDMSD_CFG_FILE_XPRT_MAX_REC;
+	xprt.send_fn = failover_cfg_response_fn;
+	xprt.trust = 1;
 
 	/* NOTE: Leaving out peer storage policy in the favor of letting our
 	 *       storage policy picks up the data. */
 
 	ldmsd_linfo("Failover: stopping peercfg\n");
 	for (i = 0; i < ARRAY_LEN(t); i++) {
-		fn = stop[i];
+		req_id = req[i];
 		RBT_FOREACH(rbn, t[i]) {
 			ent = STR_RBN(rbn);
-			_rc = fn(ent->str, &sctxt);
-			if (0 == _rc)
-				ent->started = 0;
-			else
+			_rc = __cfg_post(&xprt, req_id, ent);
+			if (_rc)
 				rc = EAGAIN;
 		}
 	}
@@ -1512,121 +1707,6 @@ int __peercfg_activated(ldmsd_failover_t f)
 	return 0;
 }
 
-struct failover_cfg_ctxt {
-	struct str_rbn *srbn;
-	struct rbn rbn;
-};
-
-static int cfg_ctxt_cmp(void *a, const void *b)
-{
-	return (uint32_t)a - (uint32_t)b;
-}
-
-struct rbt cfg_tree = RBT_INITIALIZER(cfg_ctxt_cmp);
-
-static int failover_cfg_response_fn(void *_xprt, char *data, size_t data_len)
-{
-	struct rbt *rbt;
-	struct failover_cfg_ctxt *ctxt;
-	struct rbn *rbn;
-	ldmsd_req_attr_t attr;
-	ldmsd_cfg_xprt_t xprt = (ldmsd_cfg_xprt_t)_xprt;
-	ldmsd_req_hdr_t req_reply = (ldmsd_req_hdr_t)data;
-	ldmsd_ntoh_req_msg(req_reply);
-
-	rbn = rbt_find(&cfg_tree, req_reply->msg_no);
-	assert(rbn);
-	rbt_del(&cfg_tree, rbn);
-	ctxt = container_of(rbn, struct failover_cfg_ctxt, rbn);
-
-	char *s;
-
-	switch (req_reply->req_id) {
-	case LDMSD_PRDCR_START_REQ:
-		s = "prdcr_start()";
-		break;
-	case LDMSD_UPDTR_START_REQ:
-		s = "updtr_start()";
-		break;
-	case LDMSD_STRGP_START_REQ:
-		s = "strgp_start()";
-		break;
-	default:
-		ldmsd_log(LDMSD_LINFO, "Failover received an unrecognized "
-				"config response with ID %d.\n", req_reply->req_id);
-		return 0;
-	}
-
-	attr = ldmsd_first_attr(req_reply);
-
-	if (req_reply->rsp_err && (attr->attr_id == LDMSD_ATTR_STRING)) {
-		/* Print the error message to the log */
-		ldmsd_log(LDMSD_LERROR, "failover: %s: %s\n", s,  attr->attr_value);
-	} else if (0 == req_reply->rsp_err) {
-		ctxt->srbn->started = 1;
-	}
-	xprt->rsp_err = req_reply->rsp_err;
-	free(ctxt);
-	return 0;
-}
-
-static int
-__cfg_send(ldmsd_cfg_xprt_t xprt, enum ldmsd_request req_id, struct str_rbn *srbn)
-{
-	int rc;
-	struct failover_cfg_ctxt *ctxt;
-	ldmsd_req_hdr_t req;
-	struct ldmsd_req_attr_s attr;
-	struct ldmsd_msg_buf *buf = ldmsd_msg_buf_new(512);
-	if (!buf)
-		goto enomem;
-
-	ctxt = malloc(sizeof(*ctxt));
-	if (!ctxt)
-		goto enomem;
-
-	req = (ldmsd_req_hdr_t)buf->buf;
-	buf->off = sizeof(*req);
-
-	attr.attr_id = LDMSD_ATTR_NAME;
-	attr.discrim = 1;
-	attr.attr_len = strlen(srbn->str) + 1;
-
-	ldmsd_msg_buf_append(buf, "%s", (char *)&attr);
-	ldmsd_msg_buf_append(buf, "%s", srbn->str);
-
-	attr.discrim = 0;
-	memcpy(&buf->buf[buf->off], &attr.discrim, sizeof(attr.discrim));
-	buf->off += sizeof(attr.discrim);
-
-	req->flags = LDMSD_REQ_SOM_F | LDMSD_REQ_EOM_F;
-	req->rec_len = buf->off;
-	req->marker = LDMSD_RECORD_MARKER;
-	req->msg_no = ldmsd_msg_no_get();
-	req->type = LDMSD_REQ_TYPE_CONFIG_CMD;
-	req->req_id = req_id;
-
-	rbn_init(&ctxt->rbn, (void *)req->msg_no);
-	ldmsd_hton_req_msg(req);
-
-	ctxt->srbn = srbn;
-
-	rc = post_recv_rec_ev(xprt, req);
-	if (rc) {
-		ldmsd_log(LDMSD_LERROR, "failover: Failed to post an internal request.\n");
-		goto err;
-	}
-	rbt_ins(&cfg_tree, &ctxt->rbn);
-	return 0;
-enomem:
-	ldmsd_log(LDMSD_LCRITICAL, "Out of memory\n");
-	rc = ENOMEM;
-err:
-	ldmsd_msg_buf_free(buf);
-	free(ctxt);
-	return rc;
-}
-
 static
 int __peercfg_start(ldmsd_failover_t f)
 {
@@ -1649,24 +1729,18 @@ int __peercfg_start(ldmsd_failover_t f)
 		srbn = STR_RBN(rbn);
 		if (srbn->started)
 			continue;
-		rc = __cfg_send(&xprt, LDMSD_PRDCR_START_REQ, srbn);
+		rc = __cfg_post(&xprt, LDMSD_PRDCR_START_REQ, srbn);
 		if (rc)
 			continue;
-		srbn->started = 1; /* TODO: this might not be true */
 	}
 
 	RBT_FOREACH(rbn, &f->updtr_rbt) {
 		srbn = STR_RBN(rbn);
 		if (srbn->started)
 			continue;
-		rc = ldmsd_updtr_start(srbn->str, NULL, NULL, NULL, &sctxt);
-		if (rc) {
-			ldmsd_log(LDMSD_LERROR,
-				  "failover: updtr_start(%s) failed, "
-				  "rc: %d\n", srbn->str, rc);
+		rc = __cfg_post(&xprt, LDMSD_UPDTR_START_REQ, srbn);
+		if (rc)
 			continue;
-		}
-		srbn->started = 1;
 	}
 
 	__dlog("Failover: __peercfg_start(), flags: %#lx, rc: %d\n",
