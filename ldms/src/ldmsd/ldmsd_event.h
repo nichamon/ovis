@@ -58,6 +58,7 @@
 ev_worker_t logger_w;
 ev_worker_t cfg_w;
 ev_worker_t logger_w;
+ev_worker_t configfile_w;
 ev_worker_t msg_tree_w;
 ev_worker_t prdcr_tree_w;
 ev_worker_t updtr_tree_w;
@@ -107,6 +108,15 @@ struct log_data {
 	char *msg;
 };
 
+typedef int (*req_filter_fn_t)(ldmsd_cfg_xprt_t, ldmsd_req_hdr_t, void *);
+struct cfgfile_data {
+	const char *path;
+	int *line_no;
+	int trust;
+	req_filter_fn_t filter_fn;
+	void *ctxt;
+};
+
 struct recv_rec_data {
 	ldmsd_req_hdr_t rec;
 	struct ldmsd_cfg_xprt_s xprt;
@@ -121,8 +131,19 @@ struct reqc_data {
 	ldmsd_req_ctxt_t reqc;
 };
 
-struct cfg_data {
+struct cfg_data { /* TODO: rename this to recv_cfg_data */
 	ldmsd_req_ctxt_t reqc;
+	void *ctxt;
+};
+
+struct rsp_data { /* TODO: rename this to recv_rsp_data */
+	ldmsd_req_cmd_t rcmd;
+	void *ctxt;
+};
+
+/* Outbound response data */
+struct ob_rsp_data {
+	ldmsd_req_hdr_t hdr;
 	void *ctxt;
 };
 
@@ -234,11 +255,15 @@ ev_type_t log_type;
 ev_type_t recv_rec_type;
 ev_type_t reqc_type; /* add to msg_tree, rem to msg_tree, send to cfg */
 ev_type_t deferred_start_type;
-ev_type_t cfg_type;
+ev_type_t cfg_type; /* TODO: rename this to recv_cfg_type */
+ev_type_t rsp_type; /* TODO: rename this to recv_rsp_type */
+ev_type_t ob_rsp_type; /* Outbound response type */
 
 ev_type_t xprt_term_type;
 
 /* Configuration */
+ev_type_t cfgfile_type;
+
 ev_type_t cfgobj_cfg_type;
 ev_type_t cfgobj_rsp_type;
 

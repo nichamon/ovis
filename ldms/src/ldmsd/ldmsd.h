@@ -1050,8 +1050,20 @@ ldmsd_prdcr_ref_t ldmsd_updtr_prdcr_find(ldmsd_updtr_t updtr,
 int ldmsd_updtr_schedule_cmp(void *a, const void *b);
 int ldmsd_updtr_tasks_update(ldmsd_updtr_t updtr, ldmsd_prdcr_set_t prd_set);
 
+int cfgfile_req_cmp(void *a, const void *b);
+
 /* Failover routines */
-extern int ldmsd_use_failover;
+struct cfgfile_ctxt {
+	int use_failover;
+	uint8_t is_submit_all;
+	struct rbt req_tree;
+};
+
+struct cfgfile_req_rbn {
+	struct rbn rbn;
+	uint32_t req_id;
+};
+
 int ldmsd_failover_config(const char *host, const char *port, const char *xprt,
 			  int auto_switch, uint64_t interval_us);
 int ldmsd_failover_start();

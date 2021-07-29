@@ -90,6 +90,12 @@ updtr_tree_prdset_add_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status
 extern int
 strgp_tree_prdset_add_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e);
 
+extern int
+configfile_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e);
+
+extern int
+configfile_resp_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e);
+
 int ldmsd_worker_init(void)
 {
 	int i;
@@ -98,6 +104,12 @@ int ldmsd_worker_init(void)
 	logger_w = ev_worker_new("logger", log_actor);
 	if (!logger_w)
 		goto enomem;
+
+	configfile_w = ev_worker_new("configfile", default_actor);
+	if (!configfile_w)
+		goto enomem;
+	ev_dispatch(configfile_w, cfgfile_type, configfile_actor);
+	ev_dispatch(configfile_w, ob_rsp_type, configfile_resp_actor);
 
 	/* msg_tree */
 	msg_tree_w = ev_worker_new("msg_tree", default_actor);
@@ -174,6 +186,8 @@ int ldmsd_ev_init(void)
 	if (!log_type)
 		return ENOMEM;
 
+	cfgfile_type = ev_type_new("ldmsd:configfile", sizeof(struct cfgfile_data));
+
 	xprt_term_type = ev_type_new("ldms:xprt_term", sizeof(struct xprt_term_data));
 	if (!xprt_term_type)
 		return ENOMEM;
@@ -186,7 +200,9 @@ int ldmsd_ev_init(void)
 	recv_rec_type = ev_type_new("ldms_xprt:recv", sizeof(struct recv_rec_data));
 	reqc_type = ev_type_new("ldmsd:reqc_ev", sizeof(struct reqc_data));
 	deferred_start_type = ev_type_new("ldmsd:deferred_start", 0);
-	cfg_type = ev_type_new("msg_tree:recv_cfg", sizeof(struct cfg_data));
+	cfg_type = ev_type_new("recv_cfg", sizeof(struct cfg_data));
+	rsp_type = ev_type_new("recv_rsp", sizeof(struct rsp_data));
+	ob_rsp_type = ev_type_new("outbound_rsp", sizeof(struct ob_rsp_data));
 
 	cfgobj_cfg_type = ev_type_new("cfgobj_tree:cfgobj:cfg_req", sizeof(struct cfgobj_data));
 	cfgobj_rsp_type = ev_type_new("cfgobj:cfgobj_tree:cfg_rsp", sizeof(struct cfgobj_rsp_data));

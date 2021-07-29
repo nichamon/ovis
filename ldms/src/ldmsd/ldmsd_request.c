@@ -6437,27 +6437,32 @@ __deferred_start_handler(ldmsd_req_ctxt_t reqc, enum ldmsd_cfgobj_type type)
 {
 	ldmsd_cfgobj_t obj;
 	char *name, *value;
+	name = value = NULL;
 
 	value = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_NAME);
 	if (!value) {
-		ldmsd_log(LDMSD_LERROR, "`name` attribute is required.\n");
-		return EINVAL;
+		reqc->line_off = snprintf(reqc->line_buf, reqc->line_len,
+					"`name` attribute is required.\n");
+		goto out;
 	}
 	name = str_repl_env_vars(value);
 	if (!name) {
-		ldmsd_log(LDMSD_LERROR, "Not enough memory.\n");
-		return ENOMEM;
+		reqc->line_off = snprintf(reqc->line_buf, reqc->line_len,
+						"Not enough memory.\n");
+		goto out;
 	}
 	obj = ldmsd_cfgobj_find(name, type);
 	if (!obj) {
-		ldmsd_log(LDMSD_LERROR, "Config object not found: %s\n", name);
-		free(name);
-		return ENOENT;
+		reqc->line_off = snprintf(reqc->line_buf, reqc->line_len,
+				  "Config object not found: %s\n", name);
+		goto out;
 	}
-	free(name);
 	obj->perm |= LDMSD_PERM_DSTART;
 	ldmsd_cfgobj_put(obj);
-	ldmsd_req_ctxt_ref_put(reqc, "create");
+out:
+	free(name);
+	free(value);
+	ldmsd_send_req_response(reqc, reqc->line_buf);
 	return 0;
 }
 
