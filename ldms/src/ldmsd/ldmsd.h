@@ -371,7 +371,32 @@ typedef struct ldmsd_updtr_task {
 } *ldmsd_updtr_task_t;
 LIST_HEAD(ldmsd_updtr_task_list, ldmsd_updtr_task);
 
-struct ldmsd_name_match;
+typedef struct ldmsd_filter_ent {
+	uint8_t is_regex;
+	char *str;
+	regex_t regex;
+	int regex_flags;
+	TAILQ_ENTRY(ldmsd_filter_ent) entry;
+} *ldmsd_filter_ent_t;
+TAILQ_HEAD(ldmsd_filter, ldmsd_filter_ent);
+
+typedef struct ldmsd_name_match {
+	/** String or Regular expression matching a name */
+	char *regex_str;
+	regex_t regex;
+
+	/** see man recomp */
+	int regex_flags;
+
+	enum ldmsd_name_match_sel {
+		LDMSD_NAME_MATCH_INST_NAME,
+		LDMSD_NAME_MATCH_SCHEMA_NAME,
+	} selector;
+
+	TAILQ_ENTRY(ldmsd_name_match) entry;
+} *ldmsd_name_match_t;
+TAILQ_HEAD(ldmsd_match_queue, ldmsd_name_match);
+
 typedef struct ldmsd_updtr {
 	struct ldmsd_cfgobj obj;
 
@@ -418,24 +443,18 @@ typedef struct ldmsd_updtr {
 	 * For quick search when query for updater that updates a prdcr_set.
 	 */
 	struct rbt prdcr_tree;
-	LIST_HEAD(updtr_match_list, ldmsd_name_match) match_list;
+	struct ldmsd_filter prdcr_list;
+	struct ldmsd_match_queue match_list;
+
+	/*
+	 * Worker that owns the updater resource and
+	 * handle any work related to the Updater.
+	 */
+	ev_worker_t worker;
+
+	struct ldmsd_updtr_schedule sched;
+
 } *ldmsd_updtr_t;
-
-typedef struct ldmsd_name_match {
-	/** Regular expresion matching schema or instance name */
-	char *regex_str;
-	regex_t regex;
-
-	/** see man recomp */
-	int regex_flags;
-
-	enum ldmsd_name_match_sel {
-		LDMSD_NAME_MATCH_INST_NAME,
-		LDMSD_NAME_MATCH_SCHEMA_NAME,
-	} selector;
-
-	LIST_ENTRY(ldmsd_name_match) entry;
-} *ldmsd_name_match_t;
 
 /** Storage Policy: Defines which producers and metrics are
  * saved when an update completes. Must include meta vs data metric flags.
@@ -453,7 +472,7 @@ struct ldmsd_strgp {
 	struct ldmsd_cfgobj obj;
 
 	/** A set of match strings to select a subset of all producers */
-	LIST_HEAD(ldmsd_strgp_prdcr_list, ldmsd_name_match) prdcr_list;
+	struct ldmsd_match_queue prdcr_list;
 
 	/** A list of the names of the metrics in the set specified by schema */
 	TAILQ_HEAD(ldmsd_strgp_metric_list, ldmsd_strgp_metric) metric_list;
@@ -717,6 +736,7 @@ void ldmsd_lall(const char *fmt, ...);
  */
 int ldmsd_loglevel_to_syslog(enum ldmsd_loglevel level);
 
+#define LDMSD_LOG_ENOMEM() ldmsd_log(LDMSD_LCRITICAL, "%s[%d]: Out of memory\n", __func__, __LINE__);
 
 /**
  * \brief Get the security context (uid, gid) of the daemon.
@@ -1292,8 +1312,15 @@ void ldmsd_xprt_event_free(ldms_xprt_event_t e);
 
 int ldmsd_num_prdcr_workers_get();
 int ldmsd_num_prdset_workers_get();
+int ldmsd_num_updtr_workers_get();
 ev_worker_t assign_prdcr_worker();
 ev_worker_t assign_prdset_worker();
+ev_worker_t assign_updtr_worker();
 ev_worker_t assign_failover_worker();
 
+void ldmsd_name_match_free(struct ldmsd_name_match *match);
+void ldmsd_match_queue_free(struct ldmsd_match_queue *list);
+void ldmsd_filter_free(struct ldmsd_filter *filter);
+int ldmsd_match_queue_copy(struct ldmsd_match_queue *src, struct ldmsd_match_queue *dst);
+int ldmsd_filter_copy(struct ldmsd_filter *src, struct ldmsd_filter *dst);
 #endif

@@ -57,6 +57,7 @@
 #include <errno.h>
 #include <coll/rbt.h>
 #include "ldmsd_event.h"
+#include "ldmsd_cfgobj.h"
 #include "ldmsd.h"
 
 int cfgobj_cmp(void *a, const void *b)
@@ -291,15 +292,16 @@ out:
 	return nobj;
 }
 
-int ldmsd_cfgtree_done(struct ldmsd_cfg_ctxt *ctxt)
+int ldmsd_cfgtree_done(struct ldmsd_cfgobj_cfg_ctxt *ctxt)
 {
 	if (ctxt->is_all && (ctxt->num_sent == ctxt->num_recv))
 		return 1;
 	return 0;
 }
 
-int ldmsd_cfgtree_post2cfgobj(ldmsd_cfgobj_t obj, ev_worker_t dst,
-		ldmsd_req_ctxt_t reqc, struct ldmsd_cfg_ctxt *ctxt)
+int ldmsd_cfgtree_post2cfgobj(ldmsd_cfgobj_t obj, ev_worker_t src,
+				ev_worker_t dst, ldmsd_req_ctxt_t reqc,
+					struct ldmsd_cfgobj_cfg_ctxt *ctxt)
 {
 	int rc;
 	ev_t ev = ev_new(cfgobj_cfg_type);
@@ -312,8 +314,41 @@ int ldmsd_cfgtree_post2cfgobj(ldmsd_cfgobj_t obj, ev_worker_t dst,
 		ctxt->reqc = reqc;
 		ctxt->num_sent += 1;
 	}
-	rc = ev_post(prdcr_tree_w, dst, ev, 0);
+	rc = ev_post(src, dst, ev, 0);
 	if (rc && ctxt)
 		ctxt->num_sent -= 1;
 	return rc;
+}
+
+int ldmsd_cfgobj_tree_del_rsp_handler(ldmsd_req_ctxt_t reqc,
+				struct ldmsd_cfgobj_cfg_rsp *rsp,
+				struct ldmsd_cfgobj_cfg_ctxt *ctxt,
+				enum ldmsd_cfgobj_type type)
+{
+	ldmsd_cfgobj_t obj = rsp->ctxt;
+
+	if (rsp->errcode) {
+		if (!reqc->errcode)
+			reqc->errcode = rsp->errcode;
+		if (ctxt->num_recv)
+			(void)linebuf_printf(reqc, ", ");
+		(void)linebuf_printf(reqc, "%s", rsp->errmsg);
+		goto out;
+	}
+
+	ldmsd_cfgobj_del(obj->name, type);
+	ldmsd_cfgobj_put(obj); /* Put back the 'create' reference */
+
+out:
+	ldmsd_cfgobj_put(obj); /* Put back the 'del_rsp' reference */
+	free(rsp->errmsg);
+	free(rsp);
+
+	if (ldmsd_cfgtree_done(ctxt)) {
+		/* All producers have sent back the responses */
+		ldmsd_send_req_response(reqc, reqc->line_buf);
+		free(ctxt);
+	}
+
+	return 0;
 }

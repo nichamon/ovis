@@ -64,6 +64,7 @@
 #include "ldmsd_request.h"
 #include "ldmsd_failover.h"
 #include "ldmsd_event.h"
+#include "ldmsd_cfgobj.h"
 #include "config.h"
 
 static void prdcr_task_cb(ldmsd_task_t task, void *arg);
@@ -176,30 +177,238 @@ static void prdcr_set_del(ldmsd_prdcr_set_t set)
 	ldmsd_prdcr_set_ref_put(set);
 }
 
-int prdset_add_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e)
+static int __prdset_state_start(ldmsd_prdcr_set_t prdset, struct prdset_data *data)
 {
 	ev_t updtr_ev, strgp_ev;
-	struct prdset_data *data = EV_DATA(e, struct prdset_data);
+	struct prdset_data *updtr_ev_data, *strgp_ev_data;
+	updtr_ev_data = strgp_ev_data = NULL;
 
-	updtr_ev = ev_new(prdset_add_type);
-	if (!updtr_ev)
+	updtr_ev = ev_new(prdset_state_type);
+	if (!updtr_ev) {
+		LDMSD_LOG_ENOMEM();
 		goto enomem;
-	strgp_ev = ev_new(prdset_add_type);
-	if (!strgp_ev)
+	}
+	strgp_ev = ev_new(prdset_state_type);
+	if (!strgp_ev) {
+		LDMSD_LOG_ENOMEM();
 		goto enomem;
+	}
 
-	memcpy(EV_DATA(updtr_ev, struct prdset_data), data, sizeof(*data));
-	memcpy(EV_DATA(strgp_ev, struct prdset_data), data, sizeof(*data));
+	updtr_ev_data = EV_DATA(updtr_ev, struct prdset_data);
+	strgp_ev_data = EV_DATA(strgp_ev, struct prdset_data);
+	memset(updtr_ev_data, 0, sizeof(struct prdset_data));
+	memset(strgp_ev_data, 0, sizeof(struct prdset_data));
 
-	ev_post(dst, updtr_tree_w, updtr_ev, 0);
-	ev_post(dst, strgp_tree_w, strgp_ev, 0);
+	if (prdset_data_copy(data, updtr_ev_data))
+		goto enomem;
+	if (prdset_data_copy(data, strgp_ev_data)) {
+		prdset_data_cleanup(updtr_ev_data);
+		goto enomem;
+	}
 
-	ev_put(e);
+
+	ldmsd_prdcr_set_ref_get(prdset);
+	updtr_ev_data->prdset = prdset;
+	ldmsd_prdcr_set_ref_get(prdset);
+	strgp_ev_data->prdset = prdset;
+	ev_post(prdset->worker, updtr_tree_w, updtr_ev, 0);
+	ev_post(prdset->worker, strgp_tree_w, strgp_ev, 0);
 	return 0;
 enomem:
-	ev_put(e);
-	ldmsd_log(LDMSD_LCRITICAL, "Out of memory\n");
+	if (updtr_ev) {
+		ev_put(updtr_ev);
+	}
+	if (strgp_ev) {
+		ev_put(strgp_ev);
+	}
 	return ENOMEM;
+}
+
+int prdset_state_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e)
+{
+	if (EV_OK != status)
+		return 0;
+
+	int rc;
+	struct prdset_data *prdset_data = EV_DATA(e, struct prdset_data);
+	switch (prdset_data->state) {
+	case LDMSD_PRDCR_SET_STATE_START:
+		rc = __prdset_state_start(prdset_data->prdset, prdset_data);
+		break;
+	default:
+		break;
+	}
+
+	prdset_data_cleanup(prdset_data);
+	ev_put(e);
+	return rc;
+}
+
+static int
+__post_prdset_state_ev(ldmsd_prdcr_set_t prdset, ev_worker_t src, ev_worker_t dst)
+{
+	struct prdset_data *prdset_data;
+	ev_t prdset_ev = ev_new(prdset_state_type);
+	if (!prdset_ev) {
+		LDMSD_LOG_ENOMEM();
+		goto enomem;
+	}
+	prdset_data = EV_DATA(prdset_ev, struct prdset_data);
+	ldmsd_prdcr_set_ref_get(prdset);
+	memset(prdset_data, 0, sizeof(*prdset_data));
+	prdset_data->prdset = prdset;
+	prdset_data->state = prdset->state;
+	prdset_data->prdcr_name = strdup(prdset->prdcr->obj.name);
+	if (!prdset_data->prdcr_name) {
+		LDMSD_LOG_ENOMEM();
+		ldmsd_prdcr_set_ref_put(prdset);
+		goto enomem;
+	}
+
+	return ev_post(src, dst, prdset_ev, 0);
+enomem:
+	if (prdset_ev)
+		ev_put(prdset_ev);
+	return ENOMEM;
+}
+
+extern int __setgrp_members_lookup(ldmsd_prdcr_set_t setgrp);
+int prdset_lookup_complete_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e)
+{
+	if (EV_OK != status)
+		return 0;
+
+	int flags;
+	int rc = 0;
+	ldms_set_t set = EV_DATA(e, struct lookup_data)->set;
+	ldmsd_prdcr_set_t prdset = EV_DATA(e, struct lookup_data)->prdset;
+	if (LDMS_LOOKUP_OK != EV_DATA(e, struct lookup_data)->status) {
+		prdset->state = LDMSD_PRDCR_SET_STATE_START;
+		goto out;
+	}
+
+	if (!prdset->set) {
+		/* This is the first lookup of the set. */
+		ldms_set_ref_get(set, "prdcr_set");
+		prdset->set = set;
+	} else {
+		assert(0 == "multiple lookup on the same prdcr_set");
+	}
+	flags = ldmsd_group_check(prdset->set);
+	if (flags & LDMSD_GROUP_IS_GROUP) {
+		/*
+		 * Lookup the member sets
+		 */
+		if (__setgrp_members_lookup(prdset))
+			goto out;
+	}
+	prdset->state = LDMSD_PRDCR_SET_STATE_READY;
+	ldmsd_log(LDMSD_LINFO, "Set %s is ready.\n", prdset->inst_name);
+
+	rc = __post_prdset_state_ev(prdset, prdset->worker, updtr_tree_w);
+	/* TODO: REMOVE This. ldmsd_strgp_update(prdset); */
+
+out:
+	ldmsd_prdcr_set_ref_put(prdset); /* Put back the reference taken before calling ldms_xprt_lookup() */
+	ev_put(e);
+	return rc;
+}
+
+void __ldmsd_prdset_lookup_cb(ldms_t xprt, enum ldms_lookup_status status,
+					int more, ldms_set_t set, void *arg)
+{
+	ev_t ev;
+	ldmsd_prdcr_set_t prd_set = arg;
+
+	if (status != LDMS_LOOKUP_OK) {
+		assert(NULL == set);
+		status = (status < 0 ? -status : status);
+		if (status == ENOMEM) {
+			ldmsd_log(LDMSD_LERROR,
+				"prdcr %s: Set memory allocation failure in lookup of "
+				"set '%s'. Consider changing the -m parameter on the "
+				"command line to a larger value. The current value is %s\n",
+				prd_set->prdcr->obj.name,
+				prd_set->inst_name,
+				ldmsd_get_max_mem_sz_str());
+		} else if (status == EEXIST) {
+			ldmsd_log(LDMSD_LERROR,
+					"prdcr %s: The set '%s' already exists. "
+					"It is likely that there are multiple "
+					"producers providing a set with the same instance name.\n",
+					prd_set->prdcr->obj.name, prd_set->inst_name);
+		} else {
+			ldmsd_log(LDMSD_LERROR,
+				  	"prdcr %s: Error %d in lookup callback of set '%s'\n",
+					prd_set->prdcr->obj.name,
+					status, prd_set->inst_name);
+		}
+	}
+
+	ev = ev_new(lookup_complete_type);
+	EV_DATA(ev, struct lookup_data)->prdset = prd_set;
+	EV_DATA(ev, struct lookup_data)->more = more;
+	EV_DATA(ev, struct lookup_data)->set = set;
+	EV_DATA(ev, struct lookup_data)->status = status;
+	ev_post(NULL, prd_set->worker, ev, 0);
+}
+
+static int __prdset_updtr_running(ldmsd_prdcr_set_t prdset)
+{
+	int rc;
+	switch (prdset->state) {
+	case LDMSD_PRDCR_SET_STATE_START:
+		prdset->state = LDMSD_PRDCR_SET_STATE_LOOKUP;
+		assert(prdset->set == NULL);
+		rc = ldms_xprt_lookup(prdset->prdcr->xprt, prdset->inst_name,
+				      LDMS_LOOKUP_BY_INSTANCE,
+				      __ldmsd_prdset_lookup_cb, prdset);
+		if (rc) {
+			/* If the error is EEXIST, the set is already in the set tree. */
+			if (rc == EEXIST) {
+				ldmsd_log(LDMSD_LERROR, "Prdcr '%s': "
+					"lookup failed synchronously. "
+					"The set '%s' already exists. "
+					"It is likely that there are more "
+					"than one producers pointing to "
+					"the set.\n",
+					prdset->prdcr->obj.name,
+					prdset->inst_name);
+			} else {
+				ldmsd_log(LDMSD_LINFO, "Synchronous error "
+						"%d from ldms_lookup\n", rc);
+			}
+			prdset->state = LDMSD_PRDCR_SET_STATE_START;
+		}
+		break;
+	case LDMSD_PRDCR_SET_STATE_READY:
+		break;
+	default:
+		break;
+	}
+	return rc;
+}
+
+int prdset_updtr_state_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e)
+{
+	if (EV_OK != status)
+		return 0;
+
+	int rc;
+	enum ldmsd_updtr_state updtr_state = EV_DATA(e, struct updtr_state_data)->state;
+	ldmsd_prdcr_set_t prdset = EV_DATA(e, struct updtr_state_data)->obj;
+
+	ldmsd_log(LDMSD_LINFO, "prdset '%s' received updtr_state event with state '%d'\n",
+							prdset->inst_name, updtr_state);
+
+	switch (updtr_state) {
+	case LDMSD_UPDTR_STATE_RUNNING:
+		rc = __prdset_updtr_running(prdset);
+		break;
+	default:
+		break;
+	}
+	return rc;
 }
 
 #define UPDT_HINT_TREE_ADD 1
@@ -304,8 +513,8 @@ void ldmsd_prd_set_updtr_task_update(ldmsd_prdcr_set_t prd_set)
 			ldmsd_updtr_unlock(updtr);
 			continue;
 		}
-		if (!LIST_EMPTY(&updtr->match_list)) {
-			LIST_FOREACH(match, &updtr->match_list, entry) {
+		if (!TAILQ_EMPTY(&updtr->match_list)) {
+			TAILQ_FOREACH(match, &updtr->match_list, entry) {
 				if (match->selector == LDMSD_NAME_MATCH_INST_NAME)
 					str = prd_set->inst_name;
 				else
@@ -405,19 +614,12 @@ static void _add_cb(ldms_t xprt, ldmsd_prdcr_t prdcr, ldms_dir_set_t dset)
 				&set->updt_hint, UPDT_HINT_TREE_ADD);
  	}
 
-	ev_t prdset_add_ev = ev_new(prdset_add_type);
-	if (!prdset_add_ev) {
-		ldmsd_log(LDMSD_LCRITICAL, "Out of memory\n");
+	ev_t prdset_ev = ev_new(prdset_state_type);
+	if (!prdset_ev) {
+		LDMSD_LOG_ENOMEM();
 		return;
 	}
-
-	EV_DATA(prdset_add_ev, struct prdset_data)->set_name = set->inst_name;
-	EV_DATA(prdset_add_ev, struct prdset_data)->prdcr_name = prdcr->obj.name;
-	EV_DATA(prdset_add_ev, struct prdset_data)->strgp_name = NULL;
-	EV_DATA(prdset_add_ev, struct prdset_data)->update_schedule = 0;
-	EV_DATA(prdset_add_ev, struct prdset_data)->updtr_name = NULL;
-
-	ev_post(prdcr->worker, set->worker, prdset_add_ev, 0);
+	(void) __post_prdset_state_ev(set, prdcr->worker, set->worker);
 }
 
 /*
@@ -770,7 +972,7 @@ static void prdcr_connect_cb(ldms_t x, ldms_xprt_event_t e, void *cb_arg)
 	return;
 
 enomem:
-	ldmsd_log(LDMSD_LCRITICAL, "Out of memory\n");
+	LDMSD_LOG_ENOMEM();
 	return;
 }
 
@@ -1444,64 +1646,24 @@ int ldmsd_prdcr_unsubscribe_regex(const char *prdcr_regex, char *stream_name,
 
 
 
-typedef int (*actor_fn)(ldmsd_prdcr_t prdcr, void *args);
-int __filter(struct filter_data *filter, actor_fn actor, void *args)
-{
-	ldmsd_prdcr_t prdcr;
-	struct filt_ent *ent;
-	int rc;
-
-	if (!filter->is_regex) {
-		for (ent = ldmsd_filter_first(filter); ent; ent = ldmsd_filter_next(filter)) {
-			prdcr = ldmsd_prdcr_find(ent->str);
-			if (!prdcr) {
-				ldmsd_log(LDMSD_LERROR, "prdcr '%s' not found.", ent->str);
-			} else {
-				rc = actor(prdcr, args);
-				if (rc)
-					return rc;
-			}
-		}
-	} else {
-		for (prdcr = ldmsd_prdcr_first(); prdcr; prdcr = ldmsd_prdcr_next(prdcr)) {
-			for (ent = ldmsd_filter_first(filter); ent; ent = ldmsd_filter_next(filter)) {
-				rc = regexec(&ent->regex, prdcr->obj.name, 0, NULL, 0);
-				if (0 == rc) {
-					rc = actor(prdcr, args);
-					if (rc)
-						return rc;
-					break;
-				}
-			}
-		}
-	}
-	return 0;
-}
-
 extern void ldmsd_req_ctxt_sec_get(ldmsd_req_ctxt_t rctxt, ldmsd_sec_ctxt_t sctxt);
 
 struct prdcr_start_ctxt {
-	struct ldmsd_cfg_ctxt base;
+	struct ldmsd_cfgobj_cfg_ctxt base;
 	ldmsd_interval interval;
 	uint8_t is_deferred;
 };
 
 struct prdcr_peercfg_ctxt {
-	struct ldmsd_cfg_ctxt base;
+	struct ldmsd_cfgobj_cfg_ctxt base;
 	void *ctxt;
 };
 
-struct prdcr_cfg_rsp {
-	int errcode;
-	char *errmsg;
-	void *ctxt;
-};
-
-static struct prdcr_cfg_rsp *
+static struct ldmsd_cfgobj_cfg_rsp *
 prdcr_stop_handler(ldmsd_prdcr_t prdcr, void *cfg_ctxt)
 {
-	struct ldmsd_cfg_ctxt *ctxt = (struct ldmsd_cfg_ctxt *)cfg_ctxt;
-	struct prdcr_cfg_rsp *rsp;
+	struct ldmsd_cfgobj_cfg_ctxt *ctxt = (struct ldmsd_cfgobj_cfg_ctxt *)cfg_ctxt;
+	struct ldmsd_cfgobj_cfg_rsp *rsp;
 	int rc;
 
 	rsp = calloc(1, sizeof(*rsp));
@@ -1543,16 +1705,16 @@ prdcr_stop_handler(ldmsd_prdcr_t prdcr, void *cfg_ctxt)
 out:
 	return rsp;
 enomem:
-	ldmsd_log(LDMSD_LCRITICAL, "Out of memory\n");
+	LDMSD_LOG_ENOMEM();
 	free(rsp);
 	return NULL;
 }
 
-static struct prdcr_cfg_rsp *
+static struct ldmsd_cfgobj_cfg_rsp *
 prdcr_start_handler(ldmsd_prdcr_t prdcr, void *cfg_ctxt)
 {
 	struct prdcr_start_ctxt *ctxt = (struct prdcr_start_ctxt *)cfg_ctxt;
-	struct prdcr_cfg_rsp *rsp;
+	struct ldmsd_cfgobj_cfg_rsp *rsp;
 	int rc;
 
 	rsp = calloc(1, sizeof(*rsp));
@@ -1593,7 +1755,7 @@ prdcr_start_handler(ldmsd_prdcr_t prdcr, void *cfg_ctxt)
 out:
 	return rsp;
 enomem:
-	ldmsd_log(LDMSD_LCRITICAL, "Out of memory\n");
+	LDMSD_LOG_ENOMEM();
 	free(rsp);
 	return NULL;
 }
@@ -1652,19 +1814,19 @@ __prdcr_status_json_obj(ldmsd_prdcr_t prdcr)
 	return buf;
 
 enomem:
-	ldmsd_log(LDMSD_LCRITICAL, "Out of memory\n");
+	LDMSD_LOG_ENOMEM();
 	ldmsd_msg_buf_free(buf);
 	return NULL;
 }
 
-static struct prdcr_cfg_rsp *
+static struct ldmsd_cfgobj_cfg_rsp *
 prdcr_status_handler(ldmsd_prdcr_t prdcr, void *cfg_ctxt)
 {
-	struct prdcr_cfg_rsp *rsp;
+	struct ldmsd_cfgobj_cfg_rsp *rsp;
 
 	rsp = calloc(1, sizeof(*rsp));
 	if (!rsp) {
-		ldmsd_log(LDMSD_LCRITICAL, "Out of memory\n");
+		LDMSD_LOG_ENOMEM();
 		return NULL;
 	}
 	rsp->ctxt = __prdcr_status_json_obj(prdcr);
@@ -1676,12 +1838,12 @@ prdcr_status_handler(ldmsd_prdcr_t prdcr, void *cfg_ctxt)
 	return rsp;
 }
 
-static struct prdcr_cfg_rsp *
+static struct ldmsd_cfgobj_cfg_rsp *
 prdcr_del_handler(ldmsd_prdcr_t prdcr, void *cfg_ctxt)
 {
 	int rc;
-	struct ldmsd_cfg_ctxt *ctxt = (struct ldmsd_cfg_ctxt *)cfg_ctxt;
-	struct prdcr_cfg_rsp *rsp = calloc(1, sizeof(*rsp));
+	struct ldmsd_cfgobj_cfg_ctxt *ctxt = (struct ldmsd_cfgobj_cfg_ctxt *)cfg_ctxt;
+	struct ldmsd_cfgobj_cfg_rsp *rsp = calloc(1, sizeof(*rsp));
 	if (!rsp)
 		goto enomem;
 	rsp->errcode = ldmsd_cfgobj_access_check(&prdcr->obj, 0222, &ctxt->sctxt);
@@ -1717,17 +1879,17 @@ out:
 	return rsp;
 
 enomem:
-	ldmsd_log(LDMSD_LCRITICAL, "Out of memory\n");
+	LDMSD_LOG_ENOMEM();
 	return NULL;
 }
 
 #ifdef LDMSD_FAILOVER
 extern int __failover_send_prdcr(ldmsd_failover_t f, ldms_t x, ldmsd_prdcr_t p);
-static struct prdcr_cfg_rsp *
+static struct ldmsd_cfgobj_cfg_rsp *
 prdcr_failover_peercfg_handler(ldmsd_prdcr_t prdcr, void *cfg_ctxt)
 {
 	int rc;
-	struct prdcr_cfg_rsp *rsp;
+	struct ldmsd_cfgobj_cfg_rsp *rsp;
 	struct prdcr_cfg_ctxt *ctxt = (struct prdcr_cfg_ctxt *)cfg_ctxt;
 	ldmsd_req_ctxt_t reqc = ctxt->reqc;
 	struct fo_peercfg_ctxt *fo_ctxt = (struct fo_peercfg_ctxt *)reqc->ctxt;
@@ -1747,11 +1909,11 @@ int prdcr_cfg_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e
 		return 0;
 
 	int rc;
-	struct prdcr_cfg_rsp *rsp;
+	struct ldmsd_cfgobj_cfg_rsp *rsp;
 	ev_t rsp_ev;
 
 	ldmsd_prdcr_t prdcr = (ldmsd_prdcr_t)EV_DATA(e, struct cfgobj_data)->obj;
-	struct ldmsd_cfg_ctxt *cfg_ctxt = EV_DATA(e, struct cfgobj_data)->ctxt;
+	struct ldmsd_cfgobj_cfg_ctxt *cfg_ctxt = EV_DATA(e, struct cfgobj_data)->ctxt;
 	ldmsd_req_ctxt_t reqc = cfg_ctxt->reqc;
 
 	switch (reqc->req_id) {
@@ -1799,13 +1961,106 @@ int prdcr_cfg_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e
 	ev_put(e);
 	return 0;
 enomem:
-	ldmsd_log(LDMSD_LCRITICAL, "Out of memory\n");
+	LDMSD_LOG_ENOMEM();
 	rc = ENOMEM;
 err:
 	ev_put(e);
 	free(rsp);
 	return rc;
 }
+
+typedef int (*prdset_actor_fn)(ldmsd_prdcr_t prdcr, ldmsd_prdcr_set_t prdset, void *args);
+int __prdset_filter(ldmsd_prdcr_t prdcr, struct ldmsd_match_queue *filter,
+					prdset_actor_fn actor, void *args)
+{
+	int rc;
+	ldmsd_prdcr_set_t prdset;
+	struct ldmsd_name_match *m;
+	char *s;
+
+	if (TAILQ_EMPTY(filter)) {
+		for (prdset = ldmsd_prdcr_set_first(prdcr); prdset;
+				prdset = ldmsd_prdcr_set_next(prdset)) {
+			(void) actor(prdcr, prdset, args);
+		}
+	} else {
+		for (prdset = ldmsd_prdcr_set_first(prdcr); prdset;
+				prdset = ldmsd_prdcr_set_next(prdset)) {
+			TAILQ_FOREACH(m, filter, entry) {
+				if (LDMSD_NAME_MATCH_INST_NAME == m->selector)
+					s = prdset->inst_name;
+				else
+					s = prdset->schema_name;
+				rc = regexec(&m->regex, s, 0, NULL, m->regex_flags);
+				if (0 == rc) {
+					/* matched */
+					(void) actor(prdcr, prdset, args);
+					break;
+				}
+			}
+		}
+	}
+	return 0;
+}
+
+static int
+__prdcr_post_updtr_state(ldmsd_prdcr_t prdcr, ldmsd_prdcr_set_t prdset, void *args)
+{
+	int rc;
+	ev_t e = args;
+	struct updtr_info *info = EV_DATA(e, struct updtr_state_data)->updtr_info;
+
+	ev_t ev = ev_new(updtr_state_type);
+	if (!ev) {
+		LDMSD_LOG_ENOMEM();
+		return ENOMEM;
+	}
+	ref_get(&info->ref, "prdcr2prdset");
+	ldmsd_prdcr_set_ref_get(prdset);
+	EV_DATA(ev, struct updtr_state_data)->state = EV_DATA(e, struct updtr_state_data)->state;
+	EV_DATA(ev, struct updtr_state_data)->updtr_info = info;
+	EV_DATA(ev, struct updtr_state_data)->obj = prdset;
+	rc = ev_post(prdcr->worker, prdset->worker, ev, 0);
+	if (rc) {
+		ldmsd_log(LDMSD_LINFO, "%s: prdcr '%s' failed to post "
+				"an event to prdset '%s', error %d\n",
+				__func__, prdcr->obj.name, prdset->inst_name, rc);
+		ref_put(&info->ref, "prdcr2prdset");
+		ldmsd_prdcr_set_ref_put(prdset);
+		ev_put(ev);
+	}
+	return rc;
+}
+
+
+int prdcr_updtr_state_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e)
+{
+	if (EV_OK != status)
+		return 0;
+
+	struct updtr_info *uinfo;
+	enum ldmsd_updtr_state updtr_state;
+	ldmsd_prdcr_t prdcr;
+	int rc;
+
+	uinfo = EV_DATA(e, struct updtr_state_data)->updtr_info;
+	updtr_state = EV_DATA(e, struct updtr_state_data)->state;
+	prdcr = EV_DATA(e, struct updtr_state_data)->obj;
+
+	switch (updtr_state) {
+	case LDMSD_UPDTR_STATE_RUNNING:
+		rc = __prdset_filter(prdcr, &uinfo->match_list, __prdcr_post_updtr_state, e);
+		break;
+	default:
+		break;
+	}
+
+	ldmsd_prdcr_put(prdcr);
+	ev_put(e);
+	return rc;
+}
+
+/* Producer tree worker event handlers */
 
 /*
  * Aggregate the status of each producer.
@@ -1817,8 +2072,8 @@ err:
  * as the first error occurrence.
  */
 static int
-tree_status_rsp_handler(ldmsd_req_ctxt_t reqc, struct prdcr_cfg_rsp *rsp,
-						struct ldmsd_cfg_ctxt *ctxt)
+tree_status_rsp_handler(ldmsd_req_ctxt_t reqc, struct ldmsd_cfgobj_cfg_rsp *rsp,
+						struct ldmsd_cfgobj_cfg_ctxt *ctxt)
 {
 	struct ldmsd_msg_buf *buf = (struct ldmsd_msg_buf *)rsp->ctxt;
 
@@ -1854,41 +2109,9 @@ out:
 	return 0;
 }
 
-static int
-tree_del_rsp_handler(ldmsd_req_ctxt_t reqc, struct prdcr_cfg_rsp *rsp,
-					  struct ldmsd_cfg_ctxt *ctxt)
-{
-	ldmsd_prdcr_t prdcr = (ldmsd_prdcr_t)rsp->ctxt;
-
-	if (rsp->errcode) {
-		if (!reqc->errcode)
-			reqc->errcode = rsp->errcode;
-		if (ctxt->num_recv)
-			(void)linebuf_printf(reqc, ", ");
-		(void)linebuf_printf(reqc, "%s", rsp->errmsg);
-		goto out;
-	}
-
-	ldmsd_cfgobj_del(prdcr->obj.name, LDMSD_CFGOBJ_PRDCR);
-	ldmsd_prdcr_put(prdcr); /* Put back the 'create' reference */
-
-out:
-	ldmsd_prdcr_put(prdcr); /* Put back the 'del_rsp' reference */
-	free(rsp->errmsg);
-	free(rsp);
-
-	if (ldmsd_cfgtree_done(ctxt)) {
-		/* All producers have sent back the responses */
-		ldmsd_send_req_response(reqc, reqc->line_buf);
-		free(ctxt);
-	}
-
-	return 0;
-}
-
 #ifdef LDMSD_FAILOVER
 static int tree_failover_peercfg_rsp_handler(ldmsd_req_ctxt_t reqc,
-					     struct prdcr_cfg_rsp *rsp,
+					     struct ldmsd_cfgobj_cfg_rsp *rsp,
 					     struct prdcr_cfg_ctxt *ctxt)
 {
 	ev_t ev;
@@ -1913,8 +2136,8 @@ static int tree_failover_peercfg_rsp_handler(ldmsd_req_ctxt_t reqc,
 #endif /* LDMSD_FAILOVER */
 
 static int
-tree_cfg_rsp_handler(ldmsd_req_ctxt_t reqc, struct prdcr_cfg_rsp *rsp,
-					  struct ldmsd_cfg_ctxt *ctxt)
+tree_cfg_rsp_handler(ldmsd_req_ctxt_t reqc, struct ldmsd_cfgobj_cfg_rsp *rsp,
+					  struct ldmsd_cfgobj_cfg_ctxt *ctxt)
 {
 	if (rsp->errcode) {
 		if (!reqc->errcode)
@@ -1936,13 +2159,17 @@ tree_cfg_rsp_handler(ldmsd_req_ctxt_t reqc, struct prdcr_cfg_rsp *rsp,
 	return 0;
 }
 
+extern int ldmsd_cfgobj_tree_del_rsp_handler(ldmsd_req_ctxt_t reqc,
+				struct ldmsd_cfgobj_cfg_rsp *rsp,
+				struct ldmsd_cfgobj_cfg_ctxt *ctxt,
+				enum ldmsd_cfgobj_type type);
 int prdcr_tree_cfg_rsp_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e)
 {
 	if (EV_OK != status)
 		return 0;
 
 	void *rsp = EV_DATA(e, struct cfgobj_rsp_data)->rsp;
-	struct ldmsd_cfg_ctxt *ctxt = EV_DATA(e, struct cfgobj_rsp_data)->ctxt;
+	struct ldmsd_cfgobj_cfg_ctxt *ctxt = EV_DATA(e, struct cfgobj_rsp_data)->ctxt;
 	struct ldmsd_req_ctxt *reqc = ctxt->reqc;
 	int rc = 0;
 
@@ -1955,7 +2182,8 @@ int prdcr_tree_cfg_rsp_actor(ev_worker_t src, ev_worker_t dst, ev_status_t statu
 		assert(0 == "Impossible case");
 		break;
 	case LDMSD_PRDCR_DEL_REQ:
-		rc = tree_del_rsp_handler(reqc, rsp, ctxt);
+		rc = ldmsd_cfgobj_tree_del_rsp_handler(reqc, rsp, ctxt,
+						   LDMSD_CFGOBJ_PRDCR);
 		break;
 	case LDMSD_PRDCR_DEFER_START_REQ:
 	case LDMSD_PRDCR_START_REQ:
@@ -1975,17 +2203,20 @@ int prdcr_tree_cfg_rsp_actor(ev_worker_t src, ev_worker_t dst, ev_status_t statu
 #endif /* LDMSD_FAILOVER */
 	default:
 		assert(0 == "impossible case");
+		rc = EINTR;
+		goto out;
 	}
 
 	if (rc) {
 		reqc->errcode = EINTR;
 		(void) snprintf(reqc->line_buf, reqc->line_len,
 				"LDMSD: failed to construct the response.");
+		rc = 0;
 	}
 
 out:
 	ev_put(e);
-	return 0;
+	return rc;
 }
 
 
@@ -1995,7 +2226,7 @@ static int tree_prdcr_stop_regex_handler(ldmsd_req_ctxt_t reqc)
 	char *regex_str = NULL;
 	regex_t regex;
 	ldmsd_prdcr_t prdcr, nxt_prdcr;
-	struct ldmsd_cfg_ctxt *ctxt = NULL;
+	struct ldmsd_cfgobj_cfg_ctxt *ctxt = NULL;
 
 	ctxt = calloc(1, sizeof(*ctxt));
 	if (!ctxt)
@@ -2026,8 +2257,8 @@ static int tree_prdcr_stop_regex_handler(ldmsd_req_ctxt_t reqc)
 			goto next;
 		if (!nxt_prdcr)
 			ctxt->is_all = 1;
-		rc = ldmsd_cfgtree_post2cfgobj(&prdcr->obj, prdcr->worker,
-								reqc, ctxt);
+		rc = ldmsd_cfgtree_post2cfgobj(&prdcr->obj, prdcr_tree_w,
+						prdcr->worker, reqc, ctxt);
 		if (rc) {
 			if (ENOMEM == rc)
 				goto enomem;
@@ -2043,7 +2274,7 @@ static int tree_prdcr_stop_regex_handler(ldmsd_req_ctxt_t reqc)
 enomem:
 	reqc->errcode = ENOMEM;
 	rc = linebuf_printf(reqc, "LDMSD: out of memory.");
-	ldmsd_log(LDMSD_LCRITICAL, "Out of memory\n");
+	LDMSD_LOG_ENOMEM();
 	free(ctxt);
 send_reply:
 	ldmsd_send_req_response(reqc, reqc->line_buf);
@@ -2059,7 +2290,7 @@ static int __tree_forward2prdcr(ldmsd_req_ctxt_t reqc)
 	int rc;
 	char *name = NULL;
 	ldmsd_prdcr_t prdcr;
-	struct ldmsd_cfg_ctxt *ctxt = NULL;
+	struct ldmsd_cfgobj_cfg_ctxt *ctxt = NULL;
 
 	ctxt = calloc(1, sizeof(*ctxt));
 	if (!ctxt)
@@ -2071,7 +2302,7 @@ static int __tree_forward2prdcr(ldmsd_req_ctxt_t reqc)
 	if (!name) {
 		reqc->errcode = EINVAL;
 		rc = linebuf_printf(reqc,
-				"The attribute 'name' is required by prdcr_start.");
+				"The attribute 'name' is required.");
 		goto send_reply;
 	}
 
@@ -2085,7 +2316,8 @@ static int __tree_forward2prdcr(ldmsd_req_ctxt_t reqc)
 	}
 
 	ctxt->is_all = 1;
-	rc = ldmsd_cfgtree_post2cfgobj(&prdcr->obj, prdcr->worker, reqc, ctxt);
+	rc = ldmsd_cfgtree_post2cfgobj(&prdcr->obj, prdcr_tree_w,
+					prdcr->worker, reqc, ctxt);
 	ldmsd_prdcr_put(prdcr); /* Put back ldmsd_prdcr_find()'s reference */
 	if (rc) {
 		if (ENOMEM == rc)
@@ -2170,14 +2402,15 @@ static int tree_prdcr_start_regex_handler(ldmsd_req_ctxt_t reqc)
 			goto next;
 		if (!nxt_prdcr)
 			ctxt->base.is_all = 1;
-		rc = ldmsd_cfgtree_post2cfgobj(&prdcr->obj, prdcr->worker,
-							reqc, &ctxt->base);
+		rc = ldmsd_cfgtree_post2cfgobj(&prdcr->obj, prdcr_tree_w,
+						prdcr->worker, reqc, &ctxt->base);
 		if (rc) {
 			if (ENOMEM == rc)
 				goto enomem;
 			reqc->errcode = EINTR;
 			rc = linebuf_printf(reqc,
-					"Failed to handle the prdcr_start command.");
+					"Failed to handle the %s command.",
+					ldmsd_req_id2str(reqc->req_id));
 			goto send_reply;
 		}
 	next:
@@ -2187,7 +2420,7 @@ static int tree_prdcr_start_regex_handler(ldmsd_req_ctxt_t reqc)
 enomem:
 	reqc->errcode = ENOMEM;
 	rc = linebuf_printf(reqc, "LDMSD: out of memory.");
-	ldmsd_log(LDMSD_LCRITICAL, "Out of memory\n");
+	LDMSD_LOG_ENOMEM();
 	free(ctxt);
 send_reply:
 	ldmsd_send_req_response(reqc, reqc->line_buf);
@@ -2243,7 +2476,8 @@ static int tree_prdcr_start_handler(ldmsd_req_ctxt_t reqc)
 	}
 
 	ctxt->base.is_all = 1;
-	rc = ldmsd_cfgtree_post2cfgobj(&prdcr->obj, prdcr->worker, reqc, &ctxt->base);
+	rc = ldmsd_cfgtree_post2cfgobj(&prdcr->obj, prdcr_tree_w,
+					prdcr->worker, reqc, &ctxt->base);
 	ldmsd_prdcr_put(prdcr); /* Put back ldmsd_prdcr_find()'s reference */
 	if (rc) {
 		if (ENOMEM == rc)
@@ -2258,7 +2492,7 @@ static int tree_prdcr_start_handler(ldmsd_req_ctxt_t reqc)
 
 enomem:
 	reqc->errcode = ENOMEM;
-	ldmsd_log(LDMSD_LCRITICAL, "Out of memory\n");
+	LDMSD_LOG_ENOMEM();
 	(void) linebuf_printf(reqc, "LDMSD: out of memory.");
 	free(ctxt);
 send_reply:
@@ -2274,7 +2508,7 @@ static int tree_prdcr_status_handler(ldmsd_req_ctxt_t reqc)
 	int rc;
 	char *name;
 	ldmsd_prdcr_t prdcr, nxt_prdcr;
-	struct ldmsd_cfg_ctxt *ctxt = calloc(1, sizeof(*ctxt));
+	struct ldmsd_cfgobj_cfg_ctxt *ctxt = calloc(1, sizeof(*ctxt));
 	if (!ctxt)
 		goto enomem;
 
@@ -2290,8 +2524,8 @@ static int tree_prdcr_status_handler(ldmsd_req_ctxt_t reqc)
 			reqc->errcode = ENOENT;
 			(void) linebuf_printf(reqc, "prdcr '%s' not found.", name);
 		} else {
-			rc = ldmsd_cfgtree_post2cfgobj(&prdcr->obj, prdcr->worker,
-								    reqc, ctxt);
+			rc = ldmsd_cfgtree_post2cfgobj(&prdcr->obj, prdcr_tree_w,
+							prdcr->worker, reqc, ctxt);
 			ldmsd_prdcr_put(prdcr);
 			if (rc) {
 				if (ENOMEM == rc)
@@ -2309,8 +2543,8 @@ static int tree_prdcr_status_handler(ldmsd_req_ctxt_t reqc)
 			nxt_prdcr = ldmsd_prdcr_next(prdcr);
 			if (!nxt_prdcr)
 				ctxt->is_all = 1;
-			rc = ldmsd_cfgtree_post2cfgobj(&prdcr->obj, prdcr->worker,
-								    reqc, ctxt);
+			rc = ldmsd_cfgtree_post2cfgobj(&prdcr->obj, prdcr_tree_w,
+							prdcr->worker, reqc, ctxt);
 			if (rc) {
 				if (ENOMEM == rc)
 					goto enomem;
@@ -2326,7 +2560,7 @@ static int tree_prdcr_status_handler(ldmsd_req_ctxt_t reqc)
 	goto out;
 enomem:
 	reqc->errcode = ENOMEM;
-	ldmsd_log(LDMSD_LCRITICAL, "Out of memory\n");
+	LDMSD_LOG_ENOMEM();
 	(void) linebuf_printf(reqc, "LDMSD: out of memory.");
 send_reply:
 	ldmsd_send_req_response(reqc, reqc->line_buf);
@@ -2481,7 +2715,7 @@ int tree_failover_peercfg_handler(ldmsd_req_ctxt_t reqc)
 	ldmsd_prdcr_t prdcr;
 	struct prdcr_cfg_ctxt *ctxt = calloc(1, sizeof(*ctxt));
 	if (!ctxt) {
-		ldmsd_log(LDMSD_LCRITICAL, "Out of memory\n");
+		LDMSD_LOG_ENOMEM();
 		return ENOMEM;
 	}
 
@@ -2552,16 +2786,77 @@ out:
 	return 0;
 }
 
-int prdcr_tree_filter_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e)
+int __tree_post_updtr_state(ldmsd_prdcr_t prdcr, void *args)
+{
+	int rc;
+	ev_t e = args;
+	struct updtr_info *info = EV_DATA(e, struct updtr_state_data)->updtr_info;
+	enum ldmsd_updtr_state state = EV_DATA(e, struct updtr_state_data)->state;
+
+	ev_t ev = ev_new(updtr_state_type);
+	if (!ev) {
+		LDMSD_LOG_ENOMEM();
+		return ENOMEM;
+	}
+	ref_get(&info->ref, "prdcr_tree2prdcr");
+	EV_DATA(ev, struct updtr_state_data)->state = state;
+	EV_DATA(ev, struct updtr_state_data)->updtr_info = info;
+	EV_DATA(ev, struct updtr_state_data)->obj = ldmsd_prdcr_get(prdcr);
+	rc = ev_post(prdcr_tree_w, prdcr->worker, ev, 0);
+	if (rc) {
+		ldmsd_log(LDMSD_LINFO, "%s: prdcr_tree failed to post "
+				"an event to prdcr '%s' error %d\n",
+				__func__, prdcr->obj.name, rc);
+		ref_put(&info->ref, "prdcr_tree2prdcr");
+		ldmsd_prdcr_put(prdcr);
+		ev_put(ev);
+	}
+	return rc;
+}
+
+typedef int (*actor_fn)(ldmsd_prdcr_t prdcr, void *args);
+int __prdcr_filter(struct ldmsd_filter *filter, actor_fn actor, void *args)
+{
+	ldmsd_prdcr_t prdcr;
+	struct ldmsd_filter_ent *fent;
+	int rc;
+
+	for (prdcr = ldmsd_prdcr_first(); prdcr; prdcr = ldmsd_prdcr_next(prdcr)) {
+		TAILQ_FOREACH(fent, filter, entry) {
+			if (fent->is_regex) {
+				rc = regexec(&fent->regex, prdcr->obj.name, 0, NULL, 0);
+			} else {
+				rc = strcmp(prdcr->obj.name, fent->str);
+			}
+			if (0 == rc) {
+				/* matched */
+				(void) actor(prdcr, args);
+				break;
+			}
+		}
+	}
+	return 0;
+}
+
+int prdcr_tree_updtr_state_actor(ev_worker_t src, ev_worker_t dst,
+					ev_status_t status, ev_t e)
 {
 	if (EV_OK != status)
 		return 0;
 
-//	int rc;
-//	struct filter_data filter;
-//	filter = EV_DATA(e, struct prdcr_n_set_filter_data)->prdcr_filter;
+	int rc;
+	struct updtr_info *updtr_info = EV_DATA(e, struct updtr_state_data)->updtr_info;
+	enum ldmsd_updtr_state state = EV_DATA(e, struct updtr_state_data)->state;
 
+	switch (state) {
+	case LDMSD_UPDTR_STATE_RUNNING:
+		rc = __prdcr_filter(&updtr_info->prdcr_list,
+					__tree_post_updtr_state, e);
+		break;
+	default:
+		break;
+	}
 
-	return 0;
+	ev_put(e);
+	return rc;
 }
-

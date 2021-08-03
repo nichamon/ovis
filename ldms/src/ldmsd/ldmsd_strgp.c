@@ -81,15 +81,7 @@ void ldmsd_strgp___del(ldmsd_cfgobj_t obj)
 		TAILQ_REMOVE(&strgp->metric_list, metric, entry);
 		free(metric);
 	}
-	ldmsd_name_match_t match;
-	while (!LIST_EMPTY(&strgp->prdcr_list)) {
-		match = LIST_FIRST(&strgp->prdcr_list);
-		if (match->regex_str)
-			free(match->regex_str);
-		regfree(&match->regex);
-		LIST_REMOVE(match, entry);
-		free(match);
-	}
+	ldmsd_match_queue_free(&strgp->prdcr_list);
 	if (strgp->plugin_name)
 		free(strgp->plugin_name);
 	ldmsd_cfgobj___del(obj);
@@ -212,7 +204,7 @@ ldmsd_strgp_new_with_auth(const char *name, uid_t uid, gid_t gid, int perm)
 	strgp->last_flush.tv_sec = 0;
 	strgp->last_flush.tv_nsec = 0;
 	strgp->update_fn = strgp_update_fn;
-	LIST_INIT(&strgp->prdcr_list);
+	TAILQ_INIT(&strgp->prdcr_list);
 	TAILQ_INIT(&strgp->metric_list);
 	ldmsd_task_init(&strgp->task);
 	ldmsd_cfgobj_unlock(&strgp->obj);
@@ -249,12 +241,12 @@ ldmsd_strgp_metric_t ldmsd_strgp_metric_next(ldmsd_strgp_metric_t metric)
 
 ldmsd_name_match_t ldmsd_strgp_prdcr_first(ldmsd_strgp_t strgp)
 {
-	return LIST_FIRST(&strgp->prdcr_list);
+	return TAILQ_FIRST(&strgp->prdcr_list);
 }
 
 ldmsd_name_match_t ldmsd_strgp_prdcr_next(ldmsd_name_match_t match)
 {
-	return LIST_NEXT(match, entry);
+	return TAILQ_NEXT(match, entry);
 }
 
 time_t convert_rotate_str(const char *rotate)
@@ -283,7 +275,7 @@ time_t convert_rotate_str(const char *rotate)
 ldmsd_name_match_t strgp_find_prdcr_ex(ldmsd_strgp_t strgp, const char *ex)
 {
 	ldmsd_name_match_t match;
-	LIST_FOREACH(match, &strgp->prdcr_list, entry) {
+	TAILQ_FOREACH(match, &strgp->prdcr_list, entry) {
 		if (0 == strcmp(match->regex_str, ex))
 			return match;
 	}
@@ -321,7 +313,7 @@ int ldmsd_strgp_prdcr_add(const char *strgp_name, const char *regex_str,
 	if (rc)
 		goto out_3;
 	match->selector = LDMSD_NAME_MATCH_INST_NAME;
-	LIST_INSERT_HEAD(&strgp->prdcr_list, match, entry);
+	TAILQ_INSERT_TAIL(&strgp->prdcr_list, match, entry);
 	goto out_1;
 out_3:
 	free(match->regex_str);
@@ -354,7 +346,7 @@ int ldmsd_strgp_prdcr_del(const char *strgp_name, const char *regex_str,
 		rc = EEXIST;
 		goto out_1;
 	}
-	LIST_REMOVE(match, entry);
+	TAILQ_REMOVE(&strgp->prdcr_list, match, entry);
 	free(match->regex_str);
 	regfree(&match->regex);
 	free(match);

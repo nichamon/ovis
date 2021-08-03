@@ -122,6 +122,7 @@ size_t max_mem_size;
 char *max_mem_sz_str;
 int num_prdcr_workers = -1;
 int num_prdset_workers = -1;
+int num_updtr_workers = 1;
 
 /* NOTE: For determining version by dumping binary string */
 char *_VERSION_STR_ = "LDMSD_VERSION " OVIS_LDMS_VERSION;
@@ -212,11 +213,74 @@ int ldmsd_num_prdset_workers_get()
 	return num_prdset_workers;
 }
 
+int ldmsd_num_updtr_workers_get()
+{
+	return num_updtr_workers;
+}
+
 int cfgfile_req_cmp(void *a, const void *b)
 {
 	uint32_t _a = (uint32_t)(uint64_t)a;
 	uint32_t _b = (uint32_t)(uint64_t)b;
 	return _a - _b;
+}
+
+void ldmsd_name_match_free(struct ldmsd_name_match *match)
+{
+	regfree(&match->regex);
+	free(match->regex_str);
+	free(match);
+}
+
+void ldmsd_filter_ent_free(struct ldmsd_filter_ent *a)
+{
+	if (a->is_regex)
+		regfree(&a->regex);
+	free(a->str);
+	free(a);
+}
+
+#define _LDMSD_TAILQ_FREE(_type_, _ent_, _q_, _ent_free_fn_) { \
+	struct _type_ *a; \
+	while ((a = TAILQ_FIRST(_q_))) { \
+		TAILQ_REMOVE(_q_, a, entry); \
+		_ent_free_fn_(a); \
+	} \
+}
+
+#define _LDMSD_TAILQ_COPY(_type_, _ent_, _src_, _dst_, _free_fn_) { \
+	struct _type_ *a, *x; \
+	TAILQ_INIT(_dst_); \
+	TAILQ_FOREACH(a, _src_, _ent_) { \
+		x = malloc(sizeof(*x)); \
+		if (!x) { \
+			_free_fn_(_dst_); \
+			return ENOMEM; \
+		} \
+		memcpy(x, a, sizeof(*a)); \
+		TAILQ_INSERT_TAIL(_dst_, x, _ent_); \
+	} \
+	return 0; \
+}
+
+void ldmsd_match_queue_free(struct ldmsd_match_queue *list)
+{
+	_LDMSD_TAILQ_FREE(ldmsd_name_match, entry, list, ldmsd_name_match_free);
+}
+
+void ldmsd_filter_free(struct ldmsd_filter *filter)
+{
+	_LDMSD_TAILQ_FREE(ldmsd_filter_ent, entry, filter, ldmsd_filter_ent_free);
+}
+
+int ldmsd_match_queue_copy(struct ldmsd_match_queue *src, struct ldmsd_match_queue *dst)
+{
+	_LDMSD_TAILQ_COPY(ldmsd_name_match, entry, src, dst, ldmsd_match_queue_free);
+}
+
+int ldmsd_filter_copy(struct ldmsd_filter *src, struct ldmsd_filter *dst)
+{
+	_LDMSD_TAILQ_COPY(ldmsd_filter_ent, entry, src, dst, ldmsd_filter_free);
 }
 
 const char* ldmsd_loglevel_names[] = {

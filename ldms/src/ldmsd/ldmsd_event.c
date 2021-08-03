@@ -52,11 +52,9 @@
 
 int default_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t ev)
 {
-	ldmsd_log(LDMSD_LINFO, "Unhandled Event: type=%s, id=%d\n",
-		  ev_type_name(ev_type(ev)), ev_type_id(ev_type(ev)));
-	ldmsd_log(LDMSD_LINFO, "    status  : %s\n", status ? "FLUSH" : "OK" );
-	ldmsd_log(LDMSD_LINFO, "    src     : %s\n", (src)?ev_worker_name(src):"");
-	ldmsd_log(LDMSD_LINFO, "    dst     : %s\n", (dst)?ev_worker_name(dst):"");
+	ldmsd_log(LDMSD_LINFO, "Unhandled Event: type=%s, id=%d, status: %s, src: %s, dst: %s.\n",
+		  ev_type_name(ev_type(ev)), ev_type_id(ev_type(ev)), status?"FLUSH":"OK",
+				  (src)?ev_worker_name(src):"", (dst)?ev_worker_name(dst):"");
 	return 0;
 }
 
@@ -73,6 +71,8 @@ prdcr_tree_cfg_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t 
 extern int
 prdcr_tree_cfg_rsp_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e);
 extern int
+prdcr_tree_updtr_state_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e);
+extern int
 prdcr_cfg_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e);
 extern int
 prdcr_connect_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e);
@@ -80,12 +80,25 @@ extern int
 prdcr_xprt_event_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e);
 extern int
 prdcr_dir_complete_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e);
+extern int
+prdcr_updtr_state_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e);
 
 extern int
-prdset_add_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e);
+prdset_state_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e);
+extern int
+prdset_updtr_state_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e);
+
 
 extern int
-updtr_tree_prdset_add_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e);
+updtr_tree_prdset_state_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e);
+extern int
+updtr_tree_cfg_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t ev);
+extern int
+updtr_tree_cfg_rsp_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e);
+extern int
+updtr_cfg_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e);
+extern int
+updtr_prdset_state_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e);
 
 extern int
 strgp_tree_prdset_add_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e);
@@ -147,6 +160,7 @@ int ldmsd_worker_init(void)
 
 	ev_dispatch(prdcr_tree_w, cfg_type, prdcr_tree_cfg_actor);
 	ev_dispatch(prdcr_tree_w, cfgobj_rsp_type, prdcr_tree_cfg_rsp_actor);
+	ev_dispatch(prdcr_tree_w, updtr_state_type, prdcr_tree_updtr_state_actor);
 
 	/* prdcr worker pool */
 	prdcr_pool = malloc(ldmsd_num_prdcr_workers_get() * sizeof(ev_worker_t));
@@ -162,6 +176,7 @@ int ldmsd_worker_init(void)
 		ev_dispatch(prdcr_pool[i], prdcr_connect_type, prdcr_connect_actor);
 		ev_dispatch(prdcr_pool[i], prdcr_xprt_type, prdcr_xprt_event_actor);
 		ev_dispatch(prdcr_pool[i], dir_complete_type, prdcr_dir_complete_actor);
+		ev_dispatch(prdcr_pool[i], updtr_state_type, prdcr_updtr_state_actor);
 	}
 
 	prdset_pool = malloc(ldmsd_num_prdset_workers_get() * sizeof(ev_worker_t));
@@ -173,14 +188,29 @@ int ldmsd_worker_init(void)
 		if (!prdset_pool[i])
 			goto enomem;
 
-		ev_dispatch(prdset_pool[i], prdset_add_type, prdset_add_actor);
+		ev_dispatch(prdset_pool[i], prdset_state_type, prdset_state_actor);
+		ev_dispatch(prdset_pool[i], updtr_state_type, prdset_updtr_state_actor);
 	}
 
 	/* updtr_tree worker */
 	updtr_tree_w = ev_worker_new("updtr_tree", default_actor);
 	if (!updtr_tree_w)
 		goto enomem;
-	ev_dispatch(updtr_tree_w, prdset_add_type, updtr_tree_prdset_add_actor);
+	ev_dispatch(updtr_tree_w, cfg_type, updtr_tree_cfg_actor);
+	ev_dispatch(updtr_tree_w, cfgobj_rsp_type, updtr_tree_cfg_rsp_actor);
+	ev_dispatch(updtr_tree_w, prdset_state_type, updtr_tree_prdset_state_actor);
+
+	updtr_pool = malloc(ldmsd_num_updtr_workers_get() * sizeof(ev_worker_t));
+	if (!updtr_pool)
+		goto enomem;
+	for (i = 0; i < ldmsd_num_updtr_workers_get(); i++) {
+		snprintf(s, 127, "updtr_w_%d", i + 1);
+		updtr_pool[i] = ev_worker_new(s, default_actor);
+		if (!updtr_pool[i])
+			goto enomem;
+		ev_dispatch(updtr_pool[i], cfgobj_cfg_type, updtr_cfg_actor);
+		ev_dispatch(updtr_pool[i], prdset_state_type, updtr_prdset_state_actor);
+	}
 
 	/* strgp_tree worker */
 	strgp_tree_w = ev_worker_new("strgp_tree", default_actor);
@@ -234,12 +264,17 @@ int ldmsd_ev_init(void)
 	prdcr_connect_type = ev_type_new("prdcr:connect", sizeof(struct cfgobj_data));
 	prdcr_xprt_type = ev_type_new("ldms_xprt:prdcr:xprt_event", sizeof(struct cfgobj_data));
 
-	prdset_add_type = ev_type_new("prdcr:prdset:add", sizeof(struct prdset_data));
+	prdset_state_type = ev_type_new("prdset_state", sizeof(struct prdset_data));
+
+
+	prdset_add_type = ev_type_new("prdcr:prdset:add", sizeof(struct prdset_data)); /* TODO: delete this. It is replaced by prdset_state_type */
 
 #ifdef LDMSD_FAILOVER
 	failover_routine_type = ev_type_new("failover:routine", sizeof(struct failover_data));
 	failover_xprt_type = ev_type_new("ldms_xprt:failover:xprt_event", sizeof(struct failover_data));
 #endif /* LDMSD_FAILOVER */
+
+	updtr_state_type = ev_type_new("updtr_state", sizeof(struct updtr_state_data));
 	return 0;
 }
 
@@ -268,7 +303,13 @@ ev_worker_t assign_prdset_worker()
 	 * TODO: Use a more sophisticated than a round-robin
 	 */
 	static int i = 0;
-	return __assign_worker(prdcr_pool, &i, ldmsd_num_prdcr_workers_get());
+	return __assign_worker(prdset_pool, &i, ldmsd_num_prdset_workers_get());
+}
+
+ev_worker_t assign_updtr_worker()
+{
+	static int i = 0;
+	return __assign_worker(updtr_pool, &i, ldmsd_num_updtr_workers_get());
 }
 
 ev_worker_t assign_failover_worker()
@@ -287,3 +328,46 @@ struct filt_ent *ldmsd_filter_next(struct filter_data *filt)
 	filt->_cur_ent = TAILQ_NEXT(filt->_cur_ent, ent);
 	return filt->_cur_ent;
 }
+
+void prdset_data_cleanup(struct prdset_data *data)
+{
+	if (!data)
+		return;
+	if (data->prdset)
+		ldmsd_prdcr_set_ref_put(data->prdset);
+	free(data->prdcr_name);
+	free(data->updtr_name);
+	free(data->strgp_name);
+}
+
+int prdset_data_copy(struct prdset_data *src, struct prdset_data *dst)
+{
+	assert(dst);
+	memset(dst, 0, sizeof(*dst));
+	dst->state = src->state;
+	if (src->prdset) {
+		ldmsd_prdcr_set_ref_get(src->prdset);
+		dst->prdset = src->prdset;
+	}
+	if (src->prdcr_name) {
+		dst->prdcr_name = strdup(src->prdcr_name);
+		if (!dst->prdcr_name)
+			goto enomem;
+	}
+	if (src->strgp_name) {
+		dst->strgp_name = strdup(src->strgp_name);
+		if (!dst->strgp_name)
+			goto enomem;
+	}
+	if (src->updtr_name) {
+		dst->updtr_name = strdup(src->updtr_name);
+		if (!dst->updtr_name)
+			goto enomem;
+	}
+	dst->update_schedule = src->update_schedule;
+	return 0;
+enomem:
+	prdset_data_cleanup(dst);
+	return ENOMEM;
+}
+

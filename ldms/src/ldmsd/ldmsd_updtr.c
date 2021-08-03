@@ -47,8 +47,10 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#define _GNU_SOURCE
 #include <pthread.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 #include <string.h>
 #include <errno.h>
@@ -58,18 +60,104 @@
 #include "ldms.h"
 #include "ldmsd.h"
 #include "ldms_xprt.h"
+#include "ldmsd_event.h"
+#include "ldmsd_request.h"
+#include "ldmsd_cfgobj.h"
 #include "config.h"
+
+extern void ldmsd_req_ctxt_sec_get(ldmsd_req_ctxt_t rctxt, ldmsd_sec_ctxt_t sctxt);
+
+struct updtr_start_ctxt {
+	struct ldmsd_cfgobj_cfg_ctxt base;
+	int is_deferred;
+	long interval_us;
+	long offset_us;
+	int is_auto;
+};
+
+struct updtr_prdcr_ctxt {
+	struct ldmsd_cfgobj_cfg_ctxt base;
+	struct ldmsd_filter_ent *prdcr_match;
+};
+
+struct updtr_match_ctxt {
+	struct ldmsd_cfgobj_cfg_ctxt base;
+	struct ldmsd_name_match *match;
+};
+
+static void __updtr_info_destroy(void *x)
+{
+	struct updtr_info *info = x;
+	ldmsd_filter_free(&info->prdcr_list);
+	ldmsd_match_queue_free(&info->match_list);
+	free(info);
+}
+
+struct updtr_info *__updtr_info_get(ldmsd_updtr_t updtr)
+{
+	int rc;
+	struct updtr_info *info = malloc(sizeof(*info));
+	if (!info)
+		return NULL;
+	info->is_auto = updtr->is_auto_task;
+	info->sched = updtr->sched;
+	info->push_flags = updtr->push_flags;
+	TAILQ_INIT(&info->prdcr_list);
+	TAILQ_INIT(&info->match_list);
+	rc = ldmsd_filter_copy(&updtr->prdcr_list, &info->prdcr_list);
+	if (rc)
+		goto enomem;
+	rc = ldmsd_match_queue_copy(&updtr->match_list, &info->match_list);
+	if (rc)
+		goto enomem;
+	ref_init(&info->ref, __func__, __updtr_info_destroy, info);
+	return info;
+enomem:
+	ldmsd_filter_free(&info->prdcr_list);
+	return NULL;
+}
+
+int __post_updtr_state_ev(ldmsd_updtr_t updtr, ldmsd_prdcr_set_t prdset)
+{
+	struct updtr_info *info;
+	ev_worker_t dst;
+	ev_t e = ev_new(updtr_state_type);
+	if (!e) {
+		ldmsd_log(LDMSD_LCRITICAL, "Out of memory\n");
+		return ENOMEM;
+	}
+	EV_DATA(e, struct updtr_state_data)->state = updtr->state;
+	info = __updtr_info_get(updtr);
+	if (!info)
+		goto enomem;
+	EV_DATA(e, struct updtr_state_data)->updtr_info = info;
+	if (prdset) {
+		dst = prdset->worker;
+		ldmsd_prdcr_set_ref_get(prdset);
+		EV_DATA(e, struct updtr_state_data)->obj = prdset;
+	} else {
+
+		dst = prdcr_tree_w;
+		EV_DATA(e, struct updtr_state_data)->obj = NULL;
+	}
+	ev_post(updtr->worker, dst, e, 0);
+	return 0;
+enomem:
+	ldmsd_log(LDMSD_LCRITICAL, "Out of memory\n");
+	ev_put(e);
+	return ENOMEM;
+}
 
 void ldmsd_updtr___del(ldmsd_cfgobj_t obj)
 {
 	ldmsd_updtr_t updtr = (ldmsd_updtr_t)obj;
 	ldmsd_name_match_t match;
-	while (!LIST_EMPTY(&updtr->match_list) ) {
-		match = LIST_FIRST(&updtr->match_list);
+	while (!TAILQ_EMPTY(&updtr->match_list) ) {
+		match = TAILQ_FIRST(&updtr->match_list);
 		if (match->regex_str)
 			free(match->regex_str);
 		regfree(&match->regex);
-		LIST_REMOVE(match, entry);
+		TAILQ_REMOVE(&updtr->match_list, match, entry);
 		free(match);
 	}
 	struct rbn *rbn;
@@ -449,7 +537,7 @@ static int cancel_set_updates(ldmsd_prdcr_set_t prd_set, ldmsd_updtr_t updtr)
 	return rc;
 }
 
-static int __setgrp_members_lookup(ldmsd_prdcr_set_t setgrp)
+int __setgrp_members_lookup(ldmsd_prdcr_set_t setgrp)
 {
 	struct ldmsd_group_traverse_ctxt ctxt;
 	struct str_list_ent_s *ent;
@@ -467,7 +555,7 @@ static int __setgrp_members_lookup(ldmsd_prdcr_set_t setgrp)
 	rc = ldmsd_group_iter(setgrp->set, __grp_iter_cb, &ctxt);
 	if (rc) {
 		ldmsd_log(LDMSD_LERROR, "Error %d: Failed to get the set member "
-				"list of ssetgroup %s\n", rc, setgrp->inst_name);
+				"list of setgroup %s\n", rc, setgrp->inst_name);
 		return rc;
 	}
 	LIST_FOREACH(ent, &ctxt.str_list, entry) {
@@ -526,65 +614,65 @@ out:
 	return rc;
 }
 
-void __ldmsd_prdset_lookup_cb(ldms_t xprt, enum ldms_lookup_status status,
-					int more, ldms_set_t set, void *arg)
-{
-	ldmsd_prdcr_set_t prd_set = arg;
-	int ready = 0;
-	int flags;
-	pthread_mutex_lock(&prd_set->lock);
-	if (status != LDMS_LOOKUP_OK) {
-		assert(NULL == set);
-		status = (status < 0 ? -status : status);
-		if (status == ENOMEM) {
-			ldmsd_log(LDMSD_LERROR,
-				"prdcr %s: Set memory allocation failure in lookup of "
-				"set '%s'. Consider changing the -m parameter on the "
-				"command line to a larger value. The current value is %s\n",
-				prd_set->prdcr->obj.name,
-				prd_set->inst_name,
-				ldmsd_get_max_mem_sz_str());
-		} else if (status == EEXIST) {
-			ldmsd_log(LDMSD_LERROR,
-					"prdcr %s: The set '%s' already exists. "
-					"It is likely that there are multiple "
-					"producers providing a set with the same instance name.\n",
-					prd_set->prdcr->obj.name, prd_set->inst_name);
-		} else {
-			ldmsd_log(LDMSD_LERROR,
-				  	"prdcr %s: Error %d in lookup callback of set '%s'\n",
-					prd_set->prdcr->obj.name,
-					status, prd_set->inst_name);
-		}
-		prd_set->state = LDMSD_PRDCR_SET_STATE_START;
-		goto out;
-	}
-	if (!prd_set->set) {
-		/* This is the first lookup of the set. */
-		ldms_set_ref_get(set, "prdcr_set");
-		prd_set->set = set;
-	} else {
-		assert(0 == "multiple lookup on the same prdcr_set");
-	}
-	flags = ldmsd_group_check(prd_set->set);
-	if (flags & LDMSD_GROUP_IS_GROUP) {
-		/*
-		 * Lookup the member sets
-		 */
-		if (__setgrp_members_lookup(prd_set))
-			goto out;
-	}
-	prd_set->state = LDMSD_PRDCR_SET_STATE_READY;
-	ldmsd_log(LDMSD_LINFO, "Set %s is ready\n", prd_set->inst_name);
-	ldmsd_strgp_update(prd_set);
-	ready = 1;
-out:
-	pthread_mutex_unlock(&prd_set->lock);
-	if (ready)
-		ldmsd_prd_set_updtr_task_update(prd_set);
-	ldmsd_prdcr_set_ref_put(prd_set); /* The ref is taken before calling lookup */
-	return;
-}
+//void __ldmsd_prdset_lookup_cb(ldms_t xprt, enum ldms_lookup_status status,
+//					int more, ldms_set_t set, void *arg)
+//{
+//	ldmsd_prdcr_set_t prd_set = arg;
+//	int ready = 0;
+//	int flags;
+//	pthread_mutex_lock(&prd_set->lock);
+//	if (status != LDMS_LOOKUP_OK) {
+//		assert(NULL == set);
+//		status = (status < 0 ? -status : status);
+//		if (status == ENOMEM) {
+//			ldmsd_log(LDMSD_LERROR,
+//				"prdcr %s: Set memory allocation failure in lookup of "
+//				"set '%s'. Consider changing the -m parameter on the "
+//				"command line to a larger value. The current value is %s\n",
+//				prd_set->prdcr->obj.name,
+//				prd_set->inst_name,
+//				ldmsd_get_max_mem_sz_str());
+//		} else if (status == EEXIST) {
+//			ldmsd_log(LDMSD_LERROR,
+//					"prdcr %s: The set '%s' already exists. "
+//					"It is likely that there are multiple "
+//					"producers providing a set with the same instance name.\n",
+//					prd_set->prdcr->obj.name, prd_set->inst_name);
+//		} else {
+//			ldmsd_log(LDMSD_LERROR,
+//				  	"prdcr %s: Error %d in lookup callback of set '%s'\n",
+//					prd_set->prdcr->obj.name,
+//					status, prd_set->inst_name);
+//		}
+//		prd_set->state = LDMSD_PRDCR_SET_STATE_START;
+//		goto out;
+//	}
+//	if (!prd_set->set) {
+//		/* This is the first lookup of the set. */
+//		ldms_set_ref_get(set, "prdcr_set");
+//		prd_set->set = set;
+//	} else {
+//		assert(0 == "multiple lookup on the same prdcr_set");
+//	}
+//	flags = ldmsd_group_check(prd_set->set);
+//	if (flags & LDMSD_GROUP_IS_GROUP) {
+//		/*
+//		 * Lookup the member sets
+//		 */
+//		if (__setgrp_members_lookup(prd_set))
+//			goto out;
+//	}
+//	prd_set->state = LDMSD_PRDCR_SET_STATE_READY;
+//	ldmsd_log(LDMSD_LINFO, "Set %s is ready\n", prd_set->inst_name);
+//	ldmsd_strgp_update(prd_set);
+//	ready = 1;
+//out:
+//	pthread_mutex_unlock(&prd_set->lock);
+//	if (ready)
+//		ldmsd_prd_set_updtr_task_update(prd_set);
+//	ldmsd_prdcr_set_ref_put(prd_set); /* The ref is taken before calling lookup */
+//	return;
+//}
 
 static void schedule_prdcr_updates(ldmsd_updtr_task_t task,
 				   ldmsd_prdcr_t prdcr, ldmsd_name_match_t match)
@@ -734,8 +822,8 @@ static void schedule_updates(ldmsd_updtr_task_t task)
 	updt_time->sched_start = start;
 #endif /* LDMSD_UPDATE_TIME */
 	updtr_task_set_reset(task);
-	if (!LIST_EMPTY(&updtr->match_list)) {
-		LIST_FOREACH(match, &updtr->match_list, entry) {
+	if (!TAILQ_EMPTY(&updtr->match_list)) {
+		TAILQ_FOREACH(match, &updtr->match_list, entry) {
 			ldmsd_prdcr_ref_t ref;
 			for (ref = updtr_prdcr_ref_first(updtr); ref;
 					ref = updtr_prdcr_ref_next(ref))
@@ -760,10 +848,13 @@ static void schedule_updates(ldmsd_updtr_task_t task)
 
 static void cancel_push(ldmsd_updtr_t updtr)
 {
+	/*
+	 * TODO: Implement this with the event-driven paradigm
+	 */
 	ldmsd_name_match_t match;
 
-	if (!LIST_EMPTY(&updtr->match_list)) {
-		LIST_FOREACH(match, &updtr->match_list, entry) {
+	if (!TAILQ_EMPTY(&updtr->match_list)) {
+		TAILQ_FOREACH(match, &updtr->match_list, entry) {
 			ldmsd_prdcr_ref_t ref;
 			for (ref = updtr_prdcr_ref_first(updtr); ref;
 					ref = updtr_prdcr_ref_next(ref))
@@ -902,8 +993,8 @@ static int updtr_tasks_create(ldmsd_updtr_t updtr)
 		for (prd_set = ldmsd_prdcr_set_first(prdcr); prd_set;
 		     prd_set = ldmsd_prdcr_set_next(prd_set)) {
 			pthread_mutex_lock(&prd_set->lock);
-			if (!LIST_EMPTY(&updtr->match_list)) {
-				LIST_FOREACH(match, &updtr->match_list, entry) {
+			if (!TAILQ_EMPTY(&updtr->match_list)) {
+				TAILQ_FOREACH(match, &updtr->match_list, entry) {
 					if (match->selector == LDMSD_NAME_MATCH_INST_NAME)
 						str = prd_set->inst_name;
 					else
@@ -942,6 +1033,7 @@ ldmsd_updtr_new_with_auth(const char *name, char *interval_str, char *offset_str
 					int push_flags, int is_auto_task,
 					uid_t uid, gid_t gid, int perm)
 {
+	extern struct rbt *cfgobj_trees[];
 	struct ldmsd_updtr *updtr;
 	char *endptr;
 	long interval_us = UPDTR_TREE_MGMT_TASK_INTRVL, offset_us = LDMSD_UPDT_HINT_OFFSET_NONE;
@@ -972,21 +1064,18 @@ ldmsd_updtr_new_with_auth(const char *name, char *interval_str, char *offset_str
 		} else {
 			offset_us = LDMSD_UPDT_HINT_OFFSET_NONE;
 		}
-	} else {
-		if (push_flags)
-			updtr->default_task.task_flags = LDMSD_TASK_F_IMMEDIATE;
 	}
-	/* Initialize the default task */
-	updtr_task_init(&updtr->default_task, updtr, 1, interval_us, offset_us);
-	updtr_task_init(&updtr->tree_mgmt_task, updtr, 1, UPDTR_TREE_MGMT_TASK_INTRVL,
-							LDMSD_UPDT_HINT_OFFSET_NONE);
-	rbt_init(&updtr->prdcr_tree, prdcr_ref_cmp);
-	LIST_INIT(&updtr->match_list);
-	rbt_init(&updtr->task_tree, ldmsd_updtr_schedule_cmp);
+	TAILQ_INIT(&updtr->match_list);
+	TAILQ_INIT(&updtr->prdcr_list);
 	updtr->push_flags = push_flags;
-	ldmsd_cfgobj_unlock(&updtr->obj);
+	updtr->sched.intrvl_us = interval_us;
+	updtr->sched.offset_us = offset_us;
+
+	updtr->worker = assign_updtr_worker();
+	ldmsd_cfgobj_unlock(&updtr->obj); /* TODO: remote when ready */
 	return updtr;
 einval:
+	rbt_del(cfgobj_trees[LDMSD_CFGOBJ_UPDTR], &updtr->obj.rbn);
 	ldmsd_cfgobj_unlock(&updtr->obj);
 	ldmsd_updtr_put(updtr);
 	errno = EINVAL;
@@ -1047,7 +1136,6 @@ int __ldmsd_updtr_start(ldmsd_updtr_t updtr, ldmsd_sec_ctxt_t ctxt)
 {
 	int rc = 0;
 
-	ldmsd_updtr_lock(updtr);
 	rc = ldmsd_cfgobj_access_check(&updtr->obj, 0222, ctxt);
 	if (rc)
 		goto out;
@@ -1055,10 +1143,13 @@ int __ldmsd_updtr_start(ldmsd_updtr_t updtr, ldmsd_sec_ctxt_t ctxt)
 		rc = EBUSY;
 		goto out;
 	}
-	updtr->state = LDMSD_UPDTR_STATE_RUNNING;
 	updtr->obj.perm |= LDMSD_PERM_DSTART;
 
-	updtr_update_task_start(&updtr->default_task);
+	/*
+	 * TODO: complete this
+	 */
+	updtr->state = LDMSD_UPDTR_STATE_RUNNING;
+
 
 	if (updtr->is_auto_task) {
 		ldmsd_task_start(&updtr->tree_mgmt_task.task, updtr_tree_task_cb,
@@ -1083,59 +1174,256 @@ out:
 	return rc;
 }
 
-int ldmsd_updtr_start(const char *updtr_name, const char *interval_str,
-		      const char *offset_str, const char *auto_interval,
-		      ldmsd_sec_ctxt_t ctxt)
+static struct ldmsd_cfgobj_cfg_rsp *
+updtr_stop_handler(ldmsd_updtr_t updtr, void *cfg_ctxt)
 {
-	int rc = 0;
-	long interval_us, offset_us;
-	ldmsd_updtr_t updtr = ldmsd_updtr_find(updtr_name);
-	if (!updtr)
-		return ENOENT;
+	struct ldmsd_cfgobj_cfg_ctxt *ctxt = (struct ldmsd_cfgobj_cfg_ctxt *)cfg_ctxt;
+	struct ldmsd_cfgobj_cfg_rsp *rsp;
+	int rc;
 
-	ldmsd_updtr_lock(updtr);
+	rsp = calloc(1, sizeof(*rsp));
+	if (!rsp)
+		goto enomem;
 
-	rc = ldmsd_cfgobj_access_check(&updtr->obj, 0222, ctxt);
-	if (rc)
-		goto err;
-	if (updtr->state != LDMSD_UPDTR_STATE_STOPPED) {
-		rc = EBUSY;
-		goto err;
-	}
-
-	if (auto_interval) {
-		if(0 == strcasecmp(auto_interval, "false"))
-			updtr->is_auto_task = 0;
+	rc = ldmsd_cfgobj_access_check(&updtr->obj, 0222, &ctxt->sctxt);
+	if (rc) {
+		rsp->errcode = EPERM;
+		rc = asprintf(&rsp->errmsg, "prdcr '%s' permission denied.",
+							updtr->obj.name);
+		if (rc < 0)
+			goto enomem;
 		else
-			updtr->is_auto_task = 1;
+			goto out;
 	}
-	interval_us = updtr->default_task.sched.intrvl_us;
-	offset_us = updtr->default_task.hint.offset_us;
-	if (interval_str) {
-		/* A new interval is given. */
-		interval_us = strtol(interval_str, NULL, 0);
-		if (!offset_str) {
-			/* An offset isn't given. We assume that
-			 * users want the updater to schedule asynchronously.
-			 */
-			offset_us = LDMSD_UPDT_HINT_OFFSET_NONE;
+	if (updtr->state == LDMSD_UPDTR_STATE_STOPPED)
+		goto out;
+
+	if (updtr->state == LDMSD_UPDTR_STATE_STOPPING) {
+		rsp->errcode = EBUSY;
+		rc = asprintf(&rsp->errmsg, "updtr '%s' already stopped.",
+							updtr->obj.name);
+		if (rc < 0)
+			goto enomem;
+		else
+			goto out;
+	}
+
+	updtr->state = LDMSD_UPDTR_STATE_STOPPING;
+	updtr->obj.perm &= ~LDMSD_PERM_DSTART;
+	if (updtr->push_flags)
+		cancel_push(updtr);
+
+	/*
+	 * TODO: Change updtr->state to STOPPED. The question is
+	 * when updtr->state should move to STOPPED????
+	 */
+out:
+	return rsp;
+enomem:
+	LDMSD_LOG_ENOMEM();
+	free(rsp);
+	return NULL;
+}
+
+static struct ldmsd_cfgobj_cfg_rsp *
+updtr_del_handler(ldmsd_updtr_t updtr, struct ldmsd_cfgobj_cfg_ctxt *cfg_ctxt)
+{
+	int rc;
+	struct ldmsd_cfgobj_cfg_ctxt *ctxt = (struct ldmsd_cfgobj_cfg_ctxt *)cfg_ctxt;
+	struct ldmsd_cfgobj_cfg_rsp *rsp = calloc(1, sizeof(*rsp));
+	if (!rsp) {
+		LDMSD_LOG_ENOMEM();
+		goto enomem;
+	}
+
+	rsp->errcode = ldmsd_cfgobj_access_check(&updtr->obj, 0222, &ctxt->sctxt);
+	if (rsp->errcode) {
+		rc = asprintf(&rsp->errmsg, "updtr '%s' permission denied.",
+							  updtr->obj.name);
+		if (rc < 0) {
+			LDMSD_LOG_ENOMEM();
+			goto enomem;
+		} else {
+			goto out;
 		}
 	}
-	if (offset_str)
-		offset_us = strtol(offset_str, NULL, 0)
-					- updtr_sched_offset_skew_get();
 
-	/* Initialize the default task */
-	updtr_task_init(&updtr->default_task, updtr, 1, interval_us, offset_us);
-	ldmsd_updtr_unlock(updtr);
-	rc = __ldmsd_updtr_start(updtr, ctxt);
-	ldmsd_updtr_put(updtr);
-	return rc;
+	if (updtr->state != LDMSD_UPDTR_STATE_STOPPED) {
+		rsp->errcode = EBUSY;
+		rc = asprintf(&rsp->errmsg, "updtr '%s' is in use.", updtr->obj.name);
+		if (rc < 0) {
+			LDMSD_LOG_ENOMEM();
+			goto enomem;
+		} else {
+			goto out;
+		}
+	}
 
-err:
-	ldmsd_updtr_unlock(updtr);
-	ldmsd_updtr_put(updtr);
-	return rc;
+	if (ldmsd_cfgobj_refcount(&updtr->obj) > 2) {
+		rsp->errcode = EBUSY;
+		rc = asprintf(&rsp->errmsg, "updtr '%s' is in use.", updtr->obj.name);
+		if (rc < 0) {
+			LDMSD_LOG_ENOMEM();
+			goto enomem;
+		} else {
+			goto out;
+		}
+	}
+	rsp->ctxt = ldmsd_updtr_get(updtr);
+out:
+	return rsp;
+
+enomem:
+	free(rsp);
+	return NULL;
+}
+
+static struct ldmsd_cfgobj_cfg_rsp *
+updtr_start_handler(ldmsd_updtr_t updtr, struct ldmsd_cfgobj_cfg_ctxt *cfg_ctxt)
+{
+	int rc = 0;
+	struct updtr_start_ctxt *ctxt = (struct updtr_start_ctxt *)cfg_ctxt;
+	struct ldmsd_cfgobj_cfg_rsp *rsp;
+
+	ldmsd_log(LDMSD_LINFO, "UPDTR '%s': received updtr_start\n", updtr->obj.name);
+
+	rsp = calloc(1, sizeof(*rsp));
+	if (!rsp)
+		goto enomem;
+
+	rc = ldmsd_cfgobj_access_check(&updtr->obj, 0222, &ctxt->base.sctxt);
+	if (rc) {
+		rsp->errcode = EPERM;
+		rc = asprintf(&rsp->errmsg, "updtr '%s' permission denied.",
+							updtr->obj.name);
+		if (rc < 0)
+			goto enomem;
+		else
+			goto out;
+	}
+
+	if (updtr->state != LDMSD_UPDTR_STATE_STOPPED) {
+		rsp->errcode = EBUSY;
+		rc = asprintf(&rsp->errmsg, "updtr '%s' is already running.",
+								updtr->obj.name);
+		if (rc < 0)
+			goto enomem;
+		else
+			goto out;
+	}
+
+	if (ctxt->is_auto >= 0)
+		updtr->is_auto_task = ctxt->is_auto;
+
+	if (ctxt->interval_us > 0)
+		updtr->sched.intrvl_us = ctxt->interval_us;
+	if (ctxt->offset_us > 0)
+		updtr->sched.offset_us = ctxt->offset_us;
+
+	updtr->obj.perm |= LDMSD_PERM_DSTART;
+	if (ctxt->is_deferred)
+		goto out;
+
+	updtr->state = LDMSD_UPDTR_STATE_RUNNING;
+	rc = __post_updtr_state_ev(updtr, NULL);
+	if (rc)
+		goto enomem;
+out:
+	return rsp;
+enomem:
+	ldmsd_log(LDMSD_LCRITICAL, "Out of memory\n");
+	free(rsp);
+	return NULL;
+}
+
+static struct ldmsd_cfgobj_cfg_rsp *
+updtr_match_filter_handler(ldmsd_updtr_t updtr, struct ldmsd_cfgobj_cfg_ctxt *cfg_ctxt,
+								uint32_t req_id)
+{
+	int rc = 0;
+	struct updtr_match_ctxt *ctxt = (struct updtr_match_ctxt *)cfg_ctxt;
+	struct ldmsd_cfgobj_cfg_rsp *rsp;
+
+	ldmsd_log(LDMSD_LINFO, "UPDTR '%s': received match_add\n", updtr->obj.name);
+
+	rsp = calloc(1, sizeof(*rsp));
+	if (!rsp)
+		goto enomem;
+
+	rc = ldmsd_cfgobj_access_check(&updtr->obj, 0222, &ctxt->base.sctxt);
+	if (rc) {
+		rsp->errcode = EPERM;
+		rc = asprintf(&rsp->errmsg, "updtr '%s' permission denied.",
+							   updtr->obj.name);
+		if (rc < 0)
+			goto enomem;
+		else
+			goto out;
+	}
+	if (updtr->state != LDMSD_UPDTR_STATE_STOPPED) {
+		rsp->errcode = EBUSY;
+		rc = asprintf(&rsp->errmsg, "Configuration changes cannot be made "
+				"while the updater is running");
+		if (rc < 0)
+			goto enomem;
+		else
+			goto out;
+	}
+
+	if (LDMSD_UPDTR_MATCH_ADD_REQ == req_id)
+		TAILQ_INSERT_TAIL(&updtr->match_list, ctxt->match, entry);
+	else
+		TAILQ_REMOVE(&updtr->match_list, ctxt->match, entry);
+out:
+	return rsp;
+enomem:
+	ldmsd_log(LDMSD_LCRITICAL, "Out of memory\n");
+	free(rsp);
+	return NULL;
+}
+
+static struct ldmsd_cfgobj_cfg_rsp *
+updtr_prdcr_filter_handler(ldmsd_updtr_t updtr, struct ldmsd_cfgobj_cfg_ctxt *cfg_ctxt,
+								uint32_t req_id)
+{
+	int rc = 0;
+	struct updtr_prdcr_ctxt *ctxt = (struct updtr_prdcr_ctxt *)cfg_ctxt;
+	struct ldmsd_cfgobj_cfg_rsp *rsp;
+
+	rsp = calloc(1, sizeof(*rsp));
+	if (!rsp)
+		goto enomem;
+
+	rc = ldmsd_cfgobj_access_check(&updtr->obj, 0222, &ctxt->base.sctxt);
+	if (rc) {
+		rsp->errcode = EPERM;
+		rc = asprintf(&rsp->errmsg, "updtr '%s' permission denied.",
+							   updtr->obj.name);
+		if (rc < 0)
+			goto enomem;
+		else
+			goto out;
+	}
+	if (updtr->state != LDMSD_UPDTR_STATE_STOPPED) {
+		rsp->errcode = EBUSY;
+		rc = asprintf(&rsp->errmsg, "Configuration changes cannot be made "
+				"while the updater is running");
+		if (rc < 0)
+			goto enomem;
+		else
+			goto out;
+	}
+
+	if (LDMSD_UPDTR_PRDCR_ADD_REQ == req_id)
+		TAILQ_INSERT_TAIL(&updtr->prdcr_list, ctxt->prdcr_match, entry);
+	else
+		TAILQ_REMOVE(&updtr->prdcr_list, ctxt->prdcr_match, entry);
+out:
+	return rsp;
+enomem:
+	ldmsd_log(LDMSD_LCRITICAL, "Out of memory\n");
+	free(rsp);
+	return NULL;
 }
 
 /* Caller must hold the updater lock. */
@@ -1215,12 +1503,12 @@ ldmsd_updtr_t ldmsd_updtr_next(struct ldmsd_updtr *updtr)
 
 ldmsd_name_match_t ldmsd_updtr_match_first(ldmsd_updtr_t updtr)
 {
-	return LIST_FIRST(&updtr->match_list);
+	return TAILQ_FIRST(&updtr->match_list);
 }
 
 ldmsd_name_match_t ldmsd_updtr_match_next(ldmsd_name_match_t cmp)
 {
-	return LIST_NEXT(cmp, entry);
+	return TAILQ_NEXT(cmp, entry);
 }
 
 ldmsd_prdcr_ref_t ldmsd_updtr_prdcr_first(ldmsd_updtr_t updtr)
@@ -1257,7 +1545,7 @@ ldmsd_name_match_t updtr_find_match_ex(ldmsd_updtr_t updtr,
 				       const char *ex)
 {
 	ldmsd_name_match_t match;
-	LIST_FOREACH(match, &updtr->match_list, entry) {
+	TAILQ_FOREACH(match, &updtr->match_list, entry) {
 		if (match->selector != sel)
 			continue;
 		if (0 == strcmp(match->regex_str, ex))
@@ -1266,102 +1554,102 @@ ldmsd_name_match_t updtr_find_match_ex(ldmsd_updtr_t updtr,
 	return NULL;
 }
 
-int ldmsd_updtr_match_add(const char *updtr_name, const char *regex_str,
-		const char *selector_str, char *rep_buf, size_t rep_len,
-		ldmsd_sec_ctxt_t ctxt)
-{
-	int rc = 0;
-	ldmsd_updtr_t updtr = ldmsd_updtr_find(updtr_name);
-	if (!updtr)
-		return ENOENT;
-
-	ldmsd_updtr_lock(updtr);
-	rc = ldmsd_cfgobj_access_check(&updtr->obj, 0222, ctxt);
-	if (rc)
-		goto out_1;
-	if (updtr->state != LDMSD_UPDTR_STATE_STOPPED) {
-		rc = EBUSY;
-		goto out_1;
-	}
-	ldmsd_name_match_t match = calloc(1, sizeof *match);
-	if (!match) {
-		rc = ENOMEM;
-		goto out_1;
-	}
-	match->regex_str = strdup(regex_str);
-	if (!match->regex_str) {
-		rc = ENOMEM;
-		goto out_2;
-	}
-
-	if (!selector_str)
-		match->selector = LDMSD_NAME_MATCH_INST_NAME;
-	else if (0 == strcasecmp(selector_str, "schema"))
-		match->selector = LDMSD_NAME_MATCH_SCHEMA_NAME;
-	else if (0 == strcasecmp(selector_str, "inst"))
-		match->selector = LDMSD_NAME_MATCH_INST_NAME;
-	else {
-		rc = EINVAL;
-		goto out_3;
-	}
-
-	if (ldmsd_compile_regex(&match->regex, regex_str, rep_buf, rep_len))
-		goto out_3;
-
-	LIST_INSERT_HEAD(&updtr->match_list, match, entry);
-	goto out_1;
-
-out_3:
-	free(match->regex_str);
-out_2:
-	free(match);
-out_1:
-	ldmsd_updtr_unlock(updtr);
-	ldmsd_updtr_put(updtr);
-	return rc;
-}
-
-int ldmsd_updtr_match_del(const char *updtr_name, const char *regex_str,
-			  const char *selector_str, ldmsd_sec_ctxt_t ctxt)
-{
-	int rc = 0;
-	enum ldmsd_name_match_sel sel;
-	if (!selector_str)
-		sel = LDMSD_NAME_MATCH_INST_NAME;
-	else if (0 == strcasecmp(selector_str, "inst"))
-		sel = LDMSD_NAME_MATCH_INST_NAME;
-	else if (0 == strcasecmp(selector_str, "schema"))
-		sel = LDMSD_NAME_MATCH_SCHEMA_NAME;
-	else {
-		return EINVAL;
-	}
-
-	ldmsd_updtr_t updtr = ldmsd_updtr_find(updtr_name);
-	if (!updtr)
-		return ENOENT;
-
-	ldmsd_updtr_lock(updtr);
-	rc = ldmsd_cfgobj_access_check(&updtr->obj, 0222, ctxt);
-	if (rc)
-		goto out_1;
-	if (updtr->state != LDMSD_UPDTR_STATE_STOPPED) {
-		rc = EBUSY;
-		goto out_1;
-	}
-	ldmsd_name_match_t match = updtr_find_match_ex(updtr, sel, regex_str);
-	if (!match) {
-		rc = -ENOENT;
-		goto out_1;
-	}
-	LIST_REMOVE(match, entry);
-	regfree(&match->regex);
-	free(match->regex_str);
-	free(match);
-out_1:
-	ldmsd_updtr_unlock(updtr);
-	ldmsd_updtr_put(updtr);
-	return rc;
-}
+//int ldmsd_updtr_match_add(const char *updtr_name, const char *regex_str,
+//		const char *selector_str, char *rep_buf, size_t rep_len,
+//		ldmsd_sec_ctxt_t ctxt)
+//{
+//	int rc = 0;
+//	ldmsd_updtr_t updtr = ldmsd_updtr_find(updtr_name);
+//	if (!updtr)
+//		return ENOENT;
+//
+//	ldmsd_updtr_lock(updtr);
+//	rc = ldmsd_cfgobj_access_check(&updtr->obj, 0222, ctxt);
+//	if (rc)
+//		goto out_1;
+//	if (updtr->state != LDMSD_UPDTR_STATE_STOPPED) {
+//		rc = EBUSY;
+//		goto out_1;
+//	}
+//	ldmsd_name_match_t match = calloc(1, sizeof *match);
+//	if (!match) {
+//		rc = ENOMEM;
+//		goto out_1;
+//	}
+//	match->regex_str = strdup(regex_str);
+//	if (!match->regex_str) {
+//		rc = ENOMEM;
+//		goto out_2;
+//	}
+//
+//	if (!selector_str)
+//		match->selector = LDMSD_NAME_MATCH_INST_NAME;
+//	else if (0 == strcasecmp(selector_str, "schema"))
+//		match->selector = LDMSD_NAME_MATCH_SCHEMA_NAME;
+//	else if (0 == strcasecmp(selector_str, "inst"))
+//		match->selector = LDMSD_NAME_MATCH_INST_NAME;
+//	else {
+//		rc = EINVAL;
+//		goto out_3;
+//	}
+//
+//	if (ldmsd_compile_regex(&match->regex, regex_str, rep_buf, rep_len))
+//		goto out_3;
+//
+//	TAILQ_INSERT_TAIL(&updtr->match_list, match, entry);
+//	goto out_1;
+//
+//out_3:
+//	free(match->regex_str);
+//out_2:
+//	free(match);
+//out_1:
+//	ldmsd_updtr_unlock(updtr);
+//	ldmsd_updtr_put(updtr);
+//	return rc;
+//}
+//
+//int ldmsd_updtr_match_del(const char *updtr_name, const char *regex_str,
+//			  const char *selector_str, ldmsd_sec_ctxt_t ctxt)
+//{
+//	int rc = 0;
+//	enum ldmsd_name_match_sel sel;
+//	if (!selector_str)
+//		sel = LDMSD_NAME_MATCH_INST_NAME;
+//	else if (0 == strcasecmp(selector_str, "inst"))
+//		sel = LDMSD_NAME_MATCH_INST_NAME;
+//	else if (0 == strcasecmp(selector_str, "schema"))
+//		sel = LDMSD_NAME_MATCH_SCHEMA_NAME;
+//	else {
+//		return EINVAL;
+//	}
+//
+//	ldmsd_updtr_t updtr = ldmsd_updtr_find(updtr_name);
+//	if (!updtr)
+//		return ENOENT;
+//
+//	ldmsd_updtr_lock(updtr);
+//	rc = ldmsd_cfgobj_access_check(&updtr->obj, 0222, ctxt);
+//	if (rc)
+//		goto out_1;
+//	if (updtr->state != LDMSD_UPDTR_STATE_STOPPED) {
+//		rc = EBUSY;
+//		goto out_1;
+//	}
+//	ldmsd_name_match_t match = updtr_find_match_ex(updtr, sel, regex_str);
+//	if (!match) {
+//		rc = -ENOENT;
+//		goto out_1;
+//	}
+//	TAILQ_REMOVE(&updtr->match_list, match, entry);
+//	regfree(&match->regex);
+//	free(match->regex_str);
+//	free(match);
+//out_1:
+//	ldmsd_updtr_unlock(updtr);
+//	ldmsd_updtr_put(updtr);
+//	return rc;
+//}
 
 ldmsd_prdcr_ref_t prdcr_ref_new(ldmsd_prdcr_t prdcr)
 {
@@ -1426,101 +1714,101 @@ out:
 	return rc;
 }
 
-int ldmsd_updtr_prdcr_add(const char *updtr_name, const char *prdcr_regex,
-			  char *rep_buf, size_t rep_len, ldmsd_sec_ctxt_t ctxt)
-{
-	regex_t regex;
-	ldmsd_updtr_t updtr;
-	ldmsd_prdcr_t prdcr;
-	int rc;
-
-	rc = ldmsd_compile_regex(&regex, prdcr_regex, rep_buf, rep_len);
-	if (rc)
-		return rc;
-
-	updtr = ldmsd_updtr_find(updtr_name);
-	if (!updtr) {
-		sprintf(rep_buf, "%dThe updater specified does not "
-						"exist\n", ENOENT);
-		regfree(&regex);
-		return ENOENT;
-	}
-
-	ldmsd_updtr_lock(updtr);
-	rc = ldmsd_cfgobj_access_check(&updtr->obj, 0222, ctxt);
-	if (rc)
-		goto out_1;
-	if (updtr->state != LDMSD_UPDTR_STATE_STOPPED) {
-		sprintf(rep_buf, "%dConfiguration changes cannot be made "
-				"while the updater is running\n", EBUSY);
-		rc = EBUSY;
-		goto out_1;
-	}
-	ldmsd_cfg_lock(LDMSD_CFGOBJ_PRDCR);
-	for (prdcr = ldmsd_prdcr_first(); prdcr; prdcr = ldmsd_prdcr_next(prdcr)) {
-		if (regexec(&regex, prdcr->obj.name, 0, NULL, 0))
-			continue;
-		/* See if this match is already in the list */
-		ldmsd_prdcr_ref_t ref = prdcr_ref_find(updtr, prdcr->obj.name);
-		if (ref)
-			continue;
-		ref = prdcr_ref_new(prdcr);
-		if (!ref) {
-			rc = ENOMEM;
-			sprintf(rep_buf, "%dMemory allocation failure.\n", ENOMEM);
-			ldmsd_prdcr_put(prdcr);
-			ldmsd_cfg_unlock(LDMSD_CFGOBJ_PRDCR);
-			goto out_1;
-		}
-		rbt_ins(&updtr->prdcr_tree, &ref->rbn);
-	}
-	ldmsd_cfg_unlock(LDMSD_CFGOBJ_PRDCR);
-	sprintf(rep_buf, "0\n");
-out_1:
-	regfree(&regex);
-	ldmsd_updtr_unlock(updtr);
-	ldmsd_updtr_put(updtr);
-	return rc;
-}
-
-int ldmsd_updtr_prdcr_del(const char *updtr_name, const char *prdcr_regex,
-			  char *rep_buf, size_t rep_len, ldmsd_sec_ctxt_t ctxt)
-{
-	int rc = 0;
-	regex_t regex;
-	ldmsd_prdcr_ref_t ref;
-
-	rc = ldmsd_compile_regex(&regex, prdcr_regex, rep_buf, rep_len);
-	if (rc)
-		goto out_0;
-
-	ldmsd_updtr_t updtr = ldmsd_updtr_find(updtr_name);
-	if (!updtr) {
-		rc = ENOENT;
-		regfree(&regex);
-		goto out_0;
-	}
-	ldmsd_updtr_lock(updtr);
-	rc = ldmsd_cfgobj_access_check(&updtr->obj, 0222, ctxt);
-	if (rc)
-		goto out_1;
-	if (updtr->state != LDMSD_UPDTR_STATE_STOPPED) {
-		rc = EBUSY;
-		goto out_1;
-	}
-	for (ref = prdcr_ref_find_regex(updtr, &regex);
-	     ref; ref = prdcr_ref_find_regex(updtr, &regex)) {
-		rbt_del(&updtr->prdcr_tree, &ref->rbn);
-		ldmsd_prdcr_put(ref->prdcr);
-		free(ref);
-	}
-out_1:
-	regfree(&regex);
-	ldmsd_updtr_unlock(updtr);
-	ldmsd_updtr_put(updtr);
-out_0:
-	return rc;
-}
+//int ldmsd_updtr_prdcr_add(const char *updtr_name, const char *prdcr_regex,
+//			  char *rep_buf, size_t rep_len, ldmsd_sec_ctxt_t ctxt)
+//{
+//	regex_t regex;
+//	ldmsd_updtr_t updtr;
+//	ldmsd_prdcr_t prdcr;
+//	int rc;
+//
+//	rc = ldmsd_compile_regex(&regex, prdcr_regex, rep_buf, rep_len);
+//	if (rc)
+//		return rc;
+//
+//	updtr = ldmsd_updtr_find(updtr_name);
+//	if (!updtr) {
+//		sprintf(rep_buf, "%dThe updater specified does not "
+//						"exist\n", ENOENT);
+//		regfree(&regex);
+//		return ENOENT;
+//	}
+//
+//	ldmsd_updtr_lock(updtr);
+//	rc = ldmsd_cfgobj_access_check(&updtr->obj, 0222, ctxt);
+//	if (rc)
+//		goto out_1;
+//	if (updtr->state != LDMSD_UPDTR_STATE_STOPPED) {
+//		sprintf(rep_buf, "%dConfiguration changes cannot be made "
+//				"while the updater is running\n", EBUSY);
+//		rc = EBUSY;
+//		goto out_1;
+//	}
+//	ldmsd_cfg_lock(LDMSD_CFGOBJ_PRDCR);
+//	for (prdcr = ldmsd_prdcr_first(); prdcr; prdcr = ldmsd_prdcr_next(prdcr)) {
+//		if (regexec(&regex, prdcr->obj.name, 0, NULL, 0))
+//			continue;
+//		/* See if this match is already in the list */
+//		ldmsd_prdcr_ref_t ref = prdcr_ref_find(updtr, prdcr->obj.name);
+//		if (ref)
+//			continue;
+//		ref = prdcr_ref_new(prdcr);
+//		if (!ref) {
+//			rc = ENOMEM;
+//			sprintf(rep_buf, "%dMemory allocation failure.\n", ENOMEM);
+//			ldmsd_prdcr_put(prdcr);
+//			ldmsd_cfg_unlock(LDMSD_CFGOBJ_PRDCR);
+//			goto out_1;
+//		}
+//		rbt_ins(&updtr->prdcr_tree, &ref->rbn);
+//	}
+//	ldmsd_cfg_unlock(LDMSD_CFGOBJ_PRDCR);
+//	sprintf(rep_buf, "0\n");
+//out_1:
+//	regfree(&regex);
+//	ldmsd_updtr_unlock(updtr);
+//	ldmsd_updtr_put(updtr);
+//	return rc;
+//}
+//
+//int ldmsd_updtr_prdcr_del(const char *updtr_name, const char *prdcr_regex,
+//			  char *rep_buf, size_t rep_len, ldmsd_sec_ctxt_t ctxt)
+//{
+//	int rc = 0;
+//	regex_t regex;
+//	ldmsd_prdcr_ref_t ref;
+//
+//	rc = ldmsd_compile_regex(&regex, prdcr_regex, rep_buf, rep_len);
+//	if (rc)
+//		goto out_0;
+//
+//	ldmsd_updtr_t updtr = ldmsd_updtr_find(updtr_name);
+//	if (!updtr) {
+//		rc = ENOENT;
+//		regfree(&regex);
+//		goto out_0;
+//	}
+//	ldmsd_updtr_lock(updtr);
+//	rc = ldmsd_cfgobj_access_check(&updtr->obj, 0222, ctxt);
+//	if (rc)
+//		goto out_1;
+//	if (updtr->state != LDMSD_UPDTR_STATE_STOPPED) {
+//		rc = EBUSY;
+//		goto out_1;
+//	}
+//	for (ref = prdcr_ref_find_regex(updtr, &regex);
+//	     ref; ref = prdcr_ref_find_regex(updtr, &regex)) {
+//		rbt_del(&updtr->prdcr_tree, &ref->rbn);
+//		ldmsd_prdcr_put(ref->prdcr);
+//		free(ref);
+//	}
+//out_1:
+//	regfree(&regex);
+//	ldmsd_updtr_unlock(updtr);
+//	ldmsd_updtr_put(updtr);
+//out_0:
+//	return rc;
+//}
 
 /**
  * Compare two updater schedule.
@@ -1550,10 +1838,766 @@ ldmsd_updtr_task_t updtr_task_get(struct rbn *rbn)
 	return container_of(rbn, struct ldmsd_updtr_task, rbn);
 }
 
-int updtr_tree_prdset_add_actor(ev_worker_t src, ev_worker_t dst,
-					ev_status_t status, ev_t e)
+int updtr_cfg_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e)
 {
-	/* TODO: implement this */
+	if (EV_OK != status)
+		return 0;
+
+	int rc;
+	struct ldmsd_cfgobj_cfg_rsp *rsp;
+	ev_t rsp_ev;
+
+	ldmsd_updtr_t updtr = (ldmsd_updtr_t)EV_DATA(e, struct cfgobj_data)->obj;
+	struct ldmsd_cfgobj_cfg_ctxt *cfg_ctxt = EV_DATA(e, struct cfgobj_data)->ctxt;
+	ldmsd_req_ctxt_t reqc = cfg_ctxt->reqc;
+
+	switch (reqc->req_id) {
+	case LDMSD_UPDTR_PRDCR_ADD_REQ:
+	case LDMSD_UPDTR_PRDCR_DEL_REQ:
+		rsp = updtr_prdcr_filter_handler(updtr, cfg_ctxt, reqc->req_id);
+		break;
+	case LDMSD_UPDTR_MATCH_ADD_REQ:
+	case LDMSD_UPDTR_MATCH_DEL_REQ:
+		rsp = updtr_match_filter_handler(updtr, cfg_ctxt, reqc->req_id);
+		break;
+	case LDMSD_UPDTR_START_REQ:
+	case LDMSD_UPDTR_DEFER_START_REQ:
+		rsp = updtr_start_handler(updtr, cfg_ctxt);
+		break;
+	case LDMSD_UPDTR_DEL_REQ:
+		rsp = updtr_del_handler(updtr, cfg_ctxt);
+		break;
+	case LDMSD_UPDTR_STOP_REQ:
+		rsp = updtr_stop_handler(updtr, cfg_ctxt);
+		break;
+	default:
+		ldmsd_log(LDMSD_LERROR, "%s received an unsupported request ID %d.\n",
+							__func__, reqc->req_id);
+		assert(0);
+		rc = EINTR;
+		goto err;
+	}
+
+	if (!rsp)
+		goto enomem;
+
+	rsp_ev = ev_new(cfgobj_rsp_type);
+	if (!rsp_ev)
+		goto enomem;
+	EV_DATA(rsp_ev, struct cfgobj_rsp_data)->ctxt = cfg_ctxt;
+	EV_DATA(rsp_ev, struct cfgobj_rsp_data)->rsp = rsp;
+	ev_post(updtr->worker, updtr_tree_w, rsp_ev, 0);
+	goto out;
+
+enomem:
+	ldmsd_log(LDMSD_LCRITICAL, "Out of memory\n");
+	rc = ENOMEM;
+err:
+	free(rsp);
+out:
+	ldmsd_updtr_put(updtr);
+	ev_put(e);
+
+	return rc;
+}
+
+int updtr_prdset_state_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e)
+{
+	if (EV_OK != status)
+		return 0;
+
+	int rc;
+	char *s;
+	struct ldmsd_filter_ent *prdcr_filt;
+	struct ldmsd_name_match *match;
+	ldmsd_updtr_t updtr = (ldmsd_updtr_t)EV_DATA(e, struct prdset_data)->obj;
+	struct prdset_data *prdset_data = EV_DATA(e, struct prdset_data);
+
+	ldmsd_log(LDMSD_LINFO, "updtr '%s' received prdset_state from prdset '%s' with state %d\n",
+			updtr->obj.name, prdset_data->prdset->inst_name, prdset_data->state);
+
+	if (LDMSD_UPDTR_STATE_RUNNING != updtr->state)
+		return 0;
+
+	TAILQ_FOREACH(prdcr_filt, &updtr->prdcr_list, entry) {
+		if (prdcr_filt->is_regex) {
+			rc = regexec(&prdcr_filt->regex, prdset_data->prdcr_name, 0, NULL, 0);
+		} else {
+			rc = strcmp(prdcr_filt->str, prdset_data->prdcr_name);
+		}
+		if (rc)
+			goto out;
+
+		if (TAILQ_EMPTY(&updtr->match_list)) {
+			__post_updtr_state_ev(updtr, prdset_data->prdset);
+			goto out;
+		}
+
+		TAILQ_FOREACH(match, &updtr->match_list, entry) {
+			if (LDMSD_NAME_MATCH_INST_NAME == match->selector)
+				s = prdset_data->prdset->inst_name;
+			else
+				s = prdset_data->prdset->schema_name;
+			rc = regexec(&match->regex, s, 0, NULL, 0);
+			if (0 == rc) {
+				/* matched */
+				__post_updtr_state_ev(updtr, prdset_data->prdset);
+				goto out;
+			}
+		}
+	}
+out:
+	ldmsd_updtr_put(updtr);
+	prdset_data_cleanup(prdset_data);
 	ev_put(e);
 	return 0;
 }
+
+static int tree_updtr_match_filter_handler(ldmsd_req_ctxt_t reqc)
+{
+	int rc;
+	char *updtr_name, *attr_name;
+	updtr_name = NULL;
+	struct updtr_match_ctxt *ctxt;
+	struct ldmsd_name_match *match;
+	char *mtype;
+	ldmsd_updtr_t updtr;
+
+	ctxt = calloc(1, sizeof(*ctxt));
+	if (!ctxt)
+		goto enomem;
+	match = malloc(sizeof(struct ldmsd_name_match));
+	if (!match)
+		goto enomem;
+	ctxt->match = match;
+
+	reqc->errcode = 0;
+
+	attr_name = "name";
+	updtr_name = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_NAME);
+	if (!updtr_name)
+		goto einval;
+
+	if (0 == strncmp(LDMSD_FAILOVER_NAME_PREFIX, updtr_name,
+			 sizeof(LDMSD_FAILOVER_NAME_PREFIX) - 1)) {
+		goto ename;
+	}
+
+	attr_name = "regex";
+	match->regex_str = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_REGEX);
+	if (!match->regex_str)
+		goto einval;
+	rc = ldmsd_compile_regex(&match->regex, match->regex_str,
+				reqc->line_buf, reqc->line_len);
+	if (rc)
+		goto send_reply;
+
+	mtype = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_MATCH);
+	if (!mtype)
+		match->selector = LDMSD_NAME_MATCH_INST_NAME;
+	else if (0 == strcasecmp(mtype, "schema"))
+		match->selector = LDMSD_NAME_MATCH_SCHEMA_NAME;
+	else if (0 == strcasecmp(mtype, "inst"))
+		match->selector = LDMSD_NAME_MATCH_INST_NAME;
+	else {
+		(void) linebuf_printf(reqc, "The match value '%s' is invalid.", mtype);
+		reqc->errcode = EINVAL;
+		goto send_reply;
+	}
+
+	ldmsd_req_ctxt_sec_get(reqc, &ctxt->base.sctxt);
+
+	updtr = ldmsd_updtr_find(updtr_name);
+	if (!updtr) {
+		reqc->errcode = ENOENT;
+		(void) linebuf_printf(reqc, "updtr '%s' does not exist.", updtr_name);
+		goto send_reply;
+	}
+
+	ctxt->base.is_all = 1;
+	rc = ldmsd_cfgtree_post2cfgobj(&updtr->obj, updtr_tree_w,
+					updtr->worker, reqc, &ctxt->base);
+	ldmsd_updtr_put(updtr);
+	if (rc) {
+		if (ENOMEM == rc)
+			goto enomem;
+		reqc->errcode = EINTR;
+		(void) linebuf_printf(reqc, "Failed to handle the updtr_prdcr_add command");
+		goto send_reply;
+	}
+
+	free(updtr_name);
+	free(mtype);
+	return 0;
+
+enomem:
+	reqc->errcode = ENOMEM;
+	ldmsd_log(LDMSD_LCRITICAL, "Out of memory\n");
+	(void) linebuf_printf(reqc, "LDMSD: out of memory.");
+	free(ctxt);
+	goto send_reply;
+ename:
+	reqc->errcode = EINVAL;
+	(void) linebuf_printf(reqc, "Bad updtr name");
+	goto send_reply;
+einval:
+	reqc->errcode = EINVAL;
+	(void) linebuf_printf(reqc,
+			"The attribute '%s' is required by %s.",
+			attr_name, ldmsd_req_id2str(reqc->req_id));
+send_reply:
+	ldmsd_send_req_response(reqc, reqc->line_buf);
+	ldmsd_name_match_free(match);
+	free(ctxt);
+	free(updtr_name);
+	free(mtype);
+	return 0;
+}
+
+static int tree_updtr_prdcr_filter_handler(ldmsd_req_ctxt_t reqc)
+{
+	int rc;
+	char *updtr_name, *prdcr_regex, *attr_name;
+	updtr_name = prdcr_regex = NULL;
+	struct updtr_prdcr_ctxt *ctxt;
+	struct ldmsd_filter_ent *match;
+	ldmsd_updtr_t updtr;
+
+	ctxt = calloc(1, sizeof(*ctxt));
+	if (!ctxt)
+		goto enomem;
+	match = malloc(sizeof(struct ldmsd_name_match));
+	if (!match)
+		goto enomem;
+	match->is_regex = 1;
+	ctxt->prdcr_match = match;
+
+	reqc->errcode = 0;
+
+	attr_name = "name";
+	updtr_name = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_NAME);
+	if (!updtr_name)
+		goto einval;
+
+	if (0 == strncmp(LDMSD_FAILOVER_NAME_PREFIX, updtr_name,
+			 sizeof(LDMSD_FAILOVER_NAME_PREFIX) - 1)) {
+		goto ename;
+	}
+
+	attr_name = "regex";
+	match->str = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_REGEX);
+	if (!match->str)
+		goto einval;
+	rc = ldmsd_compile_regex(&match->regex, match->str,
+				reqc->line_buf, reqc->line_len);
+	if (rc)
+		goto send_reply;
+
+	ldmsd_req_ctxt_sec_get(reqc, &ctxt->base.sctxt);
+
+	updtr = ldmsd_updtr_find(updtr_name);
+	if (!updtr) {
+		reqc->errcode = ENOENT;
+		(void) linebuf_printf(reqc, "updtr '%s' does not exist.", updtr_name);
+		goto send_reply;
+	}
+
+	ctxt->base.is_all = 1;
+	rc = ldmsd_cfgtree_post2cfgobj(&updtr->obj, updtr_tree_w,
+					updtr->worker, reqc, &ctxt->base);
+	ldmsd_updtr_put(updtr);
+	if (rc) {
+		if (ENOMEM == rc)
+			goto enomem;
+		reqc->errcode = EINTR;
+		(void) linebuf_printf(reqc, "Failed to handle the %s command",
+						ldmsd_req_id2str(reqc->req_id));
+		goto send_reply;
+	}
+
+	free(updtr_name);
+	return 0;
+
+enomem:
+	reqc->errcode = ENOMEM;
+	ldmsd_log(LDMSD_LCRITICAL, "Out of memory\n");
+	(void) linebuf_printf(reqc, "LDMSD: out of memory.");
+	free(ctxt);
+	goto send_reply;
+ename:
+	reqc->errcode = EINVAL;
+	(void) linebuf_printf(reqc, "Bad prdcr name");
+	goto send_reply;
+einval:
+	reqc->errcode = EINVAL;
+	(void) linebuf_printf(reqc,
+			"The attribute '%s' is required by %s.", attr_name,
+			"updtr_prdcr_add");
+send_reply:
+	ldmsd_send_req_response(reqc, reqc->line_buf);
+	free(updtr_name);
+	free(match->str);
+	free(match);
+	free(ctxt);
+	return 0;
+}
+
+static int __tree_forward2updtr(ldmsd_req_ctxt_t reqc)
+{
+	int rc;
+	char *name = NULL;
+	ldmsd_updtr_t updtr;
+	struct ldmsd_cfgobj_cfg_ctxt *ctxt = NULL;
+
+	ctxt = calloc(1, sizeof(*ctxt));
+	if (!ctxt)
+		goto enomem;
+
+	reqc->errcode = 0;
+
+	name = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_NAME);
+	if (!name) {
+		reqc->errcode = EINVAL;
+		rc = linebuf_printf(reqc,
+				"The attribute 'name' is required.");
+		goto send_reply;
+	}
+
+	ldmsd_req_ctxt_sec_get(reqc, &ctxt->sctxt);
+
+	updtr = ldmsd_updtr_find(name);
+	if (!updtr) {
+		reqc->errcode = ENOENT;
+		rc = linebuf_printf(reqc, "updtr '%s' does not exist.", name);
+		goto send_reply;
+	}
+
+	ctxt->is_all = 1;
+	rc = ldmsd_cfgtree_post2cfgobj(&updtr->obj, updtr_tree_w,
+					updtr->worker, reqc, ctxt);
+	ldmsd_updtr_put(updtr); /* Put back ldmsd_prdcr_find()'s reference */
+	if (rc) {
+		if (ENOMEM == rc)
+			goto enomem;
+		reqc->errcode = EINTR;
+		rc = linebuf_printf(reqc,
+				"Failed to handle the %s command.",
+					ldmsd_req_id2str(reqc->req_id));
+		goto send_reply;
+	}
+
+	goto out;
+
+enomem:
+	reqc->errcode = ENOMEM;
+	(void) linebuf_printf(reqc, "LDMSD: out of memory.");
+	free(ctxt);
+send_reply:
+	ldmsd_send_req_response(reqc, reqc->line_buf);
+out:
+	free(name);
+	return 0;
+}
+
+static inline int tree_updtr_del_handler(ldmsd_req_ctxt_t reqc)
+{
+	return __tree_forward2updtr(reqc);
+}
+
+static inline int tree_updtr_stop_handler(ldmsd_req_ctxt_t reqc)
+{
+	return __tree_forward2updtr(reqc);
+}
+
+static int tree_updtr_start_handler(ldmsd_req_ctxt_t reqc)
+{
+	int rc;
+	char *updtr_name, *interval_str, *offset_str, *auto_interval;
+	updtr_name = interval_str = offset_str = auto_interval = NULL;
+	struct updtr_start_ctxt *ctxt;
+	ldmsd_updtr_t updtr;
+
+	ctxt = calloc(1, sizeof(*ctxt));
+	if (!ctxt)
+		goto enomem;
+
+	if (LDMSD_UPDTR_DEFER_START_REQ == reqc->req_id)
+		ctxt->is_deferred = 1;
+
+	reqc->errcode = 0;
+
+	updtr_name = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_NAME);
+	if (!updtr_name) {
+		reqc->errcode = EINVAL;
+		(void) linebuf_printf(reqc, "The updater name must be specified.");
+		goto send_reply;
+	}
+	interval_str = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_INTERVAL);
+	offset_str  = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_OFFSET);
+	auto_interval = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_AUTO_INTERVAL);
+
+	ldmsd_req_ctxt_sec_get(reqc, &ctxt->base.sctxt);
+
+	updtr = ldmsd_updtr_find(updtr_name);
+	if (!updtr) {
+		reqc->errcode = ENOENT;
+		(void) linebuf_printf(reqc, "updtr '%s' does not exist.", updtr_name);
+		goto send_reply;
+	}
+	ctxt->base.is_all = 1;
+	ctxt->is_auto = (auto_interval)?1:-1;
+	ctxt->interval_us = (interval_str)?strtol(interval_str, NULL, 0):-1;
+	ctxt->offset_us = (offset_str)?strtol(offset_str, NULL, 0):-1;
+
+	rc = ldmsd_cfgtree_post2cfgobj(&updtr->obj, updtr_tree_w,
+					updtr->worker, reqc, &ctxt->base);
+	ldmsd_updtr_put(updtr);
+	if (rc)  {
+		if (ENOMEM == rc)
+			goto enomem;
+		reqc->errcode = EINTR;
+		(void) linebuf_printf(reqc,
+				"Failed to handle the updtr_start command.");
+		goto send_reply;
+	}
+
+	goto out;
+
+enomem:
+	reqc->errcode = ENOMEM;
+	ldmsd_log(LDMSD_LCRITICAL, "Out of memory\n");
+	(void) linebuf_printf(reqc, "LDMSD: out of memory.");
+	free(ctxt);
+
+send_reply:
+	ldmsd_send_req_response(reqc, reqc->line_buf);
+out:
+	free(updtr_name);
+	free(interval_str);
+	free(offset_str);
+	return 0;
+}
+
+static int tree_updtr_add_handler(ldmsd_req_ctxt_t reqc)
+{
+	ldmsd_log(LDMSD_LINFO, "%s\n", __func__);
+	char *name, *offset_str, *interval_str, *push, *auto_interval;
+	name = offset_str = interval_str = push = auto_interval = NULL;
+	uid_t uid;
+	gid_t gid;
+	int perm;
+	char *perm_s = NULL;
+	char *endptr;
+	int push_flags, is_auto_task;
+	long interval, offset;
+
+	reqc->errcode = 0;
+
+	name = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_NAME);
+	if (!name) {
+		reqc->errcode = EINVAL;
+		(void) linebuf_printf(reqc, "The attribute 'name' is required.");
+		goto send_reply;
+	}
+	if (0 == strncmp(LDMSD_FAILOVER_NAME_PREFIX, name,
+			 sizeof(LDMSD_FAILOVER_NAME_PREFIX)-1)) {
+		reqc->errcode = EINVAL;
+		(void) linebuf_printf(reqc, "%s is an invalid updtr name", name);
+		goto send_reply;
+	}
+
+	interval_str = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_INTERVAL);
+	if (!interval_str) {
+		reqc->errcode = EINVAL;
+		(void) linebuf_printf(reqc, "The 'interval' attribute is required.");
+		goto send_reply;
+	} else {
+		/*
+		 * Verify that the given interval value is valid.
+		 */
+		if ('\0' == interval_str[0]) {
+			reqc->errcode = EINVAL;
+			(void) linebuf_printf(reqc, "The given update interval "
+						  "value is an empty string.");
+			goto send_reply;
+		}
+		interval = strtol(interval_str, &endptr, 0);
+		if ('\0' != endptr[0]) {
+			reqc->errcode = EINVAL;
+			(void) linebuf_printf(reqc, "The given update interval "
+						"value (%s) is not a number.",
+								interval_str);
+			goto send_reply;
+		} else {
+			if (0 >= interval) {
+				reqc->errcode = EINVAL;
+				(void) linebuf_printf(reqc,
+						"The update interval value must "
+						"be larger than 0.");
+				goto send_reply;
+			}
+		}
+	}
+
+	offset_str = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_OFFSET);
+	if (offset_str) {
+		/*
+		 * Verify that the given offset value is valid.
+		 */
+		if ('\0' == offset_str[0]) {
+			reqc->errcode = EINVAL;
+			(void) linebuf_printf(reqc, "The given update offset "
+						 "value is an empty string.");
+			goto send_reply;
+		}
+		offset = strtol(offset_str, &endptr, 0);
+		if ('\0' != endptr[0]) {
+			reqc->errcode = EINVAL;
+			(void) linebuf_printf(reqc, "The given update offset "
+					"value (%s) is not a number.", offset_str);
+			goto send_reply;
+		}
+		if (interval_str && (interval < labs(offset) * 2)) {
+			reqc->errcode = EINVAL;
+			(void) linebuf_printf(reqc,
+					"The absolute value of the offset value "
+					"must not be larger than the half of "
+					"the update interval.");
+			goto send_reply;
+		}
+	}
+
+	push = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_PUSH);
+	auto_interval = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_AUTO_INTERVAL);
+
+	struct ldmsd_sec_ctxt sctxt;
+	ldmsd_req_ctxt_sec_get(reqc, &sctxt);
+	uid = sctxt.crd.uid;
+	gid = sctxt.crd.gid;
+
+	perm = 0770;
+	perm_s = ldmsd_req_attr_str_value_get_by_name(reqc, "perm");
+	if (perm_s)
+		perm = strtoul(perm_s, NULL, 0);
+
+	if (auto_interval) {
+		if (0 == strcasecmp(auto_interval, "true")) {
+			if (push) {
+				reqc->errcode = EINVAL;
+				(void) linebuf_printf(reqc,
+						"auto_interval and push are "
+						"incompatible options");
+				goto send_reply;
+			}
+			is_auto_task = 1;
+		} else if (0 == strcasecmp(auto_interval, "false")) {
+			is_auto_task = 0;
+		} else {
+			reqc->errcode = EINVAL;
+			(void) linebuf_printf(reqc,
+				       "The auto_interval option requires "
+				       "either 'true', or 'false'\n");
+			goto send_reply;
+		}
+	} else {
+		is_auto_task = 0;
+	}
+	push_flags = 0;
+	if (push) {
+		if (0 == strcasecmp(push, "onchange")) {
+			push_flags = LDMSD_UPDTR_F_PUSH | LDMSD_UPDTR_F_PUSH_CHANGE;
+		} else if (0 == strcasecmp(push, "true") || 0 == strcasecmp(push, "yes")) {
+			push_flags = LDMSD_UPDTR_F_PUSH;
+		} else {
+			reqc->errcode = EINVAL;
+			(void) linebuf_printf(reqc,
+				       "The valud push options are \"onchange\", \"true\" "
+				       "or \"yes\"\n");
+			goto send_reply;
+		}
+		is_auto_task = 0;
+	}
+	ldmsd_updtr_t updtr = ldmsd_updtr_new_with_auth(name, interval_str,
+							offset_str ? offset_str : "0",
+							push_flags,
+							is_auto_task,
+							uid, gid, perm);
+	if (!updtr) {
+		reqc->errcode = errno;
+		if (errno == EEXIST) {
+			(void) linebuf_printf(reqc, "The updtr %s already exists.", name);
+		} else if (errno == ENOMEM) {
+			(void) linebuf_printf(reqc, "Out of memory");
+		} else {
+			if (!reqc->errcode)
+				reqc->errcode = EINVAL;
+			(void) linebuf_printf(reqc, "The updtr could not be created.");
+		}
+	}
+
+send_reply:
+	ldmsd_send_req_response(reqc, reqc->line_buf);
+	free(name);
+	free(interval_str);
+	free(auto_interval);
+	free(offset_str);
+	free(push);
+	free(perm_s);
+	return 0;
+}
+
+static int
+tree_cfg_rsp_handler(ldmsd_req_ctxt_t reqc, struct ldmsd_cfgobj_cfg_rsp *rsp,
+					    struct ldmsd_cfgobj_cfg_ctxt *ctxt)
+{
+	if (rsp->errcode) {
+		if (!reqc->errcode)
+			reqc->errcode = rsp->errcode;
+		if (ctxt->num_recv > 1)
+			(void) linebuf_printf(reqc, ",");
+		(void)linebuf_printf(reqc, "%s", rsp->errmsg);
+	}
+	free(rsp->errmsg);
+	free(rsp->ctxt);
+	free(rsp);
+	if (ldmsd_cfgtree_done(ctxt)) {
+		ldmsd_send_req_response(reqc, reqc->line_buf);
+		free(ctxt);
+	}
+	return 0;
+}
+
+int updtr_tree_prdset_state_actor(ev_worker_t src, ev_worker_t dst,
+					ev_status_t status, ev_t e)
+{
+
+	if (EV_OK != status)
+		return 0;
+
+	int rc;
+	ev_t ev;
+	ldmsd_updtr_t updtr;
+	struct prdset_data *src_data = EV_DATA(e, struct prdset_data);
+	struct prdset_data *ev_data;
+
+	for (updtr = ldmsd_updtr_first(); updtr; updtr = ldmsd_updtr_next(updtr)) {
+		ev = ev_new(prdset_state_type);
+		if (!ev) {
+			LDMSD_LOG_ENOMEM();
+			goto enomem;
+		}
+		ev_data = EV_DATA(ev, struct prdset_data);
+		rc = prdset_data_copy(src_data, ev_data);
+		if (rc) {
+			LDMSD_LOG_ENOMEM();
+			ev_put(ev);
+			goto enomem;
+		}
+		ldmsd_updtr_get(updtr);
+		ev_data->obj = &updtr->obj;
+		ev_post(dst, updtr->worker, ev, 0);
+	}
+	prdset_data_cleanup(src_data);
+	ev_put(e);
+	return 0;
+enomem:
+	prdset_data_cleanup(src_data);
+	ev_put(e);
+	return ENOMEM;
+}
+
+extern int ldmsd_cfgobj_tree_del_rsp_handler(ldmsd_req_ctxt_t reqc,
+				struct ldmsd_cfgobj_cfg_rsp *rsp,
+				struct ldmsd_cfgobj_cfg_ctxt *ctxt,
+				enum ldmsd_cfgobj_type type);
+int updtr_tree_cfg_rsp_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e)
+{
+	if (EV_OK != status)
+		return 0;
+
+	struct ldmsd_cfgobj_cfg_rsp *rsp = EV_DATA(e, struct cfgobj_rsp_data)->rsp;
+	struct ldmsd_cfgobj_cfg_ctxt *ctxt = EV_DATA(e, struct cfgobj_rsp_data)->ctxt;
+	struct ldmsd_req_ctxt *reqc = ctxt->reqc;
+	int rc = 0;
+
+	ctxt->num_recv++;
+	if (!rsp)
+		goto out;
+
+	switch (reqc->req_id) {
+	case LDMSD_UPDTR_DEL_REQ:
+		rc = ldmsd_cfgobj_tree_del_rsp_handler(reqc, rsp, ctxt,
+						   LDMSD_CFGOBJ_UPDTR);
+		break;
+	case LDMSD_UPDTR_PRDCR_ADD_REQ:
+	case LDMSD_UPDTR_PRDCR_DEL_REQ:
+	case LDMSD_UPDTR_MATCH_ADD_REQ:
+	case LDMSD_UPDTR_MATCH_DEL_REQ:
+	case LDMSD_UPDTR_START_REQ:
+	case LDMSD_UPDTR_DEFER_START_REQ:
+	case LDMSD_UPDTR_STOP_REQ:
+		rc = tree_cfg_rsp_handler(reqc, rsp, ctxt);
+		break;
+	default:
+		assert(0 == "impossible case");
+		rc = EINTR;
+		goto out;
+	}
+
+	if (rc) {
+		reqc->errcode = EINTR;
+		(void) linebuf_printf(reqc, "LDMSD: failed to construct the response");
+		rc = 0;
+	}
+
+out:
+	ev_put(e);
+	return rc;
+}
+
+int updtr_tree_cfg_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e)
+{
+	if (EV_OK != status)
+		return 0;
+
+	struct ldmsd_req_ctxt *reqc = EV_DATA(e, struct cfg_data)->reqc;
+	int rc = 0;
+
+	switch (reqc->req_id) {
+	case LDMSD_UPDTR_ADD_REQ:
+		rc = tree_updtr_add_handler(reqc);
+		break;
+	case LDMSD_UPDTR_DEL_REQ:
+		rc = tree_updtr_del_handler(reqc);
+		break;
+	case LDMSD_UPDTR_PRDCR_ADD_REQ:
+	case LDMSD_UPDTR_PRDCR_DEL_REQ:
+		rc = tree_updtr_prdcr_filter_handler(reqc);
+		break;
+	case LDMSD_UPDTR_MATCH_ADD_REQ:
+	case LDMSD_UPDTR_MATCH_DEL_REQ:
+		rc = tree_updtr_match_filter_handler(reqc);
+		break;
+	case LDMSD_UPDTR_DEFER_START_REQ:
+	case LDMSD_UPDTR_START_REQ:
+		rc = tree_updtr_start_handler(reqc);
+		break;
+	case LDMSD_UPDTR_STOP_REQ:
+		rc = tree_updtr_stop_handler(reqc);
+		break;
+	default:
+		ldmsd_log(LDMSD_LERROR, "%s doesn't handle req_id %d\n",
+						__func__, reqc->req_id);
+		assert(0);
+		rc = EINTR;
+		goto out;
+	}
+
+out:
+	ev_put(e);
+	return rc;
+}
+
+
+
+

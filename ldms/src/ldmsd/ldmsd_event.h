@@ -72,7 +72,7 @@ ev_worker_t failover_w;
 /* Pool of workers that own the same type of resources */
 ev_worker_t *prdcr_pool;
 ev_worker_t *prdset_pool;
-ev_worker_t updtr_pool;
+ev_worker_t *updtr_pool;
 ev_worker_t strgp_pool;
 ev_worker_t auth_pool;
 
@@ -183,16 +183,33 @@ struct set_del_data {
 };
 
 struct prdset_data {
-	char *set_name;
+	struct ldmsd_prdcr_set *prdset;
+	enum ldmsd_prdcr_set_state state;
 	char *prdcr_name;
 	char *updtr_name;
-	unsigned long update_schedule;
+	struct ldmsd_updtr_schedule update_schedule;
 	char *strgp_name;
+	ldmsd_cfgobj_t obj;
 };
 
 struct updtr_def_data {
 	json_entity_t def;
 	ldmsd_req_ctxt_t reqc;
+};
+
+struct updtr_info {
+	struct ref_s ref;
+	struct ldmsd_updtr_schedule sched;
+	uint8_t push_flags;
+	uint8_t is_auto;
+	struct ldmsd_filter prdcr_list;
+	struct ldmsd_match_queue match_list;
+};
+
+struct updtr_state_data {
+	enum ldmsd_updtr_state state;
+	struct updtr_info *updtr_info;
+	void *obj;
 };
 
 struct prdcr_n_set_filter_data {
@@ -233,6 +250,9 @@ struct dir_data {
 };
 
 struct lookup_data {
+	enum ldms_lookup_status status;
+	int more;
+	ldms_set_t set;
 	ldmsd_prdcr_set_t prdset;
 };
 
@@ -288,6 +308,7 @@ ev_type_t prdcr_xprt_type;
 /* producer sets */
 ev_type_t prdset_update_hint_type;
 ev_type_t prdset_add_type;
+ev_type_t prdset_state_type;
 ev_type_t prdset_strgp_add_type;
 ev_type_t prdset_strgp_rem_type;
 ev_type_t prdset_lookup_type;
@@ -297,6 +318,7 @@ ev_type_t prdset_sched_update_type;
 
 /* Updaters */
 ev_type_t updtr_new_type;
+ev_type_t updtr_state_type;
 ev_type_t updtr_del_type;
 ev_type_t updtr_rem_type;
 ev_type_t updtr_start_type;
@@ -319,14 +341,6 @@ ev_type_t pi_set_query_type;
 ev_type_t ldmsd_set_reg_type;
 ev_type_t ldmsd_set_dereg_type;
 
-struct ldmsd_cfg_ctxt {
-	int is_all;
-	int num_sent;
-	int num_recv;
-	ldmsd_req_ctxt_t reqc;
-	struct ldmsd_sec_ctxt sctxt;
-};
-
 #ifdef LDMSD_FAILOVER
 /* Failover */
 ev_type_t failover_routine_type;
@@ -338,6 +352,5 @@ int ldmsd_worker_init(void);
 struct filt_ent *ldmsd_filter_first(struct filter_data *filt);
 struct filt_ent *ldmsd_filter_next(struct filter_data *filt);
 
-int ldmsd_cfgtree_done(struct ldmsd_cfg_ctxt *ctxt);
-int ldmsd_cfgtree_post2cfgobj(ldmsd_cfgobj_t obj, ev_worker_t dst,
-		ldmsd_req_ctxt_t reqc, struct ldmsd_cfg_ctxt *ctxt);
+void prdset_data_cleanup(struct prdset_data *data);
+int prdset_data_copy(struct prdset_data *src, struct prdset_data *dst);
