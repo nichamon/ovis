@@ -96,6 +96,7 @@ configfile_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e);
 extern int
 configfile_resp_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e);
 
+#ifdef LDMSD_FAILOVER
 extern int
 failover_routine_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e);
 
@@ -107,6 +108,7 @@ failover_cfgobj_rsp_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, 
 
 extern int
 failover_cfg_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e);
+#endif /* LDMSD_FAILOVER */
 
 int ldmsd_worker_init(void)
 {
@@ -186,6 +188,7 @@ int ldmsd_worker_init(void)
 		goto enomem;
 	ev_dispatch(strgp_tree_w, prdset_add_type, strgp_tree_prdset_add_actor);
 
+#ifdef LDMSD_FAILOVER
 	/* failover worker */
 	failover_w = ev_worker_new("failover", default_actor);
 	if (!failover_w)
@@ -194,7 +197,7 @@ int ldmsd_worker_init(void)
 	ev_dispatch(failover_w, cfg_type, failover_cfg_actor);
 	ev_dispatch(failover_w, rsp_type, failover_ib_rsp_actor);
 	ev_dispatch(failover_w, cfgobj_rsp_type, failover_cfgobj_rsp_actor);
-
+#endif /* LDMSD_FAILOVER */
 	return 0;
 enomem:
 	return ENOMEM;
@@ -233,8 +236,10 @@ int ldmsd_ev_init(void)
 
 	prdset_add_type = ev_type_new("prdcr:prdset:add", sizeof(struct prdset_data));
 
+#ifdef LDMSD_FAILOVER
 	failover_routine_type = ev_type_new("failover:routine", sizeof(struct failover_data));
 	failover_xprt_type = ev_type_new("ldms_xprt:failover:xprt_event", sizeof(struct failover_data));
+#endif /* LDMSD_FAILOVER */
 	return 0;
 }
 

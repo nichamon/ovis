@@ -242,11 +242,13 @@ struct update_data {
 	ldms_set_t set;
 };
 
+#ifdef LDMSD_FAILOVER
 typedef struct ldmsd_failover *ldmsd_failover_t;
 struct failover_data {
 	ldmsd_failover_t f;
 	void *ctxt;
 };
+#endif /* LDMSD_FAILOVER */
 
 /* Event Types */
 
@@ -325,9 +327,11 @@ struct ldmsd_cfg_ctxt {
 	struct ldmsd_sec_ctxt sctxt;
 };
 
+#ifdef LDMSD_FAILOVER
 /* Failover */
 ev_type_t failover_routine_type;
 ev_type_t failover_xprt_type;
+#endif /* LDMSD_FAILOVER */
 
 int ldmsd_ev_init(void);
 int ldmsd_worker_init(void);

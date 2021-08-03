@@ -2263,12 +2263,15 @@ int main(int argc, char *argv[])
 
 	if (cfgfile_ctxt.use_failover) {
 		/* failover will be the one starting cfgobjs */
+		assert("failover not supported" == 0);
+#ifdef LDMSD_FAILOVER
 		ret = ldmsd_failover_start();
 		if (ret) {
 			ldmsd_log(LDMSD_LERROR,
 				  "failover_start failed, rc: %d\n", ret);
 			cleanup(100, "failover start failed");
 		}
+#endif /* LDMSD_FAILOVER */
 	} else {
 		/* we can start cfgobjs right away */
 		ret = ldmsd_ourcfg_start_proc();

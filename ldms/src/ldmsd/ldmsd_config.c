@@ -841,12 +841,14 @@ enomem:
 	return ENOMEM;
 }
 
+#ifdef LDMSD_FAILOVER
 int __our_cfgobj_filter(ldmsd_cfgobj_t obj)
 {
 	if (!cfgobj_is_failover(obj) && (obj->perm & LDMSD_PERM_DSTART))
 		return 0;
 	return -1;
 }
+#endif /* LDMSD_FAILOVER */
 
 int cfgobj_start_req(struct deferred_start *d)
 {

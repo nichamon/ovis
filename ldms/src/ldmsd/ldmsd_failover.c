@@ -2687,7 +2687,6 @@ int failover_peercfg_handler(ldmsd_req_ctxt_t reqc)
 	struct fo_peercfg_ctxt *ctxt = calloc(1, sizeof(*ctxt));
 	if (!ctxt)
 		goto enomem;
-	ctxt->x = ldms_xprt_get(f->ax);
 	reqc->ctxt = ctxt;
 
 	for (i = 0; i < ARRAY_LEN(dsts); i++) {
@@ -2695,7 +2694,7 @@ int failover_peercfg_handler(ldmsd_req_ctxt_t reqc)
 		if (!e)
 			goto enomem;
 		EV_DATA(e, struct cfg_data)->reqc = reqc;
-		EV_DATA(e, struct cfg_data)->ctxt = NULL;
+		EV_DATA(e, struct cfg_data)->ctxt = ldms_xprt_get(f->ax);
 		rc = ev_post(failover_w, dsts[i], e, 0);
 		if (rc) {
 			rc = EINTR;

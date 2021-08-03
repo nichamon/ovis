@@ -263,6 +263,7 @@ static int ebusy_handler(ldmsd_req_ctxt_t reqc);
 static int updtr_task_status_handler(ldmsd_req_ctxt_t req_ctxt);
 static int prdcr_hint_tree_status_handler(ldmsd_req_ctxt_t reqc);
 
+#ifdef LDMSD_FAILOVER
 /* these are implemented in ldmsd_failover.c */
 int failover_config_handler(ldmsd_req_ctxt_t req_ctxt);
 int failover_peercfg_start_handler(ldmsd_req_ctxt_t req_ctxt);
@@ -279,6 +280,7 @@ int failover_peercfg_handler(ldmsd_req_ctxt_t req);
 
 int failover_start_handler(ldmsd_req_ctxt_t req_ctxt);
 int failover_stop_handler(ldmsd_req_ctxt_t req_ctxt);
+#endif /* LDMSD_FAILOVER */
 
 static int setgroup_add_handler(ldmsd_req_ctxt_t req_ctxt);
 static int setgroup_mod_handler(ldmsd_req_ctxt_t req_ctxt);
@@ -480,6 +482,7 @@ static struct request_handler_entry request_handler[] = {
 	[LDMSD_SET_DEFAULT_AUTHZ_REQ] = {
 		LDMSD_SET_DEFAULT_AUTHZ_REQ, set_default_authz_handler, XUG
 	},
+#ifdef LDMSD_FAILOVER
 
 	/* FAILOVER user commands */
 	[LDMSD_FAILOVER_CONFIG_REQ] = {
@@ -536,7 +539,7 @@ static struct request_handler_entry request_handler[] = {
 		LDMSD_FAILOVER_PEERCFG_REQ, failover_peercfg_handler,
 		XUG | LDMSD_PERM_FAILOVER_INTERNAL,
 	},
-
+#endif /* LDMSD_FAILOVER */
 	/* SETGROUP */
 	[LDMSD_SETGROUP_ADD_REQ] = {
 		LDMSD_SETGROUP_ADD_REQ, setgroup_add_handler, XUG,
@@ -876,12 +879,14 @@ int ldmsd_handle_request(ldmsd_req_ctxt_t reqc)
 		EV_DATA(ev, struct cfg_data)->reqc = reqc;
 		EV_DATA(ev, struct cfg_data)->ctxt = NULL;
 		break;
+#ifdef LDMSD_FAILOVER
 	case LDMSD_FAILOVER_START_REQ:
 		ev = ev_new(cfg_type);
 		dst = failover_w;
 		EV_DATA(ev, struct cfg_data)->reqc = reqc;
 		EV_DATA(ev, struct cfg_data)->ctxt = NULL;
 		break;
+#endif /* LDMSD_FAILOVER */
 	default:
 		goto traditional;
 	}
