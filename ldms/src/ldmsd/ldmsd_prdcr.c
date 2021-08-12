@@ -353,7 +353,197 @@ void __ldmsd_prdset_lookup_cb(ldms_t xprt, enum ldms_lookup_status status,
 	ev_post(NULL, prd_set->worker, ev, 0);
 }
 
-static int __prdset_updtr_running(ldmsd_prdcr_set_t prdset)
+struct str_list_ent_s {
+	LIST_ENTRY(str_list_ent_s) entry;
+	char str[]; /* '\0' terminated string */
+};
+
+struct ldmsd_group_traverse_ctxt {
+	ldmsd_prdcr_t prdcr;
+	ldmsd_updtr_t updtr;
+	ldmsd_updtr_task_t task;
+	LIST_HEAD(, str_list_ent_s) str_list;
+};
+
+static void updtr_update_cb(ldms_t t, ldms_set_t set, int status, void *arg)
+{
+	uint64_t gn;
+	ldmsd_prdcr_set_t prd_set = arg;
+	int errcode;
+
+	pthread_mutex_lock(&prd_set->lock);
+	gettimeofday(&prd_set->updt_end, NULL);
+#ifdef LDMSD_UPDATE_TIME
+	prd_set->updt_duration = ldmsd_timeval_diff(&prd_set->updt_start,
+							&prd_set->updt_end);
+	__updt_time_put(prd_set->updt_time);
+#endif /* LDMSD_UPDATE_TIME */
+	errcode = LDMS_UPD_ERROR(status);
+	ldmsd_log(LDMSD_LDEBUG, "Update complete for Set %s with status %#x\n",
+					prd_set->inst_name, status);
+	if (errcode) {
+		char *op_s;
+		if (0 == (status & LDMS_UPD_F_PUSH))
+			op_s = "update";
+		else
+			op_s = "push";
+		ldmsd_log(LDMSD_LINFO, "Set %s: %s completing with "
+					"bad status %d\n",
+					prd_set->inst_name, op_s,errcode);
+		goto out;
+	}
+
+	if (!ldms_set_is_consistent(set)) {
+		ldmsd_log(LDMSD_LINFO, "Set %s is inconsistent.\n", prd_set->inst_name);
+		goto set_ready;
+	}
+
+	gn = ldms_set_data_gn_get(set);
+	if (prd_set->last_gn == gn) {
+		ldmsd_log(LDMSD_LINFO, "Set %s oversampled %"PRIu64" == %"PRIu64".\n",
+			  prd_set->inst_name, prd_set->last_gn, gn);
+		goto set_ready;
+	}
+	prd_set->last_gn = gn;
+
+	ldmsd_strgp_ref_t str_ref;
+	LIST_FOREACH(str_ref, &prd_set->strgp_list, entry) {
+		ldmsd_strgp_t strgp = str_ref->strgp;
+
+		ldmsd_strgp_lock(strgp);
+		strgp->update_fn(strgp, prd_set);
+		ldmsd_strgp_unlock(strgp);
+	}
+set_ready:
+	if ((status & LDMS_UPD_F_MORE) == 0)
+		/* No more data pending move prdcr_set state UPDATING --> READY */
+		prd_set->state = LDMSD_PRDCR_SET_STATE_READY;
+out:
+	pthread_mutex_unlock(&prd_set->lock);
+	if (0 == errcode) {
+		ldmsd_log(LDMSD_LDEBUG, "Pushing set %p %s\n",
+			  prd_set->set, prd_set->inst_name);
+		int rc = ldms_xprt_push(prd_set->set);
+		if (rc) {
+			ldmsd_log(LDMSD_LERROR, "Failed to push set %s\n",
+						prd_set->inst_name);
+		}
+	}
+	if (0 == (status & (LDMS_UPD_F_PUSH|LDMS_UPD_F_MORE)))
+		/* Put reference taken before calling ldms_xprt_update. */
+		ldmsd_prdcr_set_ref_put(prd_set);
+	return;
+}
+
+static int
+__grp_iter_cb(ldms_set_t grp, const char *name, void *arg)
+{
+	int len, sz;
+	struct str_list_ent_s *ent;
+	struct ldmsd_group_traverse_ctxt *ctxt = arg;
+
+	len = strlen(name);
+	sz = sizeof(*ent) + len + 1;
+	ent = malloc(sz);
+	if (!ent)
+		return ENOMEM;
+	snprintf(ent->str, len+1, "%s", name);
+	LIST_INSERT_HEAD(&ctxt->str_list, ent, entry);
+	return 0;
+}
+
+static int __prdset_ready(ldmsd_prdcr_set_t prdset, struct updtr_info *info)
+{
+	char *op_s;
+	int rc = 0;
+	int flags;
+	int push_flags = 0;
+	struct ldmsd_group_traverse_ctxt ctxt;
+	struct str_list_ent_s *ent;
+
+	LIST_INIT(&ctxt.str_list);
+	if (!info->push_flags) {
+		op_s = "Updating";
+		prdset->state = LDMSD_PRDCR_SET_STATE_UPDATING;
+		ldmsd_prdcr_set_ref_get(prdset);
+		flags = ldmsd_group_check(prdset->set);
+		if (flags & LDMSD_GROUP_IS_GROUP) {
+			/*
+			 * TODO: send an event to prdcr to schedule an action
+			 * on the group members.
+			 */
+			/* This is a group */
+			ctxt.prdcr = prdset->prdcr;
+//			ctxt.updtr = updtr;
+//			ctxt.task = task;
+			/* __grp_iter_cb() will populate ctxt.str_list */
+			rc = ldmsd_group_iter(prdset->set,
+					      __grp_iter_cb, &ctxt);
+			if (rc)
+				goto out;
+//			LIST_FOREACH(ent, &ctxt.str_list, entry) {
+//				pset = ldmsd_prdcr_set_find(prdset->prdcr, ent->str);
+//				if (!pset)
+//					continue; /* It is OK. Try again next iteration */
+//				if (pset->state == LDMSD_PRDCR_SET_STATE_START) {
+//					/*
+//					 * The lookup callback of the setgroup
+//					 * is received before the DIR_ADD
+//					 * of this set member (pset).
+//					 *
+//					 * Thus, do the lookup here.
+//					 */
+//					rc = ldms_xprt_lookup(pset->prdcr->xprt,
+//							      pset->inst_name,
+//							      LDMS_LOOKUP_BY_INSTANCE,
+//							      __ldmsd_prdset_lookup_cb, pset);
+//					if (rc)
+//						goto out;
+//				}
+//				if (pset->state != LDMSD_PRDCR_SET_STATE_READY)
+//					continue; /* It is OK. The set might not be ready */
+//				rc = schedule_set_updates(pset, task);
+//				if (rc)
+//					goto out;
+//			}
+//			prdset->state = LDMSD_PRDCR_SET_STATE_READY;
+//			/*
+//			 * No metrics in the setgroup, so
+//			 * do not update the setgroup.
+//			 */
+		} else {
+			rc = ldms_xprt_update(prdset->set, updtr_update_cb, prdset);
+		}
+	} else if (0 == (prdset->push_flags & LDMSD_PRDCR_SET_F_PUSH_REG)) {
+		op_s = "Registering push for";
+		if (info->push_flags & LDMSD_UPDTR_F_PUSH_CHANGE)
+			push_flags = LDMS_XPRT_PUSH_F_CHANGE;
+		rc = ldms_xprt_register_push(prdset->set, push_flags,
+					     updtr_update_cb, prdset);
+		if (rc) {
+			/* This message does not repeat */
+			ldmsd_log(LDMSD_LERROR, "Register push error %d Set %s\n",
+						rc, prdset->inst_name);
+		} else {
+			/* Only set the flag if we succeed */
+			prdset->push_flags |= LDMSD_PRDCR_SET_F_PUSH_REG;
+		}
+	}
+out:
+	while ((ent = LIST_FIRST(&ctxt.str_list))) {
+		LIST_REMOVE(ent, entry);
+		free(ent);
+	}
+	if (rc) {
+		ldmsd_log(LDMSD_LINFO, "Synchronous error %d: %s Set %s\n",
+						rc, op_s, prdset->inst_name);
+		if (!info->push_flags)
+			ldmsd_prdcr_set_ref_put(prdset);
+	}
+	return rc;
+}
+
+static int __prdset_updtr_running(ldmsd_prdcr_set_t prdset, struct updtr_info *info)
 {
 	int rc;
 	switch (prdset->state) {
@@ -382,8 +572,10 @@ static int __prdset_updtr_running(ldmsd_prdcr_set_t prdset)
 		}
 		break;
 	case LDMSD_PRDCR_SET_STATE_READY:
+		rc = __prdset_ready(prdset, info);
 		break;
 	default:
+		assert(0 == "Not supported/implemented");
 		break;
 	}
 	return rc;
@@ -395,6 +587,7 @@ int prdset_updtr_state_actor(ev_worker_t src, ev_worker_t dst, ev_status_t statu
 		return 0;
 
 	int rc;
+	struct updtr_info *updtr_info = EV_DATA(e, struct updtr_state_data)->updtr_info;
 	enum ldmsd_updtr_state updtr_state = EV_DATA(e, struct updtr_state_data)->state;
 	ldmsd_prdcr_set_t prdset = EV_DATA(e, struct updtr_state_data)->obj;
 
@@ -403,9 +596,10 @@ int prdset_updtr_state_actor(ev_worker_t src, ev_worker_t dst, ev_status_t statu
 
 	switch (updtr_state) {
 	case LDMSD_UPDTR_STATE_RUNNING:
-		rc = __prdset_updtr_running(prdset);
+		rc = __prdset_updtr_running(prdset, updtr_info);
 		break;
 	default:
+		assert(0 == "not supported/implemented");
 		break;
 	}
 	return rc;
@@ -571,8 +765,6 @@ static void __update_set_info(ldmsd_prdcr_set_t set, ldms_dir_set_t dset)
 	}
 }
 
-extern void __ldmsd_prdset_lookup_cb(ldms_t xprt, enum ldms_lookup_status status,
-				     int more, ldms_set_t set, void *arg);
 static void _add_cb(ldms_t xprt, ldmsd_prdcr_t prdcr, ldms_dir_set_t dset)
 {
 	ldmsd_prdcr_set_t set;

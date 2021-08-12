@@ -87,7 +87,8 @@ extern int
 prdset_state_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e);
 extern int
 prdset_updtr_state_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e);
-
+extern int
+prdset_lookup_complete_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e);
 
 extern int
 updtr_tree_prdset_state_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e);
@@ -190,6 +191,7 @@ int ldmsd_worker_init(void)
 
 		ev_dispatch(prdset_pool[i], prdset_state_type, prdset_state_actor);
 		ev_dispatch(prdset_pool[i], updtr_state_type, prdset_updtr_state_actor);
+		ev_dispatch(prdset_pool[i], lookup_complete_type, prdset_lookup_complete_actor);
 	}
 
 	/* updtr_tree worker */
