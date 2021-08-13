@@ -365,7 +365,8 @@ struct ldmsd_group_traverse_ctxt {
 	LIST_HEAD(, str_list_ent_s) str_list;
 };
 
-static void updtr_update_cb(ldms_t t, ldms_set_t set, int status, void *arg)
+#define SET_COPY_NAME_PREFIX ' '
+static void prdset_update_cb(ldms_t t, ldms_set_t set, int status, void *arg)
 {
 	uint64_t gn;
 	ldmsd_prdcr_set_t prd_set = arg;
@@ -512,14 +513,14 @@ static int __prdset_ready(ldmsd_prdcr_set_t prdset, struct updtr_info *info)
 //			 * do not update the setgroup.
 //			 */
 		} else {
-			rc = ldms_xprt_update(prdset->set, updtr_update_cb, prdset);
+			rc = ldms_xprt_update(prdset->set, prdset_update_cb, prdset);
 		}
 	} else if (0 == (prdset->push_flags & LDMSD_PRDCR_SET_F_PUSH_REG)) {
 		op_s = "Registering push for";
 		if (info->push_flags & LDMSD_UPDTR_F_PUSH_CHANGE)
 			push_flags = LDMS_XPRT_PUSH_F_CHANGE;
 		rc = ldms_xprt_register_push(prdset->set, push_flags,
-					     updtr_update_cb, prdset);
+					     prdset_update_cb, prdset);
 		if (rc) {
 			/* This message does not repeat */
 			ldmsd_log(LDMSD_LERROR, "Register push error %d Set %s\n",
