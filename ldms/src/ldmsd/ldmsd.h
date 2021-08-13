@@ -283,6 +283,7 @@ typedef struct ldmsd_updt_hint_set_list {
 struct ldmsd_updtr_schedule {
 	long intrvl_us;
 	long offset_us;
+	long offset_skew;
 };
 typedef struct ldmsd_updtr *ldmsd_updtr_ptr;
 typedef struct ldmsd_prdcr_set {

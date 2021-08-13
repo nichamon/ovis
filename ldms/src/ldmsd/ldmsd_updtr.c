@@ -117,7 +117,7 @@ enomem:
 	return NULL;
 }
 
-int __post_updtr_state_ev(ldmsd_updtr_t updtr, ldmsd_prdcr_set_t prdset)
+static int __post_updtr_state_ev(ldmsd_updtr_t updtr, ldmsd_prdcr_set_t prdset)
 {
 	struct updtr_info *info;
 	ev_worker_t dst;
@@ -1072,7 +1072,7 @@ ldmsd_updtr_new_with_auth(const char *name, char *interval_str, char *offset_str
 	updtr->sched.offset_us = offset_us;
 
 	updtr->worker = assign_updtr_worker();
-	ldmsd_cfgobj_unlock(&updtr->obj); /* TODO: remote when ready */
+	ldmsd_cfgobj_unlock(&updtr->obj); /* TODO: remove when ready */
 	return updtr;
 einval:
 	rbt_del(cfgobj_trees[LDMSD_CFGOBJ_UPDTR], &updtr->obj.rbn);
@@ -1145,9 +1145,6 @@ int __ldmsd_updtr_start(ldmsd_updtr_t updtr, ldmsd_sec_ctxt_t ctxt)
 	}
 	updtr->obj.perm |= LDMSD_PERM_DSTART;
 
-	/*
-	 * TODO: complete this
-	 */
 	updtr->state = LDMSD_UPDTR_STATE_RUNNING;
 
 
@@ -1904,7 +1901,7 @@ out:
 int updtr_prdset_state_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e)
 {
 	if (EV_OK != status)
-		return 0;
+		goto out;
 
 	int rc;
 	char *s;
@@ -1917,7 +1914,7 @@ int updtr_prdset_state_actor(ev_worker_t src, ev_worker_t dst, ev_status_t statu
 			updtr->obj.name, prdset_data->prdset->inst_name, prdset_data->state);
 
 	if (LDMSD_UPDTR_STATE_RUNNING != updtr->state)
-		return 0;
+		goto out;
 
 	TAILQ_FOREACH(prdcr_filt, &updtr->prdcr_list, entry) {
 		if (prdcr_filt->is_regex) {
@@ -1925,27 +1922,29 @@ int updtr_prdset_state_actor(ev_worker_t src, ev_worker_t dst, ev_status_t statu
 		} else {
 			rc = strcmp(prdcr_filt->str, prdset_data->prdcr_name);
 		}
-		if (rc)
-			goto out;
-
-		if (TAILQ_EMPTY(&updtr->match_list)) {
-			__post_updtr_state_ev(updtr, prdset_data->prdset);
-			goto out;
-		}
-
-		TAILQ_FOREACH(match, &updtr->match_list, entry) {
-			if (LDMSD_NAME_MATCH_INST_NAME == match->selector)
-				s = prdset_data->prdset->inst_name;
-			else
-				s = prdset_data->prdset->schema_name;
-			rc = regexec(&match->regex, s, 0, NULL, 0);
-			if (0 == rc) {
-				/* matched */
+		if (0 == rc) {
+			/* matched */
+			if (TAILQ_EMPTY(&updtr->match_list)) {
 				__post_updtr_state_ev(updtr, prdset_data->prdset);
 				goto out;
 			}
+
+			TAILQ_FOREACH(match, &updtr->match_list, entry) {
+				if (LDMSD_NAME_MATCH_INST_NAME == match->selector)
+					s = prdset_data->prdset->inst_name;
+				else
+					s = prdset_data->prdset->schema_name;
+				rc = regexec(&match->regex, s, 0, NULL, 0);
+				if (0 == rc) {
+					/* matched */
+					__post_updtr_state_ev(updtr,
+							  prdset_data->prdset);
+					goto out;
+				}
+			}
 		}
 	}
+
 out:
 	ldmsd_updtr_put(updtr);
 	prdset_data_cleanup(prdset_data);
@@ -2470,7 +2469,6 @@ tree_cfg_rsp_handler(ldmsd_req_ctxt_t reqc, struct ldmsd_cfgobj_cfg_rsp *rsp,
 int updtr_tree_prdset_state_actor(ev_worker_t src, ev_worker_t dst,
 					ev_status_t status, ev_t e)
 {
-
 	if (EV_OK != status)
 		return 0;
 

@@ -256,10 +256,10 @@ struct lookup_data {
 	ldmsd_prdcr_set_t prdset;
 };
 
-struct update_data {
-	uint8_t is_failed;
-	uint64_t gn;
+struct update_complete_data {
+	int errcode;
 	ldms_set_t set;
+	ldmsd_prdcr_set_t prdset;
 };
 
 #ifdef LDMSD_FAILOVER
