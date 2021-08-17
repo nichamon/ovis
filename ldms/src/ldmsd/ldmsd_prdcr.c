@@ -430,6 +430,7 @@ struct ldmsd_group_traverse_ctxt {
 #define SET_COPY_NAME_PREFIX ' '
 static void prdset_update_cb(ldms_t t, ldms_set_t set, int status, void *arg)
 {
+	ldms_set_t lset;
 	ldmsd_prdcr_set_t prd_set = arg;
 	ev_t ev = ev_new(update_complete_type);
 
@@ -437,11 +438,14 @@ static void prdset_update_cb(ldms_t t, ldms_set_t set, int status, void *arg)
 	ldmsd_log(LDMSD_LDEBUG, "Update complete for Set %s with status %#x\n",
 					prd_set->inst_name, status);
 
-	/*
-	 * TODO: Copy the set; otherwise, the data would mess up
-	 *       when set_array is larger than 1.
-	 */
-	EV_DATA(ev, struct update_complete_data)->set = set;
+	lset = ldms_set_light_copy(set);
+	if (!lset) {
+		LDMSD_LOG_ENOMEM();
+		return;
+	}
+
+	ref_get(&lset->ref, "update_complete_data");
+	EV_DATA(ev, struct update_complete_data)->set = lset;
 	ldmsd_prdcr_set_ref_get(prd_set);
 	EV_DATA(ev, struct update_complete_data)->prdset = prd_set;
 	ev_post(NULL, prd_set->worker, ev, 0);
