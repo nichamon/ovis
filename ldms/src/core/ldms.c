@@ -541,6 +541,9 @@ extern struct ldms_set *__ldms_set_by_id(uint64_t id)
 static
 int __ldms_set_publish(struct ldms_set *set)
 {
+	if (set->flags & LDMS_SET_F_LIGHT)
+		return EINVAL;
+
 	if (set->flags & LDMS_SET_F_PUBLISHED)
 		return EEXIST;
 
@@ -734,6 +737,9 @@ void __ldms_set_info_delete(struct ldms_set_info_list *info)
 static void __destroy_set_no_lock(void *v)
 {
 	struct ldms_set *set = v;
+	if (set->flags & LDMS_SET_F_LIGHT)
+		goto free;
+
 	rbt_del(&del_tree, &set->del_node);
 	mm_free(set->meta);
 	__ldms_set_info_delete(&set->local_info);
@@ -741,11 +747,13 @@ static void __destroy_set_no_lock(void *v)
 	zap_unmap(set->lmap);
 	if (set->rmap)
 		zap_unmap(set->rmap);
+free:
 	free(set);
 }
 
 static void __destroy_set(void *v)
 {
+	struct ldms_set *set;
 	pthread_mutex_lock(&__del_tree_lock);
 	__destroy_set_no_lock(v);
 	pthread_mutex_unlock(&__del_tree_lock);
@@ -1270,6 +1278,18 @@ ldms_set_t ldms_set_new(const char *instance_name, ldms_schema_t schema)
 
 	ldms_set_default_authz(&uid, &gid, &perm, DEFAULT_AUTHZ_READONLY);
 	return ldms_set_new_with_auth(instance_name, schema, uid, gid, perm);
+}
+
+ldms_set_t ldms_set_light_copy(ldms_set_t src)
+{
+	struct ldms_set *set;
+	set = malloc(sizeof(*set));
+	if (!set)
+		return NULL;
+	memcpy(set, src, sizeof(*src));
+	ref_init(&set->ref, __func__, __destroy_set, set);
+	set->flags = LDMS_SET_F_LIGHT;
+	return set;
 }
 
 int ldms_set_config_auth(ldms_set_t set, uid_t uid, gid_t gid, mode_t perm)

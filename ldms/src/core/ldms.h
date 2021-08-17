@@ -303,6 +303,7 @@ typedef void (*ldms_lookup_cb_t)(ldms_t t, enum ldms_lookup_status status,
 #define LDMS_SET_F_LOCAL	0x0004
 #define LDMS_SET_F_REMOTE	0x0008
 #define LDMS_SET_F_PUSH_CHANGE	0x0010
+#define LDMS_SET_F_LIGHT	0x10000 /* Set cannot be published */
 #define LDMS_SET_F_PUBLISHED	0x100000 /* Set is in the set tree. */
 #define LDMS_SET_ID_DATA	0x1000000
 
@@ -1040,6 +1041,11 @@ extern ldms_set_t ldms_set_new(const char *instance_name, ldms_schema_t schema);
 extern uint64_t ldms_set_id(ldms_set_t set);
 
 /**
+ * \brief Copy a set
+ */
+extern ldms_set_t ldms_set_light_copy(ldms_set_t src);
+
+/**
  * \brief Create an LDMS metric set with owner and permission
  *
  * Create a metric set, like ::ldms_set_new(), but with a specified owner \c
@@ -1108,6 +1114,7 @@ int ldms_set_config_auth(ldms_set_t set, uid_t uid, gid_t gid, mode_t perm);
  * \param set The set handle.
  * \retval 0      If succeeded.
  * \retval EEXIST If the set has already been published.
+ * \retval EINVAL If the set cannot be published.
  */
 int ldms_set_publish(ldms_set_t set);
 
