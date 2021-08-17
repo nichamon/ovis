@@ -737,23 +737,24 @@ void __ldms_set_info_delete(struct ldms_set_info_list *info)
 static void __destroy_set_no_lock(void *v)
 {
 	struct ldms_set *set = v;
-	if (set->flags & LDMS_SET_F_LIGHT)
-		goto free;
-
-	rbt_del(&del_tree, &set->del_node);
-	mm_free(set->meta);
-	__ldms_set_info_delete(&set->local_info);
-	__ldms_set_info_delete(&set->remote_info);
-	zap_unmap(set->lmap);
-	if (set->rmap)
-		zap_unmap(set->rmap);
-free:
+	if (set->flags & LDMS_SET_F_LIGHT) {
+		/* This is a light copy of a set */
+		ldms_set_t src = (ldms_set_t)(set->set_id);
+		ref_put(&src->ref, "light_copy");
+	} else {
+		rbt_del(&del_tree, &set->del_node);
+		mm_free(set->meta);
+		__ldms_set_info_delete(&set->local_info);
+		__ldms_set_info_delete(&set->remote_info);
+		zap_unmap(set->lmap);
+		if (set->rmap)
+			zap_unmap(set->rmap);
+	}
 	free(set);
 }
 
 static void __destroy_set(void *v)
 {
-	struct ldms_set *set;
 	pthread_mutex_lock(&__del_tree_lock);
 	__destroy_set_no_lock(v);
 	pthread_mutex_unlock(&__del_tree_lock);
@@ -839,7 +840,10 @@ void ldms_set_put(ldms_set_t s)
 {
 	if (!s)
 		return;
-	ref_put(&s->ref, "__ldms_find_local_set");
+	if (s->flags & LDMS_SET_F_LIGHT)
+		ref_put(&s->ref, "ldms_set_light_copy");
+	else
+		ref_put(&s->ref, "__ldms_find_local_set");
 }
 
 static  void sync_lookup_cb(ldms_t x, enum ldms_lookup_status status, int more,
@@ -1286,9 +1290,11 @@ ldms_set_t ldms_set_light_copy(ldms_set_t src)
 	set = malloc(sizeof(*set));
 	if (!set)
 		return NULL;
+	ref_get(&src->ref, "light_copy");
 	memcpy(set, src, sizeof(*src));
-	ref_init(&set->ref, __func__, __destroy_set, set);
 	set->flags = LDMS_SET_F_LIGHT;
+	set->set_id = (uint64_t)(unsigned long)src;
+	ref_init(&set->ref, __func__, __destroy_set, set);
 	return set;
 }
 
