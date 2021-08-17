@@ -309,10 +309,10 @@ int prdset_update_complete_actor(ev_worker_t src, ev_worker_t dst, ev_status_t s
 	prdset->last_gn = gn;
 
 set_ready:
+	__post_prdset_state_ev(prdset, prdset->worker, strgp_tree_w, NULL);
 	if ((status & LDMS_UPD_F_MORE) == 0)
 		/* No more data pending move prdcr_set state UPDATING --> READY */
 		prdset->state = LDMSD_PRDCR_SET_STATE_READY;
-	__post_prdset_state_ev(prdset, prdset->worker, strgp_tree_w, NULL);
 
 out:
 	if (0 == errcode) {
