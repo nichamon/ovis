@@ -164,7 +164,7 @@ out:
 	return rc;
 }
 
-static void strgp_update_fn(ldmsd_strgp_t strgp, ldmsd_prdcr_set_t prd_set)
+static void strgp_store(ldmsd_strgp_t strgp, ldms_set_t set)
 {
 	if (strgp->state != LDMSD_STRGP_STATE_RUNNING)
 		return;
@@ -172,7 +172,7 @@ static void strgp_update_fn(ldmsd_strgp_t strgp, ldmsd_prdcr_set_t prd_set)
 		strgp->state = LDMSD_STRGP_STATE_STOPPED;
 		return;
 	}
-	strgp->store->store(strgp->store_handle, prd_set->set,
+	strgp->store->store(strgp->store_handle, set,
 			    strgp->metric_arry, strgp->metric_count);
 	if (strgp->flush_interval.tv_sec || strgp->flush_interval.tv_nsec) {
 		struct timespec expiry;
@@ -184,6 +184,11 @@ static void strgp_update_fn(ldmsd_strgp_t strgp, ldmsd_prdcr_set_t prd_set)
 			strgp->store->flush(strgp->store_handle);
 		}
 	}
+}
+
+static void strgp_update_fn(ldmsd_strgp_t strgp, ldmsd_prdcr_set_t prd_set)
+{
+	strgp_store(strgp, prd_set->set);
 }
 
 ldmsd_strgp_t
@@ -751,6 +756,8 @@ int strgp_prdset_state_actor(ev_worker_t src, ev_worker_t dst,
 	TAILQ_FOREACH(prdcr_filt, &strgp->prdcr_list, entry) {
 		rc = regexec(&prdcr_filt->regex, prdset_data->prdcr_name, 0, NULL, 0);
 		if (0 == rc) {
+			strgp_store(strgp, prdset_data->set);
+			goto out;
 		}
 	}
 
