@@ -184,6 +184,7 @@ struct set_del_data {
 
 struct prdset_data {
 	struct ldmsd_prdcr_set *prdset;
+	ldms_set_t set;
 	enum ldmsd_prdcr_set_state state;
 	char *prdcr_name;
 	char *updtr_name;
@@ -229,6 +230,11 @@ struct updtr_data {
 struct strgp_def_data {
 	json_entity_t def;
 	ldmsd_req_ctxt_t reqc;
+};
+
+struct strgp_state_data {
+	enum ldmsd_strgp_state state;
+	void *obj;
 };
 
 struct strgp_filter_data {

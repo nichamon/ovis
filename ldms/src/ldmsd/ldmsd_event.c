@@ -223,6 +223,16 @@ int ldmsd_worker_init(void)
 		goto enomem;
 	ev_dispatch(strgp_tree_w, prdset_add_type, strgp_tree_prdset_add_actor);
 
+	strgp_pool = malloc(ldmsd_num_strgp_workers_get() * sizeof(ev_worker_t));
+	if (!strgp_pool)
+		goto enomem;
+	for (i = 0; i < ldmsd_num_strgp_workers_get(); i++) {
+		snprintf(s, 127, "strgp_w_%d", i + 1);
+		strgp_pool[i] = ev_worker_new(s, default_actor);
+		if (!strgp_pool[i])
+			goto enomem;
+	}
+
 #ifdef LDMSD_FAILOVER
 	/* failover worker */
 	failover_w = ev_worker_new("failover", default_actor);
@@ -340,6 +350,8 @@ void prdset_data_cleanup(struct prdset_data *data)
 		return;
 	if (data->prdset)
 		ldmsd_prdcr_set_ref_put(data->prdset);
+	if (data->set)
+		ldms_set_put(data->set);
 	free(data->prdcr_name);
 	free(data->updtr_name);
 	free(data->strgp_name);

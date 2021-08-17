@@ -506,6 +506,7 @@ struct ldmsd_strgp {
 
 	/** Update function */
 	strgp_update_fn_t update_fn;
+	ev_worker_t worker;
 };
 
 typedef struct ldmsd_set_info {
@@ -1314,6 +1315,7 @@ void ldmsd_xprt_event_free(ldms_xprt_event_t e);
 int ldmsd_num_prdcr_workers_get();
 int ldmsd_num_prdset_workers_get();
 int ldmsd_num_updtr_workers_get();
+int ldmsd_num_strgp_workers_get();
 ev_worker_t assign_prdcr_worker();
 ev_worker_t assign_prdset_worker();
 ev_worker_t assign_updtr_worker();

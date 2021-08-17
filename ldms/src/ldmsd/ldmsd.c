@@ -123,6 +123,7 @@ char *max_mem_sz_str;
 int num_prdcr_workers = -1;
 int num_prdset_workers = -1;
 int num_updtr_workers = 1;
+int num_strgp_workers = 1;
 
 /* NOTE: For determining version by dumping binary string */
 char *_VERSION_STR_ = "LDMSD_VERSION " OVIS_LDMS_VERSION;
@@ -216,6 +217,11 @@ int ldmsd_num_prdset_workers_get()
 int ldmsd_num_updtr_workers_get()
 {
 	return num_updtr_workers;
+}
+
+int ldmsd_num_strgp_workers_get()
+{
+	return num_strgp_workers;
 }
 
 int cfgfile_req_cmp(void *a, const void *b)

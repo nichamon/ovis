@@ -723,10 +723,78 @@ next:
 	}
 }
 
-int strgp_tree_prdset_add_actor(ev_worker_t src, ev_worker_t dst,
+int strgp_prdset_state_actor(ev_worker_t src, ev_worker_t dst,
 					ev_status_t status, ev_t e)
 {
-	/* TODO: implement this */
+	if (EV_OK != status)
+		goto out;
+
+	int rc;
+	struct ldmsd_name_match *prdcr_filt;
+	struct ldmsd_strgp_metric *metric_filt;
+	struct prdset_data *prdset_data = EV_DATA(e, struct prdset_data);
+	ldmsd_strgp_t strgp = (ldmsd_strgp_t)prdset_data->obj;
+
+	ldmsd_log(LDMSD_LINFO, "strgp '%s' received prdset_state from prdset "
+			"'%s' with state %d\n", strgp->obj.name,
+			prdset_data->prdset->inst_name, prdset_data->state);
+
+	if (LDMSD_STRGP_STATE_RUNNING != strgp->state)
+		goto out;
+
+	rc = strcmp(prdset_data->prdset->schema_name, strgp->schema);
+	if (rc) {
+		/* schema not matched */
+		goto out;
+	}
+
+	TAILQ_FOREACH(prdcr_filt, &strgp->prdcr_list, entry) {
+		rc = regexec(&prdcr_filt->regex, prdset_data->prdcr_name, 0, NULL, 0);
+		if (0 == rc) {
+		}
+	}
+
+out:
+	ldmsd_strgp_put(strgp);
+	prdset_data_cleanup(prdset_data);
 	ev_put(e);
 	return 0;
+}
+
+int strgp_tree_prdset_state_actor(ev_worker_t src, ev_worker_t dst,
+					ev_status_t status, ev_t e)
+{
+	if (EV_OK != status)
+		return 0;
+
+	int rc;
+	ev_t ev;
+	ldmsd_strgp_t strgp;
+	struct prdset_data *src_data = EV_DATA(e, struct prdset_data);
+	struct prdset_data *ev_data;
+
+	for (strgp = ldmsd_strgp_first(); strgp; strgp = ldmsd_strgp_next(strgp)) {
+		ev = ev_new(prdset_state_type);
+		if (!ev) {
+			LDMSD_LOG_ENOMEM();
+			goto enomem;
+		}
+		ev_data = EV_DATA(ev, struct prdset_data);
+		rc = prdset_data_copy(src_data, ev_data);
+		if (rc) {
+			LDMSD_LOG_ENOMEM();
+			ev_put(ev);
+			goto enomem;
+		}
+		ldmsd_strgp_get(strgp);
+		ev_data->obj = &strgp->obj;
+		ev_post(dst, strgp->worker, ev, 0);
+	}
+	prdset_data_cleanup(src_data);
+	ev_put(e);
+	return 0;
+enomem:
+	prdset_data_cleanup(src_data);
+	ev_put(e);
+	return ENOMEM;
 }
