@@ -3407,8 +3407,8 @@ int prdcr_tree_cfg_actor(ev_worker_t src, ev_worker_t dst,
 		rc = tree_failover_cfgprdcr_handler(reqc, ctxt);
 		break;
 	default:
-		ldmsd_log(LDMSD_LERROR, "%s not support req_id %d\n",
-						__func__, reqc->req_id);
+		ldmsd_log(LDMSD_LERROR, "%s not support '%s'\n",
+				__func__, ldmsd_req_id2str(reqc->req_id));
 		rc = ENOTSUP;
 		goto out;
 	}
