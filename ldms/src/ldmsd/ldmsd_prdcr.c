@@ -648,7 +648,7 @@ out:
 
 int prdset_state_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t e)
 {
-	int rc;
+	int rc = 0;
 	struct prdset_state_data *prdset_data = EV_DATA(e, struct prdset_state_data);
 	struct ldmsd_prdcr_set *prdset = (struct ldmsd_prdcr_set *)prdset_data->obj;
 
@@ -710,7 +710,11 @@ int prdset_state_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_
 	}
 	return 0;
 sched:
-	rc = schedule_update(prdset);
+	if (!prdset->updtr_name) {
+		/* The updater assigned to the producer set has stopped. do nothing! */
+	} else {
+		rc = schedule_update(prdset);
+	}
 out:
 	return rc;
 }
@@ -755,19 +759,15 @@ __prdset_unassign_updtr(ldmsd_prdcr_set_t prdset, struct updtr_info *updtr_info)
 		goto out;
 	}
 
-	if (!(prdset->push_flags && LDMSD_PRDCR_SET_F_PUSH_REG)) {
-		/*
-		 * nothing to do if it is not in the push mode.
-		 */
-		return 0;
+	if (prdset->push_flags && LDMSD_PRDCR_SET_F_PUSH_REG) {
+		rc = ldms_xprt_cancel_push(prdset->set);
+		if (rc) {
+			ldmsd_log(LDMSD_LINFO, "Synchronous error %d: "
+					"canceling push for Set %s\n",
+					rc, prdset->inst_name);
+		}
+		prdset->push_flags &= ~LDMSD_PRDCR_SET_F_PUSH_REG;
 	}
-
-	rc = ldms_xprt_cancel_push(prdset->set);
-	if (rc) {
-		ldmsd_log(LDMSD_LINFO, "Synchronous error %d: canceling push for Set %s\n",
-							rc, prdset->inst_name);
-	}
-	prdset->push_flags &= ~LDMSD_PRDCR_SET_F_PUSH_REG;
 
 	free(prdset->updtr_name);
 	prdset->updtr_name = NULL;
