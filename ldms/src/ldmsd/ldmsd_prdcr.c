@@ -223,7 +223,7 @@ int prdset_update_complete_actor(ev_worker_t src, ev_worker_t dst, ev_status_t s
 
 	int rc = 0;
 	uint64_t gn;
-	uint8_t free_snapshot = 1;
+	uint8_t free_snapshot = 0;
 	struct prdset_info *prdset_info;
 	ldms_set_t snapshot = EV_DATA(e, struct update_complete_data)->set;
 	ldmsd_prdcr_set_t prdset = EV_DATA(e, struct update_complete_data)->prdset;
@@ -242,6 +242,8 @@ int prdset_update_complete_actor(ev_worker_t src, ev_worker_t dst, ev_status_t s
 		goto out;
 	}
 
+	assert(snapshot);
+	free_snapshot = 1;
 	if (prdset->state == LDMSD_PRDCR_SET_STATE_DELETED)
 		goto out;
 
@@ -582,10 +584,14 @@ static void prdset_update_cb(ldms_t t, ldms_set_t set, int status, void *arg)
 	ldmsd_log(LDMSD_LDEBUG, "%s[%ld]: Update complete for Set %s with status %#x\n",
 				thr_name, thr, prd_set->inst_name, LDMS_UPD_ERROR(status));
 
-	lset = ldms_set_light_copy(set);
-	if (!lset) {
-		LDMSD_LOG_ENOMEM();
-		return;
+	if (LDMS_UPD_ERROR(status)) {
+		lset = NULL;
+	} else {
+		lset = ldms_set_light_copy(set);
+		if (!lset) {
+			LDMSD_LOG_ENOMEM();
+			return;
+		}
 	}
 
 	ldmsd_prdcr_set_ref_get(prd_set, "update_complete");
