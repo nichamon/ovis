@@ -18,6 +18,14 @@ if ENABLE_COLL
 SUBDIRS += coll
 endif
 
+if ENABLE_OVIS_EV
+SUBDIRS += ovis_ev
+endif
+
+if ENABLE_OVIS_LOG
+SUBDIRS += ovis_log
+endif
+
 if ENABLE_MMALLOC
 SUBDIRS += mmalloc
 endif
@@ -28,10 +36,6 @@ endif
 
 if ENABLE_OVIS_EVENT
 SUBDIRS += ovis_event
-endif
-
-if ENABLE_OVIS_EV
-SUBDIRS += ovis_ev
 endif
 
 SUBDIRS += ovis_ref

@@ -82,6 +82,7 @@ OPTION_INCLUDE_FLAGS([OVIS],[ \
 	lib/src/ovis_ev \
 	lib/src/ovis_event \
 	lib/src/ovis_json \
+	lib/src/ovis_log \
 	lib/src/zap \
 	lib/src/mmalloc \
 	ldms/src \
@@ -102,6 +103,7 @@ OPTION_LIB_FLAGS([OVIS],[ \
 	lib/src/ovis_ev \
 	lib/src/ovis_event \
 	lib/src/ovis_json \
+	lib/src/ovis_log \
 	lib/src/zap \
 	lib/src/mmalloc \
 	ldms/src/core \
@@ -125,6 +127,7 @@ OPTION_DEFAULT_ENABLE([mmalloc], [ENABLE_MMALLOC])
 OPTION_DEFAULT_ENABLE([ovis_ctrl], [ENABLE_OVIS_CTRL])
 OPTION_DEFAULT_ENABLE([ovis_util], [ENABLE_OVIS_UTIL])
 OPTION_DEFAULT_ENABLE([ovis_auth], [ENABLE_OVIS_AUTH])
+OPTION_DEFAULT_ENABLE([ovis_log], [ENABLE_OVIS_LOG])
 OPTION_DEFAULT_ENABLE([zap], [ENABLE_ZAP])
 OPTION_DEFAULT_DISABLE([rdma], [ENABLE_RDMA])
 OPTION_DEFAULT_DISABLE([nola], [ENABLE_NOLA])
@@ -920,6 +923,7 @@ lib/src/ovis_util/Makefile
 lib/src/ovis_auth/Makefile
 lib/src/ovis_auth/ovis-auth.sh
 lib/src/ovis_ref/Makefile
+lib/src/ovis_log/Makefile
 lib/src/zap/Makefile
 lib/src/zap/rdma/Makefile
 lib/src/zap/fabric/Makefile
