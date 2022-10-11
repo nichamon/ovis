@@ -50,6 +50,7 @@
 
 #include <assert.h>
 #include <limits.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/errno.h>
@@ -60,56 +61,129 @@
 
 #include "ovis_log.h"
 
-ev_worker_t logger_w;
-ev_type_t log_type;
-int is_init;
-enum ovis_loglevel log_level_thr = OVIS_LERROR;
-FILE *log_fp;
-char *progname;
+static ev_worker_t logger_w;
+static ev_type_t log_type;
+static int is_init;
+static FILE *log_fp;
+static int default_modes = OVIS_LOG_M_DT;
+static char *progname;
 
-int stdout_fd_cache;
-int stderr_fd_cache;
-FILE *stdout_cache;
-FILE *stderr_cache;
+static struct ovis_log_s default_log = {
+	.name = "",
+	.desc = "The defaul log subsystem",
+	.level = OVIS_LERROR | OVIS_LCRITICAL,
+	.ref_count = 1,
+};
+
+static int stdout_fd_cache;
+static int stderr_fd_cache;
+static FILE *stdout_cache;
+static FILE *stderr_cache;
+
+static int subsys_cmp(void *a, const void *b)
+{
+	return strcmp(a, b);
+}
+
+static struct rbt subsys_tree;
+static pthread_mutex_t subsys_tree_lock = PTHREAD_MUTEX_INITIALIZER;
 
 #define OVIS_DEFAULT_FILE_PERM 0600
 
 struct log_data {
 	enum op_type {
 		OVIS_LOG_O_LOG = 1,
+		OVIS_LOG_O_OPEN,
 		OVIS_LOG_O_CLOSE,
 	} type;
 	uint64_t level; /* feature|level */
 	char *msg;
+	ovis_log_t log;
 	struct timeval tv;
 	struct tm tm;
 };
 
 const char* ovis_loglevel_names[] = {
-	LOGLEVELS(OVIS_STR_WRAP)
+	[OVIS_LQUIET] = "QUIET",
+	[OVIS_LDEBUG] = "DEBUG",
+	[OVIS_LINFO]  = "INFO",
+	[OVIS_LWARN]  = "WARNING",
+	[OVIS_LERROR] = "ERROR",
+	[OVIS_LCRIT]  = "CRITICAL",
+	[OVIS_LALWAYS] = "ALWAYS",
 	NULL
 };
 
-int ovis_loglevel_set(char *verbose_level)
+struct ovis_loglevel_s {
+	int value;
+	const char *name;
+};
+/*
+ * The log level order in the table _must_ be from the least severity to the most severity.
+ */
+struct ovis_loglevel_s level_tbl[] = {
+		{ OVIS_LDEBUG,	"DEBUG" },
+		{ OVIS_LINFO,	"INFO" },
+		{ OVIS_LWARN,	"WARNING" },
+		{ OVIS_LERROR,	"ERROR" },
+		{ OVIS_LCRIT,	"CRITICAL" },
+		{ 0, NULL },
+};
+
+static int is_level_valid(int level)
 {
-	int level = -1;
-	if (0 == strcmp(verbose_level, "QUIET")) {
-		level = OVIS_LLASTLEVEL;
+	return (!level || !(level & (~OVIS_ALL_LEVELS)));
+}
+
+static int is_mode_valid(int flags)
+{
+	return ((flags == OVIS_LOG_M_DT) || (flags == OVIS_LOG_M_TS));
+}
+
+static ovis_log_t __find_log(const char *subsys_name)
+{
+	ovis_log_t log = NULL;
+	struct rbn *rbn = rbt_find(&subsys_tree, subsys_name);
+	if (rbn)
+		log = container_of(rbn, struct ovis_log_s, rbn);
+	return log;
+}
+
+int ovis_log_set_level(const char *name, int level)
+{
+	ovis_log_t log;
+	if (!is_level_valid(level))
+		return EINVAL;
+	if (!name) {
+		log = &default_log;
 	} else {
-		level = ovis_str_to_loglevel(verbose_level);
+		log = __find_log(name);
+		if (!log)
+			return ENOENT;
 	}
-	if (level < 0)
-		return level;
-	log_level_thr = level;
+	log->level = level;
 	return 0;
 }
 
-enum ovis_loglevel ovis_loglevel_get()
+int ovis_log_get_level(ovis_log_t mylog)
 {
-	return log_level_thr;
+	return mylog->level;
 }
 
-int ovis_loglevel_to_syslog(enum ovis_loglevel level)
+int ovis_log_get_level_by_name(const char *name)
+{
+	ovis_log_t log;
+	if (!name) {
+		log = &default_log;
+	} else {
+		log = __find_log(name);
+		if (!log)
+			return -ENOENT;
+	}
+	return log->level;
+}
+
+static int __log_level_to_syslog(int level)
 {
 	switch (level) {
 	case OVIS_LDEBUG: return LOG_DEBUG;
@@ -117,143 +191,400 @@ int ovis_loglevel_to_syslog(enum ovis_loglevel level)
 	case OVIS_LWARNING: return LOG_WARNING;
 	case OVIS_LERROR: return LOG_ERR;
 	case OVIS_LCRITICAL: return LOG_CRIT;
-	case OVIS_LALL: return LOG_ALERT;
+	case OVIS_LALWAYS: return LOG_ALERT;
 	default:
 		return LOG_ERR;
 	}
 }
 
-enum ovis_loglevel ovis_str_to_loglevel(const char *level_s)
+static int __str_to_loglevel(const char *level_s)
 {
-	int i;
-	for (i = 0; i < OVIS_LLASTLEVEL; i++)
-		if (0 == strcasecmp(level_s, ovis_loglevel_names[i]))
-			return i;
-	if (strcasecmp(level_s,"QUIET") == 0) {
-		return OVIS_LALL;
-	}
-	if (strcasecmp(level_s,"ALWAYS") == 0) {
-		return OVIS_LALL;
-	}
-	if (strcasecmp(level_s,"CRIT") == 0) {
+	if (strcasecmp(level_s, "QUIET") == 0) {
+		return OVIS_LQUIET;
+	} else if (strcasecmp(level_s, "ALWAYS") == 0) {
+		return OVIS_LALWAYS;
+	} else if ((strcasecmp(level_s, "CRIT") == 0) ||
+			(strcasecmp(level_s, "CRITICAL") == 0)) {
 		return OVIS_LCRITICAL;
+	} else if (strcasecmp(level_s, "ERROR") == 0) {
+		return OVIS_LERROR;
+	} else if ((strcasecmp(level_s, "WARN") == 0) ||
+			(strcasecmp(level_s, "WARNING") == 0)) {
+		return OVIS_LWARN;
+	} else if (strcasecmp(level_s, "INFO") == 0) {
+		return OVIS_LINFO;
+	} else if (strcasecmp(level_s, "DEBUG") == 0) {
+		return OVIS_LDEBUG;
+	} else {
+		return -EINVAL;
 	}
-	return OVIS_LNONE;
 }
 
-const char *ovis_loglevel_to_str(enum ovis_loglevel level)
+static int __get_bit(int level)
 {
-	if ((level >= OVIS_LDEBUG) && (level < OVIS_LLASTLEVEL))
-		return ovis_loglevel_names[level];
-	return "OVIS_LNONE";
+	int counter = -1;
+	while (level > 0) {
+		level = level >> 1;
+		counter++;
+	}
+	return counter;
 }
 
-FILE *__log_open(const char *path)
+int ovis_log_str_to_level(const char *level_s)
+{
+	int level = 0;
+	int i, rc = 0;
+	char *s, *ptr, *tok;
+	struct ovis_loglevel_s *l;
+
+	if (!strchr(level_s, ',')) {
+		/*
+		 * A single log level name is given.
+		 */
+		level = __str_to_loglevel(level_s);
+		if (level < 0) {
+			/*
+			 * Unrecognized level name
+			 */
+			rc = level;
+			goto err;
+		} else if (level == OVIS_LQUIET) {
+			/* QUIET is given. Return immediately. */
+		} else {
+			/*
+			 * A log level higher than QUIET is given.
+			 * Iterate through all levels that are equal or higher
+			 * than the given level and return the bitwise-or of the values.
+			 */
+			i = __get_bit(level);
+			l = &level_tbl[i+1];
+			while (l->name) {
+				level |= l->value;
+				l++;
+			}
+		}
+		return level;
+	}
+
+	s = strdup(level_s);
+	if (!s)
+		return -ENOMEM;
+	for (tok = strtok_r(s, ",", &ptr); tok; tok = strtok_r(NULL, ",", &ptr)) {
+		rc = __str_to_loglevel(tok);
+		if (rc < 0)
+			goto err;
+		level |= rc;
+	}
+	free(s);
+	return level;
+err:
+	free(s);
+	return rc;
+}
+
+char *ovis_log_level_to_str(int level)
+{
+	if (!is_level_valid(level))
+		return NULL;
+
+	int count = 0;
+	struct ovis_loglevel_s *l;
+	size_t cnt = 0;
+	char *str = malloc(128);
+	if (!str) {
+		errno = ENOMEM;
+		goto out;
+	}
+	if (level == OVIS_LQUIET) {
+		sprintf(str, "QUIET");
+		goto out;
+	}
+
+	l = &level_tbl[0];
+	while (l->name) {
+		if (!(level & l->value))
+			goto next;
+		if (!count)
+			cnt += sprintf(&str[cnt], "%s", l->name);
+		else
+			cnt += sprintf(&str[cnt], ",%s", l->name);
+		count++;
+	next:
+		l++;
+	}
+	if (count == 1)
+		cnt += sprintf(&str[cnt], ",");
+out:
+	return str;
+}
+
+static void __free_log(ovis_log_t log)
+{
+	free((char *)log->name);
+	free((char *)log->desc);
+	free(log);
+}
+
+static ovis_log_t __ovis_log_get(ovis_log_t log)
+{
+	__sync_fetch_and_add(&log->ref_count, 1);
+	return log;
+}
+
+static void __ovis_log_put(ovis_log_t log)
+{
+	if (0 == __sync_sub_and_fetch(&log->ref_count, 1)) {
+		pthread_mutex_lock(&subsys_tree_lock);
+		rbt_del(&subsys_tree, &log->rbn);
+		pthread_mutex_unlock(&subsys_tree_lock);
+		__free_log(log);
+	}
+}
+
+void ovis_log_destroy(ovis_log_t log)
+{
+	__ovis_log_put(log);
+}
+
+ovis_log_t ovis_log_create(const char *subsys_name, const char *desc)
+{
+	ovis_log_t log;
+
+	if (!subsys_name || !desc) {
+		errno = EINVAL;
+		return NULL;
+	}
+
+	log = __find_log(subsys_name);
+	if (log) {
+		errno = EEXIST;
+		return NULL;
+	}
+	log = malloc(sizeof(*log));
+	if (!log) {
+		errno = ENOMEM;
+		return NULL;
+	}
+	log->name = strdup(subsys_name);
+	if (!log->name) {
+		errno = ENOMEM;
+		goto free_log;
+	}
+	log->desc = strdup(desc);
+	if (!log->desc) {
+		errno = ENOMEM;
+		goto free_log;
+	}
+	log->ref_count = 1;
+	log->level = default_log.level;
+	rbn_init(&log->rbn, (void *)log->name);
+	pthread_mutex_lock(&subsys_tree_lock);
+	rbt_ins(&subsys_tree, &log->rbn);
+	pthread_mutex_unlock(&subsys_tree_lock);
+	return log;
+free_log:
+	__free_log(log);
+	return NULL;
+}
+
+static FILE *__log_open(const char *path)
 {
 	FILE *f;
 	if (strcasecmp(path,"syslog") == 0) {
-		ovis_log(OVIS_LDEBUG, "Printing messages to syslog.\n");
+		ovis_log(NULL, OVIS_LDEBUG,
+				"Printing messages to Syslog.\n");
 		openlog(progname, LOG_NDELAY|LOG_PID, LOG_DAEMON);
 		return OVIS_LOG_SYSLOG;
 	}
 
 	f = fopen_perm(path, "a", OVIS_DEFAULT_FILE_PERM);
 	if (!f) {
-		ovis_log(OVIS_LERROR, "Could not open the log file named '%s'\n",
-							path);
+		ovis_log(NULL, OVIS_LERROR, "Could not open the "
+					"log file named '%s'\n", path);
 		errno = EINVAL;
 		return NULL;
 	}
 	int fd = fileno(f);
 	if (dup2(fd, 1) < 0) {
-		ovis_log(OVIS_LERROR, "Cannot redirect log to %s\n",
-						path);
+		ovis_log(NULL, OVIS_LERROR,
+				"Cannot redirect log to %s\n", path);
 		errno = EINTR;
 		return NULL;
 	}
 	if (dup2(fd, 2) < 0) {
-		ovis_log(OVIS_LERROR, "Cannot redirect log to %s\n",
-						path);
+		ovis_log(NULL, OVIS_LERROR,
+				"Cannot redirect log to %s\n", path);
 		errno = EINTR;
 		return NULL;
 	}
 	return f;
 }
 
-int __log_close()
+static int __log_reopen(const char *path)
 {
-	fflush(log_fp);
-	dup2(stdout_fd_cache, 1);
-	dup2(stderr_fd_cache, 2);
+	int rc;
+	if (!log_fp) {
+		log_fp = __log_open(path);
+		if (!log_fp) {
+			rc = errno;
+			ovis_log(NULL, OVIS_LERROR, "Failed to open the log "
+					"file at %s. Error %d\n", path, rc);
+			return rc;
+		}
+	} else {
+		FILE *fp_bk = log_fp;
+		fflush(log_fp);
+		log_fp = __log_open(path);
+		if (!log_fp) {
+			/* Fall back to the previous log. */
+			rc = errno;
+			log_fp = fp_bk;
+			ovis_log(NULL, OVIS_LERROR, "Failed to open the log "
+					"file at %s. Error %d\n", path, rc);
+			return rc;
+		}
+		fclose(fp_bk);
+	}
+	stdout = stderr = log_fp;
+	return 0;
+}
 
-	fclose(log_fp);
+static int __log_close()
+{
+	if (log_fp == OVIS_LOG_SYSLOG) {
+		closelog();
+	} else {
+		fflush(log_fp);
+		dup2(stdout_fd_cache, 1);
+		dup2(stderr_fd_cache, 2);
+		fclose(log_fp);
+	}
 	log_fp = stdout = stdout_cache;
 	stderr = stderr_cache;
 	return 0;
 }
 
-static int log_time_sec = -1;
-int __log(enum ovis_loglevel level, char *msg, struct timeval *tv, struct tm *tm)
+static int __log(ovis_log_t log, int level, char *msg,
+			    struct timeval *tv, struct tm *tm)
 {
 	if (log_fp == OVIS_LOG_SYSLOG) {
-		syslog(ovis_loglevel_to_syslog(level), "%s", msg);
+		syslog(__log_level_to_syslog(level), "%s: %s", log->name, msg);
 		return 0;
 	}
 
-	if (log_time_sec) {
-		fprintf(log_fp, "%lu.%06lu: ", tv->tv_sec, tv->tv_usec);
-	} else {
+	int rc;
+	FILE *f;
+	if (!log_fp)
+		f = stdout;
+	else
+		f = log_fp;
+	if (default_modes & OVIS_LOG_M_TS) {
+		rc = fprintf(f, "%lu.%06lu:", tv->tv_sec, tv->tv_usec);
+	} else if (default_modes & OVIS_LOG_M_DT) {
 		char dtsz[200];
 		if (strftime(dtsz, sizeof(dtsz), "%a %b %d %H:%M:%S %Y", tm))
-			fprintf(log_fp, "%s: ", dtsz);
+			rc = fprintf(f, "%s:", dtsz);
 	}
+	if (rc < 0)
+		return rc;
 
-	if (level < OVIS_LALL) {
-		fprintf(log_fp, "%-10s: ", ovis_loglevel_names[level]);
-	}
+	/* Print the level name */
+	rc = fprintf(f, "%9s :", ((level == OVIS_LALWAYS)?"":ovis_loglevel_names[level]));
+	if (rc < 0)
+		return rc;
 
-	fprintf(log_fp, "%s", msg);
-
+	rc = fprintf(f, " %s : %s", log->name, msg);
+	if (rc < 0)
+		return rc;
 	return 0;
 }
 
-int log_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t ev)
+static int log_actor(ev_worker_t src, ev_worker_t dst, ev_status_t status, ev_t ev)
 {
-	enum ovis_loglevel level = EV_DATA(ev, struct log_data)->level;
-	char *msg = EV_DATA(ev, struct log_data)->msg;
-	struct timeval *tv = &EV_DATA(ev, struct log_data)->tv;
-	struct tm *tm = &EV_DATA(ev, struct log_data)->tm;
+	int level;
+	char *msg;
+	struct timeval *tv;
+	struct tm *tm;
 	enum op_type type = EV_DATA(ev, struct log_data)->type;
-	int rc;
+	ovis_log_t log;
+	char *path;
 
 	switch (type) {
 	case OVIS_LOG_O_LOG:
-		rc = __log(level, msg, tv, tm);
-		if (0 == ev_pending(logger_w))
-			fflush(log_fp);
+		level = EV_DATA(ev, struct log_data)->level;
+		msg = EV_DATA(ev, struct log_data)->msg;
+		tv = &EV_DATA(ev, struct log_data)->tv;
+		tm = &EV_DATA(ev, struct log_data)->tm;
+		log = EV_DATA(ev, struct log_data)->log;
+
+		(void) __log(log, level, msg, tv, tm);
+		if (0 == ev_pending(logger_w)) {
+			if (log_fp != OVIS_LOG_SYSLOG)
+				fflush(log_fp);
+		}
 		free(msg);
+		__ovis_log_put(log);
+		break;
+	case OVIS_LOG_O_OPEN:
+		path = EV_DATA(ev, struct log_data)->msg;
+		(void) __log_reopen(path);
+		free(path);
 		break;
 	case OVIS_LOG_O_CLOSE:
 		__log_close();
 		break;
 	default:
-		ovis_log(OVIS_LCRITICAL, "ovis_log: Unrecognized operation %d\n", type);
+		ovis_log(NULL, OVIS_LCRITICAL,
+				"Unrecognized ovis_log's operation %d\n", type);
 		assert(0);
 		break;
 	}
 
 	ev_put(ev);
-	return rc;
+	return 0;
 }
 
-int ovis_log_init(const char *name)
+static int __cache_stdout_stderr()
 {
-	if (is_init)
+	int rc;
+	stdout_cache = stdout;
+	stderr_cache = stderr;
+
+	rc = dup2(1, stdout_fd_cache);
+	if (rc) {
+		ovis_log(NULL, OVIS_LERROR,
+				"Failed to cache stdout original fd. "
+						  "Error %d\n", rc);
+		return rc;
+	}
+	rc = dup2(2, stderr_fd_cache);
+	if (rc) {
+		ovis_log(NULL, OVIS_LERROR,
+				"Failed to cache stderr original fd."
+						  "Error %d\n", rc);
+		return rc;
+	}
+	return 0;
+}
+
+int ovis_log_init(const char *name, int default_level, int modes)
+{
+	if (is_init) {
+		/* The worker has been initialized already. Do nothing. */
 		return 0;
+	}
 
 	int rc;
 	int need_free = 0;
 	char s[PATH_MAX];
+
+	if (!is_level_valid(default_level))
+		return EINVAL;
+
+	if (!is_mode_valid(modes))
+		return EINVAL;
+
+	default_modes = modes;
 	if (name) {
 		progname = strdup(name);
 		if (!progname)
@@ -263,7 +594,15 @@ int ovis_log_init(const char *name)
 		progname = "";
 	}
 
-	log_fp = stdout;
+	default_log.name = progname;
+	if (!default_log.name) {
+		rc = ENOMEM;
+		goto err;
+	}
+
+	default_log.level = default_level;
+
+	/* Set up the worker */
 	snprintf(s, PATH_MAX, "%s:ovis_log", progname);
 	log_type = ev_type_new(s, sizeof(struct log_data));
 	if (!log_type) {
@@ -276,49 +615,103 @@ int ovis_log_init(const char *name)
 		rc = ENOMEM;
 		goto err;
 	}
+	rbt_init(&subsys_tree, subsys_cmp);
 	is_init = 1;
 	return 0;
 err:
 	if (need_free)
 		free(progname);
+	if (default_log.name[0] != '\0')
+		free((char *)default_log.name);
 	free(log_type);
 	return rc;
+}
+
+void ovis_log_set_mode(int modes)
+{
+	default_modes = modes;
 }
 
 /** return a file pointer or a special syslog pointer */
 int ovis_log_open(const char *path)
 {
-	int rc;
-
-	stdout_cache = stdout;
-	stderr_cache = stderr;
-	rc = dup2(1, stdout_fd_cache);
-	if (rc) {
-		ovis_log(OVIS_LERROR, "Failed to cache stdout original fd. "
-							  "Error %d\n", rc);
-		return rc;
-	}
-	rc = dup2(2, stderr_fd_cache);
-	if (rc) {
-		ovis_log(OVIS_LERROR, "Failed to cache stderr original fd."
-							  "Error %d\n", rc);
-		return rc;
-	}
+	int rc = 0;
 
 	if (!path)
 		return EINVAL;
 
-	log_fp = __log_open(path);
-	if (!log_fp) {
-		rc = errno;
-		return rc;
+	if (!stdout_cache) {
+		/*
+		 * The original stdout and stderr have never been cached.
+		 * Cache them here.
+		 */
+		rc = __cache_stdout_stderr();
+		if (rc)
+			return rc;
 	}
 
-	stdout = stderr = log_fp;
-	return 0;
+	if (!logger_w) {
+		/*
+		 * No log worker.
+		 */
+		log_fp = __log_open(path);
+		if (!log_fp) {
+			rc = errno;
+			return rc;
+		}
+		stdout = stderr = log_fp;
+	} else {
+		/*
+		 * Post the open event to the worker's queue.
+		 */
+		ev_t open_ev;
+		char *s;
+
+		s = strdup(path);
+		if (!s)
+			return ENOMEM;
+
+		open_ev = ev_new(log_type);
+		if (!open_ev) {
+			free(s);
+			return ENOMEM;
+		}
+
+		EV_DATA(open_ev, struct log_data)->type = OVIS_LOG_O_OPEN;
+		EV_DATA(open_ev, struct log_data)->msg = s;
+		rc = ev_post(NULL, logger_w, open_ev, NULL);
+	}
+	return rc;
 }
 
-void ovis_vlog(enum ovis_loglevel level, const char *fmt, va_list ap)
+int ovis_log_flush()
+{
+	return fflush(log_fp);
+}
+
+int ovis_log_close()
+{
+	ev_t close_ev;
+	int rc;
+
+	if (!logger_w) {
+		/*
+		 * No log workers. Close the log file now.
+		 */
+		rc = __log_close();
+	} else {
+		close_ev = ev_new(log_type);
+		EV_DATA(close_ev, struct log_data)->type = OVIS_LOG_O_CLOSE;
+		rc = ev_post(NULL, logger_w, close_ev, NULL);
+	}
+	return rc;
+}
+
+int ovis_log_rotate(const char *path){
+	return ENOSYS;
+}
+
+int ovis_vlog(ovis_log_t log, int level, const char *fmt, va_list ap)
 {
 	ev_t log_ev;
 	char *msg;
@@ -327,18 +720,19 @@ void ovis_vlog(enum ovis_loglevel level, const char *fmt, va_list ap)
 	struct tm tm;
 	time_t t;
 
-	if ((level != OVIS_LALL) &&
-			((0 <= level) && (level < log_level_thr)))
-		return;
-
-	if (log_time_sec == -1) {
-		char * lt = getenv("OVIS_LOG_TIME_SEC");
-		if (lt)
-			log_time_sec = 1;
-		else
-			log_time_sec = 0;
+	if (!log)
+		log = &default_log;
+	/*
+	 * Assume that \c level is one of
+	 * OVIS_LDEBUG, OVIS_LINFO, OVIS_LWARN, OVIS_LERROR, OVIS_LCRITICAL,
+	 * and OVIS_LALWAYS.
+	 */
+	if (!(log->level & level)) {
+		/* The given level is disabled. Do nothing. */
+		return 0;
 	}
-	if (log_time_sec) {
+
+	if (default_modes & OVIS_LOG_M_TS) {
 		gettimeofday(&tv, NULL);
 
 	} else {
@@ -347,89 +741,56 @@ void ovis_vlog(enum ovis_loglevel level, const char *fmt, va_list ap)
 	}
 
 	rc = vasprintf(&msg, fmt, ap);
-	if (rc < 0)
-		return;
+	if (rc < 0) {
+		return -ENOMEM;
+	}
 
-	if (!is_init) {
-		/* No workers, so directly log to the file */
-		(void) __log(level, msg, &tv, &tm);
-		return;
+	if (!logger_w) {
+		/* No workers, so directly log to the file. */
+		rc = __log(log, level, msg, &tv, &tm);
+		free(msg);
+		return rc;
 	}
 
 	log_ev = ev_new(log_type);
-	if (!log_ev)
-		return;
+	if (!log_ev) {
+		return -ENOMEM;
+	}
 	EV_DATA(log_ev, struct log_data)->msg = msg;
 	EV_DATA(log_ev, struct log_data)->level = level;
 	EV_DATA(log_ev, struct log_data)->type = OVIS_LOG_O_LOG;
+	EV_DATA(log_ev, struct log_data)->log = __ovis_log_get(log);
 
-	if (log_time_sec)
+	if (default_modes & OVIS_LOG_M_TS)
 		EV_DATA(log_ev, struct log_data)->tv = tv;
 	else
 		EV_DATA(log_ev, struct log_data)->tm = tm;
 	ev_post(NULL, logger_w, log_ev, NULL);
+	return 0;
 }
 
-void ovis_log(enum ovis_loglevel level, const char *fmt, ...)
+int ovis_log(ovis_log_t log, int level, const char *fmt, ...)
 {
+	int rc;
 	va_list ap;
 	if (!is_init)
 		log_fp = stdout;
 	va_start(ap, fmt);
-	ovis_vlog(level, fmt, ap);
+	rc = ovis_vlog(log, level, fmt, ap);
 	va_end(ap);
-}
-
-int ovis_log_flush()
-{
-	return fflush(log_fp);
-}
-
-int ovis_log_reopen(const char *path)
-{
-	FILE *f, *tmp;
-	int rc;
-
-	fflush(log_fp);
-
-	f = __log_open(path);
-	if (!f) {
-		rc = errno;
-		return rc;
-	}
-
-	tmp = log_fp;
-	log_fp = f;
-	fclose(tmp);
-	stdout = stderr = log_fp;
-
-	return 0;
-}
-
-int ovis_log_close()
-{
-	ev_t close_ev;
-	int rc;
-
-	close_ev = ev_new(log_type);
-	if (!close_ev) {
-		/* Attempt to close the log file immediately */
-		rc = __log_close();
-	} else {
-		EV_DATA(close_ev, struct log_data)->type = OVIS_LOG_O_CLOSE;
-		rc = ev_post(NULL, logger_w, close_ev, NULL);
-	}
 	return rc;
 }
 
 /* All messages from the ldms library are of e level.*/
 #define OVIS_LOG_AT(e,fsuf) \
-void ovis_l##fsuf(const char *fmt, ...) \
+int ovis_l##fsuf(ovis_log_t log, const char *fmt, ...) \
 { \
+	int rc; \
 	va_list ap; \
 	va_start(ap, fmt); \
-	ovis_vlog(e, fmt, ap); \
+	rc = ovis_vlog(log, e, fmt, ap); \
 	va_end(ap); \
+	return rc; \
 }
 
 OVIS_LOG_AT(OVIS_LDEBUG, debug);
@@ -437,4 +798,4 @@ OVIS_LOG_AT(OVIS_LINFO, info);
 OVIS_LOG_AT(OVIS_LWARNING, warning);
 OVIS_LOG_AT(OVIS_LERROR, error);
 OVIS_LOG_AT(OVIS_LCRITICAL, critical);
-OVIS_LOG_AT(OVIS_LALL, all);
+OVIS_LOG_AT(OVIS_LALWAYS, all);
