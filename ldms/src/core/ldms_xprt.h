@@ -391,8 +391,7 @@ struct ldms_xprt {
 
 	int term;
 
-	/** Transport message logging callback */
-	ldms_log_fn_t log;
+//	ldms_log_fn_t log;
 
 	struct rbt set_coll;
 
