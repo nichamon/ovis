@@ -76,9 +76,10 @@
 
 #include "../sampler_base.h"
 
+static ovis_log_t mylog;
+
 /* General vars */
 static ldms_set_t set = NULL;
-static ldmsd_msg_log_f msglog;
 static char *default_schema_name = "cray_aries_r";
 static int off_hsn = 0;
 
@@ -96,7 +97,7 @@ static int create_metric_set(base_data_t base)
 
 	schema = base_schema_new(base);
 	if (!schema) {
-		msglog(LDMSD_LERROR,
+		ovis_log(mylog, OVIS_LERROR,
 		       "%s: The schema '%s' could not be created, errno=%d.\n",
 		       __FILE__, base->schema_name, errno);
 		goto err;
@@ -109,32 +110,32 @@ static int create_metric_set(base_data_t base)
 		switch(i){
 		case NS_LINKSMETRICS:
 			if (!off_hsn){
-				rc = add_metrics_aries_linksmetrics(schema, msglog);
+				rc = add_metrics_aries_linksmetrics(schema, mylog);
 				if (rc)
 					goto err;
-				rc = aries_linksmetrics_setup(msglog);
+				rc = aries_linksmetrics_setup(mylog);
 				if (rc == ENOMEM)
 					goto err;
 				if (rc != 0) /*  Warn but OK to continue */
-					msglog(LDMSD_LERROR,"cray_aries_r_sampler: linksmetrics invalid\n");
+					ovis_log(mylog, OVIS_LERROR,"cray_aries_r_sampler: linksmetrics invalid\n");
 			}
 			break;
 		case NS_NICMETRICS:
 			if (!off_hsn){
-				rc = add_metrics_aries_nicmetrics(schema, msglog);
+				rc = add_metrics_aries_nicmetrics(schema);
 				if (rc)
 					goto err;
-				rc = aries_nicmetrics_setup(msglog);
+				rc = aries_nicmetrics_setup();
 				if (rc == ENOMEM)
 					return rc;
 				if (rc != 0) /*  Warn but OK to continue */
-					msglog(LDMSD_LERROR,"cray_aries_r_sampler: nicmetrics invalid\n");
+					ovis_log(mylog, OVIS_LERROR,"cray_aries_r_sampler: nicmetrics invalid\n");
 			}
 			break;
 		default:
-			rc = add_metrics_generic(schema, i, msglog);
+			rc = add_metrics_generic(schema, i);
 			if (rc) {
-				msglog(LDMSD_LERROR,
+				ovis_log(mylog, OVIS_LERROR,
 				       "%s:  NS %s return error code %d in add_metrics_generic\n",
 				       __FILE__, ns_names[i], rc);
 				goto err;
@@ -144,7 +145,7 @@ static int create_metric_set(base_data_t base)
 
 	set = base_set_new(base);
 	if (!set) {
-		msglog(LDMSD_LERROR, "%s: set null in create_metric_set\n",
+		ovis_log(mylog, OVIS_LERROR, "%s: set null in create_metric_set\n",
 		       __FILE__);
 		rc = errno;
 		goto err;
@@ -168,7 +169,7 @@ static int config_check(struct attr_value_list *kwl, struct attr_value_list *avl
 	for (i = 0; i < numdep; i++){
 		value = av_value(avl, deprecated[i]);
 		if (value){
-			msglog(LDMSD_LERROR, "cray_aries_r_sampler: %s has been deprecated.\n",
+			ovis_log(mylog, OVIS_LERROR, "cray_aries_r_sampler: %s has been deprecated.\n",
 			       deprecated[i]);
 			return EINVAL;
 		}
@@ -184,7 +185,7 @@ static int config(struct ldmsd_plugin *self, struct attr_value_list *kwl, struct
 	int rc = 0;
 
 	if (set) {
-		msglog(LDMSD_LERROR, "%s: Set already created.\n",
+		ovis_log(mylog, OVIS_LERROR, "%s: Set already created.\n",
 		       __FILE__);
 		return EINVAL;
 	}
@@ -194,7 +195,7 @@ static int config(struct ldmsd_plugin *self, struct attr_value_list *kwl, struct
 		return rc;
 	}
 
-	base = base_config(avl, "cray_aries_r_sampler", default_schema_name, msglog);
+	base = base_config(avl, "cray_aries_r_sampler", default_schema_name);
 	if (!base) {
 		rc = errno;
 		goto out;
@@ -204,7 +205,7 @@ static int config(struct ldmsd_plugin *self, struct attr_value_list *kwl, struct
 	off_hsn = 0;
 	/* off nettopo for aries */
 	set_offns_generic(NS_NETTOPO);
-	rc = config_generic(kwl, avl, msglog);
+	rc = config_generic(kwl, avl);
 	if (rc != 0){
 		goto out;
 	}
@@ -235,14 +236,14 @@ static int config(struct ldmsd_plugin *self, struct attr_value_list *kwl, struct
 			mvalue = atoi(value);
 		}
 
-		rc = hsn_metrics_config(mvalue, msglog);
+		rc = hsn_metrics_config(mvalue);
 		if (rc != 0)
 			goto out;
 	}
 
 	rc = create_metric_set(base);
 	if (rc) {
-		msglog(LDMSD_LERROR, "cray_aries_r_sampler: failed to create a metric set %d.\n", rc);
+		ovis_log(mylog, OVIS_LERROR, "cray_aries_r_sampler: failed to create a metric set %d.\n", rc);
 		goto out;
 	}
 	return 0;
@@ -272,7 +273,7 @@ static int sample(struct ldmsd_sampler *self)
 #endif
 
 	if (!set) {
-		msglog(LDMSD_LDEBUG,"cray_aries_r_sampler: plugin not initialized\n");
+		ovis_log(mylog, OVIS_LDEBUG,"cray_aries_r_sampler: plugin not initialized\n");
 		return EINVAL;
 	}
 	base_sample_begin(base);
@@ -281,24 +282,24 @@ static int sample(struct ldmsd_sampler *self)
 		switch(i){
 		case NS_LINKSMETRICS:
 			if (!off_hsn){
-				rc = sample_metrics_aries_linksmetrics(set, msglog);
+				rc = sample_metrics_aries_linksmetrics(set);
 			} else {
 				rc = 0;
 			}
 			break;
 		case NS_NICMETRICS:
 			if (!off_hsn){
-				rc = sample_metrics_aries_nicmetrics(set, msglog);
+				rc = sample_metrics_aries_nicmetrics(set);
 			} else {
 				rc = 0;
 			}
 			break;
 		default:
-			rc = sample_metrics_generic(set, i, msglog);
+			rc = sample_metrics_generic(set, i);
 		}
 		/* Continue if error, but report an error code */
 		if (rc) {
-			msglog(LDMSD_LDEBUG,
+			ovis_log(mylog, OVIS_LDEBUG,
 			       "cray_aries_r_sampler: NS %s return error code %d\n",
 			       ns_names[i], rc);
 		}
@@ -326,6 +327,8 @@ static void term(struct ldmsd_plugin *self)
 	if (set)
 		ldms_set_delete(set);
 	set = NULL;
+	if (mylog)
+		ovis_log_destroy(mylog);
 }
 
 static const char *usage(struct ldmsd_plugin *self)
@@ -361,9 +364,15 @@ static struct ldmsd_sampler cray_aries_r_sampler_plugin = {
 	.sample = sample,
 };
 
-struct ldmsd_plugin *get_plugin(ldmsd_msg_log_f pf)
+struct ldmsd_plugin *get_plugin()
 {
-	msglog = pf;
+	int rc;
+	mylog = ovis_log_create("sampler.cray_aries_r_sampler", "Message for the cray_aries_r_sampler plugin");
+	if (!mylog) {
+		rc = errno;
+		ovis_log(NULL, OVIS_LWARN, "Failed to create the log subsystem "
+					"of 'cray_aries_r_sampler' plugin. Error %d\n", rc);
+	}
 	static int init_complete = 0;
 	if (init_complete)
 		goto out;

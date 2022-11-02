@@ -75,9 +75,9 @@
 
 #define DEFAULT_STREAM "slurm"
 
-#define INST_LOG(inst, lvl, fmt, ...) \
-		 inst->log((lvl), "%s: " fmt, SAMP, ##__VA_ARGS__)
-
+#define INST_LOG(inst, lvl, fmt, ...) do { \
+	ovis_log(inst->mylog, (lvl), fmt, ##__VA_ARGS__); \
+} while (0)
 #ifndef ARRAY_LEN
 #define ARRAY_LEN(a) (sizeof((a))/sizeof((a)[0]))
 #endif
@@ -446,7 +446,7 @@ struct handler_info {
 struct linux_proc_sampler_inst_s {
 	struct ldmsd_sampler samp;
 
-	ldmsd_msg_log_f log;
+	ovis_log_t mylog;
 	base_data_t base_data;
 	char *instance_prefix;
 	bool exe_suffix;
@@ -497,7 +497,7 @@ static void data_set_key(linux_proc_sampler_inst_t inst, struct linux_proc_sampl
 	as->key.os_pid = os_pid;
 	as->key.start_tick = tick;
 #ifdef LPDEBUG
-	INST_LOG(inst, LDMSD_LDEBUG,"Creating key at %p: %" PRIu64 " , %" PRId64 "\n",
+	INST_LOG(inst, OVIS_LDEBUG,"Creating key at %p: %" PRIu64 " , %" PRId64 "\n",
 		as, tick, os_pid);
 #endif
 
@@ -642,7 +642,7 @@ static int quote_argv(linux_proc_sampler_inst_t inst, int len, char *b, int bsiz
 
 static int check_sep(linux_proc_sampler_inst_t inst, const char *sep)
 {
-	INST_LOG(inst, LDMSD_LDEBUG,"check_sep: %s\n", sep);
+	INST_LOG(inst, OVIS_LDEBUG,"check_sep: %s\n", sep);
 	char testb[6] = "ab\0cd";
 	if (quote_argv(inst, 6, testb, 6, sep) == -1) {
 		return -1;
@@ -807,7 +807,7 @@ static int stat_handler(linux_proc_sampler_inst_t inst, pid_t pid, ldms_set_t se
 	str = buff;
 	if (s != buff) {
 		if (errno) {
-			INST_LOG(inst, LDMSD_LDEBUG,
+			INST_LOG(inst, OVIS_LDEBUG,
 				"error reading /proc/%d/stat %s\n", pid, STRERROR(errno));
 			return errno;
 		}
@@ -1131,12 +1131,12 @@ static int load_syscall_names(linux_proc_sampler_inst_t inst)
 	if (!inst->syscalls)
 		return 0;
 	int rc = 0;
-	INST_LOG(inst, LDMSD_LDEBUG, "linux_proc_sampler: reading %s\n",
+	INST_LOG(inst, OVIS_LDEBUG, "linux_proc_sampler: reading %s\n",
 		inst->syscalls);
 	FILE *f = fopen(inst->syscalls, "r");
 	if (!f) {
 		rc = errno;
-		INST_LOG(inst, LDMSD_LERROR,
+		INST_LOG(inst, OVIS_LERROR,
 			"linux_proc_sampler: unable to load %s. %s\n",
 			inst->syscalls, STRERROR(rc));
 		return rc;
@@ -1151,7 +1151,7 @@ static int load_syscall_names(linux_proc_sampler_inst_t inst)
 			continue;
 		int items = sscanf(buf, "%d %s", &call, buf2);
 		if (items != 2) {
-			INST_LOG(inst, LDMSD_LERROR,
+			INST_LOG(inst, OVIS_LERROR,
 				"linux_proc_sampler: %s. Error at line %d: %s\n",
 				inst->syscalls, line, buf);
 			rc = EINVAL;
@@ -1160,7 +1160,7 @@ static int load_syscall_names(linux_proc_sampler_inst_t inst)
 		if (call > inst->n_syscalls)
 			inst->n_syscalls = call;
 		if (strlen(buf2) >= SYSCALL_MAX) {
-			INST_LOG(inst, LDMSD_LERROR,
+			INST_LOG(inst, OVIS_LERROR,
 				"linux_proc_sampler: %s. name too long at line %d: %s\n",
 				inst->syscalls, line, buf2);
 			rc = EINVAL;
@@ -1174,7 +1174,7 @@ static int load_syscall_names(linux_proc_sampler_inst_t inst)
 	}
 	inst->name_syscall = calloc( inst->n_syscalls + 1, sizeof(char *));
 	if (!inst->syscalls) {
-		INST_LOG(inst, LDMSD_LERROR,
+		INST_LOG(inst, OVIS_LERROR,
 			"linux_proc_sampler: parsing %s. out of memory.\n",
 			inst->syscalls);
 		rc = ENOMEM;
@@ -1187,14 +1187,14 @@ static int load_syscall_names(linux_proc_sampler_inst_t inst)
 		int items = sscanf(buf, "%d %s", &call, buf2);
 		if (items == 2) {
 			if (call < 0 || call > inst->n_syscalls) {
-				INST_LOG(inst, LDMSD_LERROR, "linux_proc_sampler"
+				INST_LOG(inst, OVIS_LERROR, "linux_proc_sampler"
 					" read call %d out of range.'%s'\n", call,
 					buf);
 				continue;
 			}
 			char *s = malloc(SYSCALL_MAX);
 			if (!s) {
-				INST_LOG(inst, LDMSD_LERROR,
+				INST_LOG(inst, OVIS_LERROR,
 					"linux_proc_sampler: parsing %s."
 					" Out of memory.\n",
 					inst->syscalls);
@@ -1213,7 +1213,7 @@ static int load_syscall_names(linux_proc_sampler_inst_t inst)
 			continue;
 		inst->name_syscall[call] = malloc(SYSCALL_MAX);
 		if (!inst->name_syscall[call]) {
-			INST_LOG(inst, LDMSD_LERROR,
+			INST_LOG(inst, OVIS_LERROR,
 				"linux_proc_sampler: parsing %s."
 				" Out of memory.\n",
 				inst->syscalls);
@@ -1223,7 +1223,7 @@ static int load_syscall_names(linux_proc_sampler_inst_t inst)
 		sprintf(inst->name_syscall[call], "SYS_%d", call);
 	}
 
-	INST_LOG(inst, LDMSD_LDEBUG, "linux_proc_sampler: read %d\n",
+	INST_LOG(inst, OVIS_LDEBUG, "linux_proc_sampler: read %d\n",
 		inst->n_syscalls);
 	return 0;
 err:
@@ -1353,7 +1353,7 @@ static int timing_handler(linux_proc_sampler_inst_t inst, pid_t pid, ldms_set_t 
 	inst->sample_start.tv_sec = 0;
 	inst->sample_start.tv_usec = 0;
 #ifdef LPDEBUG
-	INST_LOG(inst, LDMSD_LDEBUG, "In %" PRIu64 " microseconds\n", x_us);
+	INST_LOG(inst, OVIS_LDEBUG, "In %" PRIu64 " microseconds\n", x_us);
 #endif
 	return 0;
 }
@@ -1388,7 +1388,7 @@ linux_proc_sampler_update_schema(linux_proc_sampler_inst_t inst, ldms_schema_t s
 		if (!inst->metric_idx[i])
 			continue;
 		mi = &metric_info[i];
-		INST_LOG(inst, LDMSD_LDEBUG, "Add metric %s\n", mi->name);
+		INST_LOG(inst, OVIS_LDEBUG, "Add metric %s\n", mi->name);
 		if (ldms_type_is_array(mi->mtype)) {
 			if (mi->is_meta) {
 				idx = ldms_schema_meta_array_add(schema,
@@ -1410,7 +1410,7 @@ linux_proc_sampler_update_schema(linux_proc_sampler_inst_t inst, ldms_schema_t s
 		}
 		if (idx < 0) {
 			/* error */
-			INST_LOG(inst, LDMSD_LERROR,
+			INST_LOG(inst, OVIS_LERROR,
 				 "Error %d adding metric %s into schema.\n",
 				 -idx, mi->name);
 			return -idx;
@@ -1425,9 +1425,9 @@ void fn_rbt_destroy(linux_proc_sampler_inst_t inst, struct rbt *t);
 void app_set_destroy(linux_proc_sampler_inst_t inst, struct linux_proc_sampler_set *a)
 {
 #ifdef LPDEBUG
-	INST_LOG(inst, LDMSD_LDEBUG, "Removing set %s\n",
+	INST_LOG(inst, OVIS_LDEBUG, "Removing set %s\n",
 		ldms_set_instance_name_get(a->set));
-	INST_LOG(inst, LDMSD_LDEBUG,"Uncreating key at %p: %" PRIu64 " , %" PRId64 "\n",
+	INST_LOG(inst, OVIS_LDEBUG,"Uncreating key at %p: %" PRIu64 " , %" PRId64 "\n",
 		&a->key, a->key.start_tick, a->key.os_pid);
 #else
 	(void)inst;
@@ -1456,7 +1456,7 @@ static int linux_proc_sampler_sample(struct ldmsd_sampler *pi)
 	int i, rc;
 	struct rbn *rbn;
 #ifdef LPDEBUG
-	INST_LOG(inst, LDMSD_LDEBUG, "Sampling\n");
+	INST_LOG(inst, OVIS_LDEBUG, "Sampling\n");
 #endif
 	struct linux_proc_sampler_set *app_set;
 	struct set_del_list del_list;
@@ -1474,7 +1474,7 @@ static int linux_proc_sampler_sample(struct ldmsd_sampler *pi)
 			rc = inst->fn[i].fn(inst, app_set->key.os_pid, app_set->set);
 			if (rc) {
 #ifdef LPDEBUG
-				INST_LOG(inst, LDMSD_LDEBUG,
+				INST_LOG(inst, OVIS_LDEBUG,
 					"Removing set %s. Error %d(%s) from %s\n",
 					ldms_set_instance_name_get(app_set->set),
 					rc, STRERROR(rc), inst->fn[i].fn_name);
@@ -1489,7 +1489,7 @@ static int linux_proc_sampler_sample(struct ldmsd_sampler *pi)
 			(app_set->fd_skip % inst->fd_msg == 0)) {
 			rc = publish_fd_pid(inst, app_set);
 			if (rc) {
-				INST_LOG(inst, LDMSD_LDEBUG, "Removing set %s."
+				INST_LOG(inst, OVIS_LDEBUG, "Removing set %s."
 					" Error %d(%s) from publish_fd_pid\n",
 					ldms_set_instance_name_get(app_set->set),
 					rc, STRERROR(rc));
@@ -1499,7 +1499,7 @@ static int linux_proc_sampler_sample(struct ldmsd_sampler *pi)
 			}
 		}
 #ifdef LPDEBUG
-		INST_LOG(inst, LDMSD_LDEBUG, "Got data for %s\n",
+		INST_LOG(inst, OVIS_LDEBUG, "Got data for %s\n",
 			ldms_set_instance_name_get(app_set->set));
 #endif
 		ldms_transaction_end(app_set->set);
@@ -1629,7 +1629,7 @@ static void missing_metric(linux_proc_sampler_inst_t inst, const char *tkn)
 	size_t k, ma = ARRAY_LEN(metrics_always);
 	for (k = 0; k < ma; k++) {
 		if (strcmp(metrics_always[k], tkn) == 0) {
-			INST_LOG(inst, LDMSD_LERROR,
+			INST_LOG(inst, OVIS_LERROR,
 			"metric '%s' is not optional. Remove it.\n", tkn);
 			return;
 		}
@@ -1637,13 +1637,13 @@ static void missing_metric(linux_proc_sampler_inst_t inst, const char *tkn)
 	ma = ARRAY_LEN(alii);
 	for (k = 0; k < ma; k++) {
 		if (strcmp(alii[k].alias, tkn) == 0) {
-			INST_LOG(inst, LDMSD_LERROR,
+			INST_LOG(inst, OVIS_LERROR,
 			"metric '%s' is not supported. Replace with %s.\n",
 				tkn, alii[k].name);
 			return;
 		}
 	}
-	INST_LOG(inst, LDMSD_LERROR,
+	INST_LOG(inst, OVIS_LERROR,
 		 "optional metric '%s' is unknown.\n", tkn);
 }
 
@@ -1693,7 +1693,7 @@ char *file_to_regex(linux_proc_sampler_inst_t inst, const char *fname)
 	f = fopen(fname, "r");
 	int rc;
 	if (!f) {
-		INST_LOG(inst, LDMSD_LERROR, "cannot open env_exclude %s\n",
+		INST_LOG(inst, OVIS_LERROR, "cannot open env_exclude %s\n",
 			fname);
 		goto err;
 	}
@@ -1706,7 +1706,7 @@ char *file_to_regex(linux_proc_sampler_inst_t inst, const char *fname)
                         continue;
 		rc = add_match(inst, &eme, line);
 		if (rc) {
-			INST_LOG(inst, LDMSD_LERROR,
+			INST_LOG(inst, OVIS_LERROR,
 				"out of memory or bad env_exclude line %d: %s\n",
 				ln, line);
 			goto err;
@@ -1726,7 +1726,7 @@ char *json_to_regex(linux_proc_sampler_inst_t inst, json_entity_t env_exclude)
 		return file_to_regex(inst, json_value_cstr(env_exclude));
 	}
 	if (env_exclude->type != JSON_LIST_VALUE) {
-		INST_LOG(inst, LDMSD_LERROR,
+		INST_LOG(inst, OVIS_LERROR,
 			"env_exclude value is not a list or filename\n");
 		return NULL;
 	}
@@ -1737,13 +1737,13 @@ char *json_to_regex(linux_proc_sampler_inst_t inst, json_entity_t env_exclude)
 	int rc;
 	for (c = json_item_first(env_exclude); c; c = json_item_next(c)) {
 		if (c->type != JSON_STRING_VALUE) {
-			INST_LOG(inst, LDMSD_LERROR,
+			INST_LOG(inst, OVIS_LERROR,
 				"env_exclude list element is not a string.\n");
 			goto err;
 		}
 		rc = add_match(inst, &eme, (char *)json_value_cstr(c));
 		if (rc) {
-			INST_LOG(inst, LDMSD_LERROR,
+			INST_LOG(inst, OVIS_LERROR,
 				"out of memory making env_exclude regex\n");
 			goto err;
 		}
@@ -1760,11 +1760,11 @@ static int init_regex_filter(linux_proc_sampler_inst_t inst, char *regex_str, ch
 	char errbuf[errbuf_len];
 	int rc = ldmsd_compile_regex(r, regex_str, errbuf, errbuf_len);
 	if (rc) {
-		INST_LOG(inst, LDMSD_LERROR, "unable to compile %s filter %s\n",
+		INST_LOG(inst, OVIS_LERROR, "unable to compile %s filter %s\n",
 			filt, regex_str);
-		INST_LOG(inst, LDMSD_LERROR, "regex message %s.\n", errbuf);
+		INST_LOG(inst, OVIS_LERROR, "regex message %s.\n", errbuf);
 	} else {
-		INST_LOG(inst, LDMSD_LDEBUG, "regex %s excluding %s\n",
+		INST_LOG(inst, OVIS_LDEBUG, "regex %s excluding %s\n",
 			filt, regex_str);
 		*use = 1;
 	}
@@ -1786,13 +1786,13 @@ int __handle_cfg_file(linux_proc_sampler_inst_t inst, char *val)
 
 	fd = open(val, O_RDONLY);
 	if (fd < 0) {
-		INST_LOG(inst, LDMSD_LERROR, "Cannot open %s\n", val);
+		INST_LOG(inst, OVIS_LERROR, "Cannot open %s\n", val);
 		return errno;
 	}
 	sz = lseek(fd, 0, SEEK_END);
 	if (sz < 0) {
 		rc = errno;
-		INST_LOG(inst, LDMSD_LERROR,
+		INST_LOG(inst, OVIS_LERROR,
 			 "lseek() failed, errno: %d\n", errno);
 		goto out;
 	}
@@ -1801,7 +1801,7 @@ int __handle_cfg_file(linux_proc_sampler_inst_t inst, char *val)
 	buff = malloc(sz+1);
 	if (!buff) {
 		rc = errno;
-		INST_LOG(inst, LDMSD_LERROR, "Out of memory parsing %s\n", val);
+		INST_LOG(inst, OVIS_LERROR, "Out of memory parsing %s\n", val);
 		goto out;
 	}
 	off = 0;
@@ -1809,7 +1809,7 @@ int __handle_cfg_file(linux_proc_sampler_inst_t inst, char *val)
 		rc = read(fd, buff + off, sz);
 		if (rc < 0) {
 			rc = errno;
-			INST_LOG(inst, LDMSD_LERROR, "read() error: %d in %s\n",
+			INST_LOG(inst, OVIS_LERROR, "read() error: %d in %s\n",
 				errno, val);
 			goto out;
 		}
@@ -1820,14 +1820,14 @@ int __handle_cfg_file(linux_proc_sampler_inst_t inst, char *val)
 	jp = json_parser_new(0);
 	if (!jp) {
 		rc = errno;
-		INST_LOG(inst, LDMSD_LERROR, "json_parser_new() error: %d\n",
+		INST_LOG(inst, OVIS_LERROR, "json_parser_new() error: %d\n",
 			errno);
 		goto out;
 	}
 	rc = json_parse_buffer(jp, buff, bsz, &jdoc);
 	if (rc) {
-		INST_LOG(inst, LDMSD_LERROR, "JSON parse failed: %d\n", rc);
-		INST_LOG(inst, LDMSD_LINFO, "input from %s was: %s\n",
+		INST_LOG(inst, OVIS_LERROR, "JSON parse failed: %d\n", rc);
+		INST_LOG(inst, OVIS_LINFO, "input from %s was: %s\n",
 			val, buff);
 		goto out;
 	}
@@ -1836,20 +1836,20 @@ int __handle_cfg_file(linux_proc_sampler_inst_t inst, char *val)
 	if (ent) {
 		if (ent->type != JSON_STRING_VALUE) {
 			rc = EINVAL;
-			INST_LOG(inst, LDMSD_LERROR,
+			INST_LOG(inst, OVIS_LERROR,
 				"Error: `argv_sep` must be a string.\n");
 			goto out;
 		}
 		inst->argv_sep = strdup(json_value_cstr(ent));
 		if (!inst->argv_sep) {
 			rc = ENOMEM;
-			INST_LOG(inst, LDMSD_LERROR,
+			INST_LOG(inst, OVIS_LERROR,
 				"Out of memory while configuring argv_sep\n");
 			goto out;
 		}
 		if (check_sep(inst, inst->argv_sep)) {
 			rc = ERANGE;
-			INST_LOG(inst, LDMSD_LERROR,
+			INST_LOG(inst, OVIS_LERROR,
 				"Config argv_sep='%s' is not supported.\n",
 				inst->argv_sep);
 			goto out;
@@ -1859,14 +1859,14 @@ int __handle_cfg_file(linux_proc_sampler_inst_t inst, char *val)
 	if (ent) {
 		if (ent->type != JSON_STRING_VALUE) {
 			rc = EINVAL;
-			INST_LOG(inst, LDMSD_LERROR,
+			INST_LOG(inst, OVIS_LERROR,
 				"Error: `instance_prefix` must be a string.\n");
 			goto out;
 		}
 		inst->instance_prefix = strdup(json_value_cstr(ent));
 		if (!inst->instance_prefix) {
 			rc = ENOMEM;
-			INST_LOG(inst, LDMSD_LERROR,
+			INST_LOG(inst, OVIS_LERROR,
 				"Out of memory while configuring.\n");
 			goto out;
 		}
@@ -1879,10 +1879,10 @@ int __handle_cfg_file(linux_proc_sampler_inst_t inst, char *val)
 	if (ent) {
 		inst->sc_clk_tck = sysconf(_SC_CLK_TCK);
 		if (!inst->sc_clk_tck) {
-			INST_LOG(inst, LDMSD_LERROR,
+			INST_LOG(inst, OVIS_LERROR,
 				"sysconf(_SC_CLK_TCK) returned 0.\n");
 		} else {
-			INST_LOG(inst, LDMSD_LINFO,
+			INST_LOG(inst, OVIS_LINFO,
 				"sysconf(_SC_CLK_TCK) = %ld.\n",
 				inst->sc_clk_tck);
 		}
@@ -1891,14 +1891,14 @@ int __handle_cfg_file(linux_proc_sampler_inst_t inst, char *val)
 	if (ent) {
 		if (ent->type != JSON_STRING_VALUE) {
 			rc = EINVAL;
-			INST_LOG(inst, LDMSD_LERROR,
+			INST_LOG(inst, OVIS_LERROR,
 				"Error: `stream` must be a string.\n");
 			goto out;
 		}
 		inst->stream_name = strdup(json_value_cstr(ent));
 		if (!inst->stream_name) {
 			rc = ENOMEM;
-			INST_LOG(inst, LDMSD_LERROR,
+			INST_LOG(inst, OVIS_LERROR,
 				"Out of memory while configuring.\n");
 			goto out;
 		}
@@ -1907,14 +1907,14 @@ int __handle_cfg_file(linux_proc_sampler_inst_t inst, char *val)
 	if (ent) {
 		if (ent->type != JSON_STRING_VALUE) {
 			rc = EINVAL;
-			INST_LOG(inst, LDMSD_LERROR,
+			INST_LOG(inst, OVIS_LERROR,
 				"Error: `syscalls` must be a path.\n");
 			goto out;
 		}
 		inst->syscalls = strdup(json_value_cstr(ent));
 		if (!inst->syscalls) {
 			rc = ENOMEM;
-			INST_LOG(inst, LDMSD_LERROR,
+			INST_LOG(inst, OVIS_LERROR,
 				"Out of memory while configuring.\n");
 			goto out;
 		}
@@ -1923,7 +1923,7 @@ int __handle_cfg_file(linux_proc_sampler_inst_t inst, char *val)
 	if (ent) {
 		if (ent->type != JSON_INT_VALUE) {
 			rc = EINVAL;
-			INST_LOG(inst, LDMSD_LERROR,
+			INST_LOG(inst, OVIS_LERROR,
 				"Error: `argv_fmt` must be integer.\n");
 			goto out;
 		}
@@ -1933,7 +1933,7 @@ int __handle_cfg_file(linux_proc_sampler_inst_t inst, char *val)
 	if (ent) {
 		if (ent->type != JSON_INT_VALUE) {
 			rc = EINVAL;
-			INST_LOG(inst, LDMSD_LERROR,
+			INST_LOG(inst, OVIS_LERROR,
 				"Error: `argv_msg` must be 1 or 0.\n");
 			goto out;
 		}
@@ -1943,14 +1943,14 @@ int __handle_cfg_file(linux_proc_sampler_inst_t inst, char *val)
 	if (ent) {
 		if (ent->type != JSON_INT_VALUE) {
 			rc = EINVAL;
-			INST_LOG(inst, LDMSD_LERROR,
+			INST_LOG(inst, OVIS_LERROR,
 				"Error: `fd_msg` must be integer.\n");
 			goto out;
 		}
 		inst->fd_msg = json_value_int(ent);
 		if (inst->fd_msg < 0) {
 			inst->fd_msg = 0;
-			INST_LOG(inst, LDMSD_LERROR,
+			INST_LOG(inst, OVIS_LERROR,
 				"Error: `fd_msg` must be positive/0 integer.\n");
 			goto out;
 		}
@@ -1959,7 +1959,7 @@ int __handle_cfg_file(linux_proc_sampler_inst_t inst, char *val)
 			if (ent) {
 				char *fregex = json_to_regex(inst, ent);
 				if (!fregex) {
-					INST_LOG(inst, LDMSD_LERROR,
+					INST_LOG(inst, OVIS_LERROR,
 						"fd_exclude failed.\n");
 					goto out;
 				}
@@ -1968,7 +1968,7 @@ int __handle_cfg_file(linux_proc_sampler_inst_t inst, char *val)
 				free(fregex);
 				if (rc)
 					goto out;
-				INST_LOG(inst, LDMSD_LDEBUG,
+				INST_LOG(inst, OVIS_LDEBUG,
 					"fd_exclude parsed.\n");
 			}
 		}
@@ -1977,7 +1977,7 @@ int __handle_cfg_file(linux_proc_sampler_inst_t inst, char *val)
 	if (ent) {
 		if (ent->type != JSON_INT_VALUE) {
 			rc = EINVAL;
-			INST_LOG(inst, LDMSD_LERROR,
+			INST_LOG(inst, OVIS_LERROR,
 				"Error: `env_msg` must be 1 or 0\n");
 			goto out;
 		}
@@ -1987,7 +1987,7 @@ int __handle_cfg_file(linux_proc_sampler_inst_t inst, char *val)
 			if (ent) {
 				char *eregex = json_to_regex(inst, ent);
 				if (!eregex) {
-					INST_LOG(inst, LDMSD_LERROR,
+					INST_LOG(inst, OVIS_LERROR,
 						"env_exclude failed.\n");
 					goto out;
 				}
@@ -1996,7 +1996,7 @@ int __handle_cfg_file(linux_proc_sampler_inst_t inst, char *val)
 				free(eregex);
 				if (rc)
 					goto out;
-				INST_LOG(inst, LDMSD_LDEBUG,
+				INST_LOG(inst, OVIS_LDEBUG,
 					"env_exclude parsed.\n");
 			}
 		}
@@ -2005,7 +2005,7 @@ int __handle_cfg_file(linux_proc_sampler_inst_t inst, char *val)
 	if (ent) {
 		if (ent->type != JSON_INT_VALUE) {
 			rc = EINVAL;
-			INST_LOG(inst, LDMSD_LERROR,
+			INST_LOG(inst, OVIS_LERROR,
 				"Error: `log_send` must be 1 or 0\n");
 			goto out;
 		}
@@ -2017,7 +2017,7 @@ int __handle_cfg_file(linux_proc_sampler_inst_t inst, char *val)
 					ent = json_item_next(ent)) {
 			if (ent->type != JSON_STRING_VALUE) {
 				rc = EINVAL;
-				INST_LOG(inst, LDMSD_LERROR,
+				INST_LOG(inst, OVIS_LERROR,
 					 "Error: metric must be a string.\n");
 				goto out;
 			}
@@ -2054,12 +2054,12 @@ uint64_t get_field_value_u64(linux_proc_sampler_inst_t inst, json_entity_t src, 
 {
 	json_entity_t e = json_value_find(src, name);
 	if (!e) {
-		INST_LOG(inst, LDMSD_LDEBUG, "no json attribute %s found.\n", name);
+		INST_LOG(inst, OVIS_LDEBUG, "no json attribute %s found.\n", name);
 		errno = ENOKEY;
 		return 0;
 	}
 	if ( e->type != et && et != JSON_NULL_VALUE) {
-		INST_LOG(inst, LDMSD_LDEBUG, "wrong type found for %s: %s. Expected %s.\n",
+		INST_LOG(inst, OVIS_LDEBUG, "wrong type found for %s: %s. Expected %s.\n",
 			name, json_type_name(e->type), json_type_name(et));
 		errno = EINVAL;
 		return 0;
@@ -2070,14 +2070,14 @@ uint64_t get_field_value_u64(linux_proc_sampler_inst_t inst, json_entity_t src, 
 		if (sscanf(json_value_cstr(e),"%" SCNu64, &u64) == 1) {
 			return u64;
 		} else {
-			INST_LOG(inst, LDMSD_LDEBUG, "unconvertible to uint64_t: %s from %s.\n",
+			INST_LOG(inst, OVIS_LDEBUG, "unconvertible to uint64_t: %s from %s.\n",
 				json_value_cstr(e), name);
 			errno = EINVAL;
 			return 0;
 		}
 	case JSON_INT_VALUE:
 		if ( json_value_int(e) < 0) {
-			INST_LOG(inst, LDMSD_LDEBUG, "unconvertible to uint64_t: %" PRId64 " from %s.\n",
+			INST_LOG(inst, OVIS_LDEBUG, "unconvertible to uint64_t: %" PRId64 " from %s.\n",
 				json_value_int(e), name);
 			errno = ERANGE;
 			return 0;
@@ -2086,7 +2086,7 @@ uint64_t get_field_value_u64(linux_proc_sampler_inst_t inst, json_entity_t src, 
 	case JSON_FLOAT_VALUE:
 		if ( json_value_float(e) < 0 || json_value_float(e) > UINT64_MAX) {
 			errno = ERANGE;
-			INST_LOG(inst, LDMSD_LDEBUG, "unconvertible to uint64_t: %g from %s.\n",
+			INST_LOG(inst, OVIS_LDEBUG, "unconvertible to uint64_t: %g from %s.\n",
 				json_value_float(e), name);
 			return 0;
 		}
@@ -2105,13 +2105,13 @@ static json_entity_t get_field(linux_proc_sampler_inst_t inst, json_entity_t src
 	json_entity_t e = json_value_find(src, name);
 	if (!e) {
 #ifdef LPDEBUG
-		INST_LOG(inst, LDMSD_LDEBUG, "no json attribute %s found.\n", name);
+		INST_LOG(inst, OVIS_LDEBUG, "no json attribute %s found.\n", name);
 #endif
 		return NULL;
 	}
 	if ( e->type != et) {
 #ifdef LPDEBUG
-		INST_LOG(inst, LDMSD_LDEBUG, "wrong type found for %s: %s. Expected %s.\n",
+		INST_LOG(inst, OVIS_LDEBUG, "wrong type found for %s: %s. Expected %s.\n",
 			name, json_type_name(e->type), json_type_name(et));
 #endif
 		return NULL;
@@ -2406,12 +2406,12 @@ static int publish_env_pid(linux_proc_sampler_inst_t inst, struct linux_proc_sam
 		int dirty = string_clean_json(v, vsub, vsub_sz);
 		switch (dirty) {
 		case 1:
-			INST_LOG(inst, LDMSD_LWARNING,
+			INST_LOG(inst, OVIS_LWARNING,
 				"cannot send env val of %s for pid %d\n",
 				k, pid);
 			continue;
 		case 2:
-			INST_LOG(inst, LDMSD_LWARNING,
+			INST_LOG(inst, OVIS_LWARNING,
 				"esc too long of env val %s for pid %d\n",
 				k, pid);
 			continue;
@@ -2430,7 +2430,7 @@ static int publish_env_pid(linux_proc_sampler_inst_t inst, struct linux_proc_sam
 	more = snprintf(buf+off, buf_sz-off, "]}");
 	off += more;
 	if (buf_sz < off) {
-		INST_LOG(inst, LDMSD_LERROR, "env buf_sz miscalculated.\n");
+		INST_LOG(inst, OVIS_LERROR, "env buf_sz miscalculated.\n");
 	}
 #ifdef USE_PNAME
 	char pname[64+20];
@@ -2439,7 +2439,7 @@ static int publish_env_pid(linux_proc_sampler_inst_t inst, struct linux_proc_sam
 	char *pname= NULL;
 #endif
 	if (inst->log_send) {
-		INST_LOG(inst, LDMSD_LDEBUG,
+		INST_LOG(inst, OVIS_LDEBUG,
 			"Sending pid %d env with count %d size %zu %s%s\n",
 			app_set->key.os_pid, argc, off, pname ? " on" : "",
 			pname ? pname : "");
@@ -2508,7 +2508,7 @@ static int publish_argv_pid(linux_proc_sampler_inst_t inst, struct linux_proc_sa
 			 + strlen("]}") + id_format_sz; /* json overhead */
 		break;
 	default:
-		INST_LOG(inst, LDMSD_LERROR, "unsupported argv_fmt\n");
+		INST_LOG(inst, OVIS_LERROR, "unsupported argv_fmt\n");
 		rc = EINVAL;
 		goto out;
 	}
@@ -2541,7 +2541,7 @@ static int publish_argv_pid(linux_proc_sampler_inst_t inst, struct linux_proc_sa
 		for (i = 0; i < argc; i++) {
 			int ce = string_clean_json(argv[i], vbuf, vbuf_sz);
 			if (ce) {
-				INST_LOG(inst, LDMSD_LERROR,
+				INST_LOG(inst, OVIS_LERROR,
 					"pid %d argv %d cannot be json\n");
 				rc = EINVAL;
 				goto out;
@@ -2556,7 +2556,7 @@ static int publish_argv_pid(linux_proc_sampler_inst_t inst, struct linux_proc_sa
 		for (i = 0; i < argc; i++) {
 			int ce = string_clean_json(argv[i], vbuf, vbuf_sz);
 			if (ce) {
-				INST_LOG(inst, LDMSD_LERROR,
+				INST_LOG(inst, OVIS_LERROR,
 					"pid %d argv %d cannot be json\n");
 				rc = EINVAL;
 				goto out;
@@ -2568,14 +2568,14 @@ static int publish_argv_pid(linux_proc_sampler_inst_t inst, struct linux_proc_sa
 		more = snprintf(buf+off-1, buf_sz-off+1, "]}") -1;
 		break;
 	default:
-		INST_LOG(inst, LDMSD_LERROR, "unsupported argv_fmt\n");
+		INST_LOG(inst, OVIS_LERROR, "unsupported argv_fmt\n");
 		rc = EINVAL;
 		goto out;
 	}
 	off += more;
 
 	if (inst->recycle_buf_sz < off) {
-		INST_LOG(inst, LDMSD_LERROR,
+		INST_LOG(inst, OVIS_LERROR,
 			"argv buf_sz miscalculated (%zu < %zu).\n",
 			inst->recycle_buf_sz, off);
 	}
@@ -2587,7 +2587,7 @@ static int publish_argv_pid(linux_proc_sampler_inst_t inst, struct linux_proc_sa
 	char *pname= NULL;
 #endif
 	if (inst->log_send) {
-		INST_LOG(inst, LDMSD_LDEBUG,
+		INST_LOG(inst, OVIS_LDEBUG,
 			"Sending pid %d argv %s%s%s\n",
 			app_set->key.os_pid, pname ? " on" : "",
 			pname ? pname : "");
@@ -2604,7 +2604,6 @@ static int fn_rbn_cmp(void *tree_key, void *key)
 	int *tk = tree_key;
 	int *k = key;
 	if (!tree_key || !key) {
-		ldmsd_log(LDMSD_LDEBUG,"fn_rbn_cmp NULL: %d %d\n", *tk, *k);
 		return -1;
 	}
 	return *tk - *k;
@@ -2657,15 +2656,15 @@ static int fentry_mark_seen(struct rbn *r, void *fdata, int i)
 static int string_send_state(linux_proc_sampler_inst_t inst, struct linux_proc_sampler_set *app_set, struct stat *s, const char *str, size_t nlen, const char *state, int fd)
 {
 	if (!inst) {
-		INST_LOG(inst, LDMSD_LDEBUG, "!inst, pid %d\n", app_set->key.os_pid);
+		INST_LOG(inst, OVIS_LDEBUG, "!inst, pid %d\n", app_set->key.os_pid);
 		return 0;
 	}
 	if (!str ) {
-		INST_LOG(inst, LDMSD_LDEBUG, "!str, pid %d\n", app_set->key.os_pid);
+		INST_LOG(inst, OVIS_LDEBUG, "!str, pid %d\n", app_set->key.os_pid);
 		return 0;
 	}
 	if (!app_set) {
-		INST_LOG(inst, LDMSD_LDEBUG, "!app_set, pid %d\n", app_set->key.os_pid);
+		INST_LOG(inst, OVIS_LDEBUG, "!app_set, pid %d\n", app_set->key.os_pid);
 		return 0;
 	}
 
@@ -2702,7 +2701,7 @@ static int string_send_state(linux_proc_sampler_inst_t inst, struct linux_proc_s
 			-1, -1, -1, 0, -1, 0, 0, state);
 
 	if (inst->recycle_buf_sz < ssize) {
-		INST_LOG(inst, LDMSD_LERROR, "fd buf_sz miscalculated. %zu < %zu\n",
+		INST_LOG(inst, OVIS_LERROR, "fd buf_sz miscalculated. %zu < %zu\n",
 			slen, ssize);
 	}
 #ifdef USE_PNAME
@@ -2713,7 +2712,7 @@ static int string_send_state(linux_proc_sampler_inst_t inst, struct linux_proc_s
 	char *pname= NULL;
 #endif
 	if (inst->log_send) {
-		INST_LOG(inst, LDMSD_LDEBUG,
+		INST_LOG(inst, OVIS_LDEBUG,
 			"Sending pid %d fd %d file %s new state %s%s%s\n",
 			app_set->key.os_pid, fd, str, state, pname ? " on" : "",
 			pname ? pname : "");
@@ -2729,15 +2728,15 @@ static int string_send_state(linux_proc_sampler_inst_t inst, struct linux_proc_s
 static int fentry_send_state(linux_proc_sampler_inst_t inst, struct linux_proc_sampler_set *app_set, struct stat *s, struct fentry *fe, const char *state)
 {
 	if (!fe ) {
-		INST_LOG(inst, LDMSD_LDEBUG, "null fe, pid %d\n", app_set->key.os_pid);
+		INST_LOG(inst, OVIS_LDEBUG, "null fe, pid %d\n", app_set->key.os_pid);
 		return 0;
 	}
 	if (!fe->name) {
-		INST_LOG(inst, LDMSD_LDEBUG, "null fe>name, pid %d\n", app_set->key.os_pid);
+		INST_LOG(inst, OVIS_LDEBUG, "null fe>name, pid %d\n", app_set->key.os_pid);
 		return 0;
 	}
 	if (fe->seen) {
-		INST_LOG(inst, LDMSD_LDEBUG, "fe>seen, pid %d\n", app_set->key.os_pid);
+		INST_LOG(inst, OVIS_LDEBUG, "fe>seen, pid %d\n", app_set->key.os_pid);
 		return 0;
 	}
 	return string_send_state(inst, app_set, s, fe->name, fe->nlen,
@@ -2881,7 +2880,7 @@ static int publish_fd_pid(linux_proc_sampler_inst_t inst, struct linux_proc_samp
 			struct stat statb;
 			memset(&statb, 0, sizeof(statb));
 			if (stat(buf, &statb)) {
-				INST_LOG(inst, LDMSD_LDEBUG, "cannot stat %s: %d %s\n",
+				INST_LOG(inst, OVIS_LDEBUG, "cannot stat %s: %d %s\n",
 					buf, errno, STRERROR(errno));
 				continue;
 			}
@@ -2935,7 +2934,7 @@ close_check:
 				msg = "deleted";
 				statp = NULL;
 			}
-			INST_LOG(inst, LDMSD_LDEBUG, "fd state %s %s\n", msg, dfe->name);
+			INST_LOG(inst, OVIS_LDEBUG, "fd state %s %s\n", msg, dfe->name);
 			string_send_state(inst, app_set, statp, dfe->name, dfe->nlen, msg, dfe->fd);
 			free(dfe->name);
 			dfe->name = NULL;
@@ -3031,7 +3030,7 @@ int __handle_task_init(linux_proc_sampler_inst_t inst, json_entity_t data)
 	parent_pid = get_field(inst, data, JSON_INT_VALUE, "parent_pid");
 	is_thread = get_field(inst, data, JSON_INT_VALUE, "is_thread");
 	if (!job_id && (!os_pid && !task_pid)) {
-		INST_LOG(inst, LDMSD_LINFO, "need job_id or (os_pid & task_pid)\n");
+		INST_LOG(inst, OVIS_LINFO, "need job_id or (os_pid & task_pid)\n");
 		goto dump;
 	}
 	pid_t  pid;
@@ -3050,7 +3049,7 @@ int __handle_task_init(linux_proc_sampler_inst_t inst, json_entity_t data)
 	}
 	uint64_t start_tick = get_start_tick(inst, data, pid);
 	if (!start_tick) {
-		INST_LOG(inst, LDMSD_LDEBUG, "ignoring start-tickless pid %"
+		INST_LOG(inst, OVIS_LDEBUG, "ignoring start-tickless pid %"
 			PRId64 "\n", pid);
 		return 0;
 	}
@@ -3101,7 +3100,7 @@ int __handle_task_init(linux_proc_sampler_inst_t inst, json_entity_t data)
 				start_string,
 				(int64_t)pid, esep, esuffix);
 		if (len >= sizeof(setname)) {
-			INST_LOG(inst, LDMSD_LERROR, "set name too big: %s%s%s/%" PRIu64
+			INST_LOG(inst, OVIS_LERROR, "set name too big: %s%s%s/%" PRIu64
 							"/%s/%" PRId64 "%s%s\n",
 				(inst->instance_prefix ? inst->instance_prefix : ""),
 				(inst->instance_prefix ? "/" : ""),
@@ -3122,7 +3121,7 @@ int __handle_task_init(linux_proc_sampler_inst_t inst, json_entity_t data)
 				start_string,
 				task_rank_val, esep, esuffix);
 		if (len >= sizeof(setname)) {
-			INST_LOG(inst, LDMSD_LERROR, "set name too big: %s%s%s/%" PRIu64
+			INST_LOG(inst, OVIS_LERROR, "set name too big: %s%s%s/%" PRIu64
 							"/%s/rank/%" PRId64 "%s%s\n",
 				(inst->instance_prefix ? inst->instance_prefix : ""),
 				(inst->instance_prefix ? "/" : ""),
@@ -3146,10 +3145,10 @@ int __handle_task_init(linux_proc_sampler_inst_t inst, json_entity_t data)
 		int ec = errno;
 		if (ec != EEXIST && !warn_once) {
 			warn_once = 1;
-			INST_LOG(inst, LDMSD_LWARNING, "Out of set memory. Consider bigger -m.\n");
+			INST_LOG(inst, OVIS_LWARNING, "Out of set memory. Consider bigger -m.\n");
 			struct mm_stat ms;
 			mm_stats(&ms);
-			INST_LOG(inst, LDMSD_LWARNING, "mm_stat: size=%zu grain=%zu "
+			INST_LOG(inst, OVIS_LWARNING, "mm_stat: size=%zu grain=%zu "
 				"chunks_free=%zu grains_free=%zu grains_largest=%zu "
 				"grains_smallest=%zu bytes_free=%zu bytes_largest=%zu "
 				"bytes_smallest=%zu\n",
@@ -3160,7 +3159,7 @@ int __handle_task_init(linux_proc_sampler_inst_t inst, json_entity_t data)
 		if (ec == EEXIST) {
 			if (!warn_once_dup) {
 				warn_once_dup = 1;
-				INST_LOG(inst, LDMSD_LERROR, "Duplicate set name %s."
+				INST_LOG(inst, OVIS_LERROR, "Duplicate set name %s."
 					"Check for redundant notifiers running.\n",
 					setname);
 			}
@@ -3194,7 +3193,7 @@ int __handle_task_init(linux_proc_sampler_inst_t inst, json_entity_t data)
 			if (old_app_set->task_rank == app_set->task_rank) {
 				/*skip spank duplicate */
 #ifdef LPDEBUG
-				INST_LOG(inst, LDMSD_LDEBUG, "Keeping slurm "
+				INST_LOG(inst, OVIS_LDEBUG, "Keeping slurm "
 					"set %s, dropping duplicate %s\n",
 					ldms_set_instance_name_get(old_app_set->set),
 					ldms_set_instance_name_get(app_set->set));
@@ -3203,7 +3202,7 @@ int __handle_task_init(linux_proc_sampler_inst_t inst, json_entity_t data)
 			} else {
 				/* remove/replace set pointer in app_set with newly named set instance */
 #ifdef LPDEBUG
-				INST_LOG(inst, LDMSD_LDEBUG,
+				INST_LOG(inst, OVIS_LDEBUG,
 					"Converting set %s to %s\n",
 					ldms_set_instance_name_get(old_app_set->set),
 					ldms_set_instance_name_get(set));
@@ -3220,7 +3219,7 @@ int __handle_task_init(linux_proc_sampler_inst_t inst, json_entity_t data)
 			/* keep existing set whether slurm or not. */
 			/* unreachable in principle if set_create maintains uniqueness */
 #ifdef LPDEBUG
-			INST_LOG(inst, LDMSD_LDEBUG, "Keeping existing set %s, dropping %s\n",
+			INST_LOG(inst, OVIS_LDEBUG, "Keeping existing set %s, dropping %s\n",
 				ldms_set_instance_name_get(old_app_set->set),
 				ldms_set_instance_name_get(app_set->set));
 #endif
@@ -3231,7 +3230,7 @@ int __handle_task_init(linux_proc_sampler_inst_t inst, json_entity_t data)
 	}
 	rbt_ins(&inst->set_rbt, &app_set->rbn);
 #ifdef LPDEBUG
-	INST_LOG(inst, LDMSD_LDEBUG, "Adding set %s\n",
+	INST_LOG(inst, OVIS_LDEBUG, "Adding set %s\n",
 		ldms_set_instance_name_get(app_set->set));
 #endif
 	ldms_set_publish(set);
@@ -3241,7 +3240,7 @@ int __handle_task_init(linux_proc_sampler_inst_t inst, json_entity_t data)
 			is_thread_val, parent, job_id_val);
 		if (rc) {
 #ifdef LPDEBUG
-			INST_LOG(inst, LDMSD_LDEBUG,
+			INST_LOG(inst, OVIS_LDEBUG,
 				"publish_argv_pid failed for %d %s\n",
 				app_set->key.os_pid, STRERROR(rc) );
 #endif
@@ -3249,7 +3248,7 @@ int __handle_task_init(linux_proc_sampler_inst_t inst, json_entity_t data)
 		}
 #ifdef LPDEBUG
 else {
-			INST_LOG(inst, LDMSD_LDEBUG,
+			INST_LOG(inst, OVIS_LDEBUG,
 				"publish_argv_pid OK for %d\n",
 				app_set->key.os_pid);
 		}
@@ -3260,7 +3259,7 @@ else {
 			is_thread_val, parent, job_id_val);
 		if (rc) {
 #ifdef LPDEBUG
-			INST_LOG(inst, LDMSD_LDEBUG,
+			INST_LOG(inst, OVIS_LDEBUG,
 				"publish_env_pid failed for %d %s\n",
 				app_set->key.os_pid, STRERROR(rc) );
 #endif
@@ -3268,7 +3267,7 @@ else {
 		}
 #ifdef LPDEBUG
 else {
-			INST_LOG(inst, LDMSD_LDEBUG,
+			INST_LOG(inst, OVIS_LDEBUG,
 				"publish_env_pid OK for %d\n",
 				app_set->key.os_pid);
 		}
@@ -3286,7 +3285,7 @@ else {
 	return 0;
 dump:
 	bjb = json_entity_dump(bjb, data);
-	INST_LOG(inst, LDMSD_LDEBUG, "data was: %s\n", bjb->buf);
+	INST_LOG(inst, OVIS_LDEBUG, "data was: %s\n", bjb->buf);
 	jbuf_free(bjb);
 	return EINVAL;
 }
@@ -3335,8 +3334,8 @@ static int __stream_cb(ldmsd_stream_client_t c, void *ctxt,
 	const char *event_name;
 
 	if (stream_type != LDMSD_STREAM_JSON) {
-		INST_LOG(inst, LDMSD_LDEBUG, "Unexpected stream type data...ignoring\n");
-		INST_LOG(inst, LDMSD_LDEBUG, "%s\n", msg);
+		INST_LOG(inst, OVIS_LDEBUG, "Unexpected stream type data...ignoring\n");
+		INST_LOG(inst, OVIS_LDEBUG, "%s\n", msg);
 		rc = EINVAL;
 		goto err;
 	}
@@ -3349,7 +3348,7 @@ static int __stream_cb(ldmsd_stream_client_t c, void *ctxt,
 	event_name = json_value_cstr(event);
 	data = json_value_find(entity, "data");
 	if (!data) {
-		INST_LOG(inst, LDMSD_LERROR,
+		INST_LOG(inst, OVIS_LERROR,
 			 "'%s' event is missing the 'data' attribute\n",
 			 event_name);
 		rc = ENOENT;
@@ -3358,7 +3357,7 @@ static int __stream_cb(ldmsd_stream_client_t c, void *ctxt,
 	if (0 == strcmp(event_name, "task_init_priv")) {
 		rc = __handle_task_init(inst, data);
 		if (rc) {
-			INST_LOG(inst, LDMSD_LERROR,
+			INST_LOG(inst, OVIS_LERROR,
 				"failed to process task_init: %d: %s\n",
 				rc, STRERROR(rc));
 			goto err;
@@ -3366,7 +3365,7 @@ static int __stream_cb(ldmsd_stream_client_t c, void *ctxt,
 	} else if (0 == strcmp(event_name, "task_exit")) {
 		rc = __handle_task_exit(inst, data);
 		if (rc) {
-			INST_LOG(inst, LDMSD_LERROR,
+			INST_LOG(inst, OVIS_LERROR,
 				"failed to process task_exit: %d: %s\n",
 				rc, STRERROR(rc));
 			goto err;
@@ -3376,7 +3375,7 @@ static int __stream_cb(ldmsd_stream_client_t c, void *ctxt,
 	goto out;
  err:
 #ifdef LPDEBUG
-	INST_LOG(inst, LDMSD_LDEBUG, "Doing nothing with msg %s.\n",
+	INST_LOG(inst, OVIS_LDEBUG, "Doing nothing with msg %s.\n",
 		msg);
 #endif
  out:
@@ -3396,16 +3395,16 @@ linux_proc_sampler_config(struct ldmsd_plugin *pi, struct attr_value_list *kwl,
 
 	if (inst->base_data) {
 		/* already configured */
-		INST_LOG(inst, LDMSD_LERROR, "already configured.\n");
+		INST_LOG(inst, OVIS_LERROR, "already configured.\n");
 		return EALREADY;
 	}
 
-	inst->base_data = base_config(avl, SAMP, SAMP, inst->log);
+	inst->base_data = base_config(avl, SAMP, SAMP, inst->mylog);
 	if (!inst->base_data) {
 		/* base_config() already log error message */
 		return errno;
 	}
-	INST_LOG(inst, LDMSD_LDEBUG, "configuring.\n");
+	INST_LOG(inst, OVIS_LDEBUG, "configuring.\n");
 
 	/* Plugin-specific config here */
 	val = av_value(avl, "cfg_file");
@@ -3418,7 +3417,7 @@ linux_proc_sampler_config(struct ldmsd_plugin *pi, struct attr_value_list *kwl,
 		if (val) {
 			inst->instance_prefix = strdup(val);
 			if (!inst->instance_prefix) {
-				INST_LOG(inst, LDMSD_LERROR, "Config out of"
+				INST_LOG(inst, OVIS_LERROR, "Config out of"
 					" memory for instance_prefix\n");
 				rc = ENOMEM;
 				goto err;
@@ -3428,14 +3427,14 @@ linux_proc_sampler_config(struct ldmsd_plugin *pi, struct attr_value_list *kwl,
 		if (val) {
 			inst->argv_sep = strdup(val);
 			if (!inst->argv_sep) {
-				INST_LOG(inst, LDMSD_LERROR,
+				INST_LOG(inst, OVIS_LERROR,
 					"Config out of memory for arg_sep\n");
 				rc = ENOMEM;
 				goto err;
 			}
 			if (check_sep(inst, inst->argv_sep)) {
 				rc = ERANGE;
-				INST_LOG(inst, LDMSD_LERROR,
+				INST_LOG(inst, OVIS_LERROR,
 					"Config argv_sep='%s' not supported.\n",
 					inst->argv_sep );
 				goto err;
@@ -3447,7 +3446,7 @@ linux_proc_sampler_config(struct ldmsd_plugin *pi, struct attr_value_list *kwl,
 			int cnt;
 			cnt = sscanf(val, "%d", &dval);
 			if (cnt != 1) {
-				INST_LOG(inst, LDMSD_LERROR,
+				INST_LOG(inst, OVIS_LERROR,
 					"argv_fmt='%s' not integer.\n", val);
 				rc = EINVAL;
 				goto err;
@@ -3461,7 +3460,7 @@ linux_proc_sampler_config(struct ldmsd_plugin *pi, struct attr_value_list *kwl,
 			int cnt;
 			cnt = sscanf(val, "%d", &dval);
 			if (cnt != 1) {
-				INST_LOG(inst, LDMSD_LERROR,
+				INST_LOG(inst, OVIS_LERROR,
 					"fd_msg='%s' not integer.\n", val);
 				rc = EINVAL;
 				goto err;
@@ -3471,7 +3470,7 @@ linux_proc_sampler_config(struct ldmsd_plugin *pi, struct attr_value_list *kwl,
 				if (val) {
 					char *fregex = file_to_regex(inst, val);
 					if (!fregex) {
-						INST_LOG(inst, LDMSD_LERROR,
+						INST_LOG(inst, OVIS_LERROR,
 							"fd_exclude= failed.\n");
 						rc = ENOMEM;
 						goto err;
@@ -3495,7 +3494,7 @@ linux_proc_sampler_config(struct ldmsd_plugin *pi, struct attr_value_list *kwl,
 			if (val) {
 				char *eregex = file_to_regex(inst, val);
 				if (!eregex) {
-					INST_LOG(inst, LDMSD_LERROR,
+					INST_LOG(inst, OVIS_LERROR,
 						"env_exclude= failed.\n");
 					rc = ENOMEM;
 					goto err;
@@ -3519,7 +3518,7 @@ linux_proc_sampler_config(struct ldmsd_plugin *pi, struct attr_value_list *kwl,
 		if (val) {
 			inst->stream_name = strdup(val);
 			if (!inst->stream_name) {
-				INST_LOG(inst, LDMSD_LERROR,
+				INST_LOG(inst, OVIS_LERROR,
 					"Config out of memory for stream\n");
 				rc = ENOMEM;
 				goto err;
@@ -3529,7 +3528,7 @@ linux_proc_sampler_config(struct ldmsd_plugin *pi, struct attr_value_list *kwl,
 		if (val) {
 			inst->syscalls = strdup(val);
 			if (!inst->syscalls) {
-				INST_LOG(inst, LDMSD_LERROR,
+				INST_LOG(inst, OVIS_LERROR,
 					"Config out of memory for stream\n");
 				rc = ENOMEM;
 				goto err;
@@ -3558,7 +3557,7 @@ linux_proc_sampler_config(struct ldmsd_plugin *pi, struct attr_value_list *kwl,
 
 	if (inst->argv_fmt < 1 || inst->argv_fmt > 2) {
 		rc = ERANGE;
-		INST_LOG(inst, LDMSD_LERROR, "Config argv_fmt='%d' unsupported.\n",
+		INST_LOG(inst, OVIS_LERROR, "Config argv_fmt='%d' unsupported.\n",
 			inst->argv_fmt );
 		goto err;
 	}
@@ -3571,7 +3570,7 @@ linux_proc_sampler_config(struct ldmsd_plugin *pi, struct attr_value_list *kwl,
 	if (!inst->stream_name) {
 		inst->stream_name = strdup("slurm");
 		if (!inst->stream_name) {
-			INST_LOG(inst, LDMSD_LERROR,
+			INST_LOG(inst, OVIS_LERROR,
 				"Config: out of memory for default stream\n");
 			rc = ENOMEM;
 			goto err;
@@ -3580,37 +3579,37 @@ linux_proc_sampler_config(struct ldmsd_plugin *pi, struct attr_value_list *kwl,
 	if (inst->argv_msg) {
 		inst->argv_stream = malloc(2 + strlen(inst->base_data->schema_name) + 5);
 		if (!inst->argv_stream)  {
-			INST_LOG(inst, LDMSD_LERROR,
+			INST_LOG(inst, OVIS_LERROR,
 				"Config: out of memory for argv stream\n");
 			rc = ENOMEM;
 			goto err;
 		}
 		sprintf(inst->argv_stream, "%s_argv", inst->base_data->schema_name);
-		INST_LOG(inst, LDMSD_LDEBUG,"argv stream %s\n",
+		INST_LOG(inst, OVIS_LDEBUG,"argv stream %s\n",
 			inst->argv_stream);
 	}
 	if (inst->env_msg) {
 		inst->env_stream = malloc(2 + strlen(inst->base_data->schema_name) + 4);
 		if (!inst->env_stream)  {
-			INST_LOG(inst, LDMSD_LERROR,
+			INST_LOG(inst, OVIS_LERROR,
 				"Config: out of memory for env stream\n");
 			rc = ENOMEM;
 			goto err;
 		}
 		sprintf(inst->env_stream, "%s_env", inst->base_data->schema_name);
-		INST_LOG(inst, LDMSD_LDEBUG,"env stream %s\n",
+		INST_LOG(inst, OVIS_LDEBUG,"env stream %s\n",
 			inst->env_stream);
 	}
 	if (inst->fd_msg) {
 		inst->fd_stream = malloc(2 + strlen(inst->base_data->schema_name) + 6);
 		if (!inst->fd_stream)  {
-			INST_LOG(inst, LDMSD_LERROR,
+			INST_LOG(inst, OVIS_LERROR,
 				"Config: out of memory for fd stream\n");
 			rc = ENOMEM;
 			goto err;
 		}
 		sprintf(inst->fd_stream, "%s_files", inst->base_data->schema_name);
-		INST_LOG(inst, LDMSD_LDEBUG,"fd stream %s, freq %d\n",
+		INST_LOG(inst, OVIS_LDEBUG,"fd stream %s, freq %d\n",
 			inst->fd_stream, inst->fd_msg);
 	}
 
@@ -3627,7 +3626,7 @@ linux_proc_sampler_config(struct ldmsd_plugin *pi, struct attr_value_list *kwl,
 
 	/* create schema */
 	if (!base_schema_new(inst->base_data)) {
-		INST_LOG(inst, LDMSD_LERROR, "Out of memory making schema\n");
+		INST_LOG(inst, OVIS_LERROR, "Out of memory making schema\n");
 		rc = errno;
 		goto err;
 	}
@@ -3638,7 +3637,7 @@ linux_proc_sampler_config(struct ldmsd_plugin *pi, struct attr_value_list *kwl,
 	/* subscribe to the stream */
 	inst->stream = ldmsd_stream_subscribe(inst->stream_name, __stream_cb, inst);
 	if (!inst->stream) {
-		INST_LOG(inst, LDMSD_LERROR,
+		INST_LOG(inst, OVIS_LERROR,
 			 "Error subcribing to stream `%s`: %d\n",
 			 inst->stream_name, errno);
 		rc = errno;
@@ -3656,11 +3655,11 @@ linux_proc_sampler_config(struct ldmsd_plugin *pi, struct attr_value_list *kwl,
 static
 void linux_proc_sampler_term(struct ldmsd_plugin *pi)
 {
-	ldmsd_log(LDMSD_LDEBUG, "terminating plugin linux_proc_sampler\n");
 	linux_proc_sampler_inst_t inst = (void*)pi;
 	struct rbn *rbn;
 	struct linux_proc_sampler_set *app_set;
 
+	ovis_log(inst->mylog, OVIS_LDEBUG, "terminating plugin linux_proc_sampler\n");
 	if (inst->stream)
 		ldmsd_stream_close(inst->stream);
 	pthread_mutex_lock(&inst->mutex);
@@ -3701,6 +3700,8 @@ void linux_proc_sampler_term(struct ldmsd_plugin *pi)
 	if (inst->fd_use_regex)
 		regfree(&(inst->fd_regex));
 	free(tmp);
+	if (inst->mylog)
+		ovis_log_destroy(inst->mylog);
 }
 
 static int
@@ -3762,12 +3763,17 @@ struct linux_proc_sampler_inst_s __inst = {
 	},
 	.n_syscalls = -1,
 	.argv_fmt = 2,
-	.log = ldmsd_log
 };
 
-struct ldmsd_plugin *get_plugin(ldmsd_msg_log_f pf)
+struct ldmsd_plugin *get_plugin()
 {
-	__inst.log = pf;
+	int rc;
+	__inst.mylog = ovis_log_create("sampler."SAMP, "Message for the " SAMP " plugin");
+	if (!__inst.mylog) {
+		rc = errno;
+		ovis_log(NULL, OVIS_LWARN, "Failed to create the log subsystem "
+					"of '" SAMP "' plugin. Error %d\n", rc);
+	}
 	__inst.argv_sep = NULL;
 	return &__inst.samp.base;
 }

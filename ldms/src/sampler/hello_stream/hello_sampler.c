@@ -71,7 +71,7 @@
 #include "ldmsd.h"
 #include "ldmsd_stream.h"
 
-static ldmsd_msg_log_f msglog;
+static ovis_log_t mylog;
 static char *stream;
 
 static const char *usage(struct ldmsd_plugin *self)
@@ -111,8 +111,9 @@ static int hello_recv_cb(ldmsd_stream_client_t c, void *ctxt,
 		type = "STRING";
 		break;
 	}
-	msglog(LDMSD_LCRITICAL, "stream_type: %s, msg: \"%s\", msg_len: %d, entity: %p\n",
-	       type, msg, msg_len, entity);
+	ovis_log(mylog, OVIS_LCRITICAL, "stream_type: %s, msg: \"%s\", "
+					  "msg_len: %d, entity: %p\n",
+					  type, msg, msg_len, entity);
 	return rc;
 }
 
@@ -135,6 +136,8 @@ static int config(struct ldmsd_plugin *self, struct attr_value_list *kwl,
 
 static void term(struct ldmsd_plugin *self)
 {
+	if (mylog)
+		ovis_log_destroy(mylog);
 }
 
 static struct ldmsd_sampler hello_sampler = {
@@ -149,9 +152,16 @@ static struct ldmsd_sampler hello_sampler = {
 	.sample = sample
 };
 
-struct ldmsd_plugin *get_plugin(ldmsd_msg_log_f pf)
+struct ldmsd_plugin *get_plugin()
 {
-	msglog = pf;
+	int rc;
+	mylog = ovis_log_create("sampler.hello_sampler",
+				"Message for the hello_sampler plugin");
+	if (!mylog) {
+		rc = errno;
+		ovis_log(NULL, OVIS_LWARN, "Failed to create the log subsystem "
+					"of 'hello_sampler' plugin. Error %d\n", rc);
+	}
 	return &hello_sampler.base;
 }
 
