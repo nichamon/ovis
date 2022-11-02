@@ -56,6 +56,7 @@
 #include <libgen.h>
 #include <stdbool.h>
 #include <ovis_util/util.h>
+#include "ovis_log/ovis_log.h"
 #include "ldmsd.h"
 #include "ldmsd_plugattr.h"
 
@@ -95,7 +96,7 @@ struct storek_common {
 /* containment for globals. */
 struct csv_plugin_static {
 	const char *pname; /**< plugin full name */
-	ldmsd_msg_log_f msglog;
+	ovis_log_t mylog;
 } plugin_globals;
 #define PG plugin_globals
 
@@ -156,7 +157,7 @@ struct csv_store_handle_common {
 #define parse_bool(a,b,c,d) parse_bool2((a)->msglog, b, c, d)
 
 /** As parse_bool, but log pointer and source instead of plugin pointer */
-int parse_bool2(ldmsd_msg_log_f log, struct attr_value_list *avl, const char *param_name, bool *param_value, const char *source) __attribute__ ((deprecated("Use ldmsd_plugattr_bool instead")));
+int parse_bool2(struct attr_value_list *avl, const char *param_name, bool *param_value, const char *source) __attribute__ ((deprecated("Use ldmsd_plugattr_bool instead")));
 
 /* Replace the *strp with allocated duplicate of val.
  * String pointers managed with this function should not be set
