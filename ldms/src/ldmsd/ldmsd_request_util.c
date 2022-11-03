@@ -355,7 +355,7 @@ static int add_attr_from_attr_str(const char *name, const char *value,
 	while (req_sz - req->rec_len < attr_sz) {
 		char *tmp = realloc(buf, req_sz * 2);
 		if (!tmp) {
-			ovis_log(NULL, LDMSD_LCRITICAL, "Out of memory\n", name);
+			ovis_log(NULL, OVIS_LCRITICAL, "Out of memory\n", name);
 			return ENOMEM;
 		}
 		buf = tmp;
@@ -373,7 +373,7 @@ static int add_attr_from_attr_str(const char *name, const char *value,
 		} else {
 			attr->attr_id = ldmsd_req_attr_str2id(name);
 			if ((int)attr->attr_id < 0) {
-				ovis_log(NULL, LDMSD_LERROR, "Invalid attribute: %s\n", name);
+				ovis_log(NULL, OVIS_LERROR, "Invalid attribute: %s\n", name);
 				return EINVAL;
 			}
 		}

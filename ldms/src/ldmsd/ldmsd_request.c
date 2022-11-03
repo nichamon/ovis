@@ -97,6 +97,8 @@
  *
  */
 
+static ovis_log_t config_log;
+
 pthread_mutex_t msg_tree_lock = PTHREAD_MUTEX_INITIALIZER;
 
 int ldmsd_req_debug = 0; /* turn bits on / off using gdb or -L
@@ -140,7 +142,7 @@ void __dlog(int match, const char *fmt, ...)
 		vfprintf(ldmsd_req_debug_file, fmt, ap);
 		fflush(ldmsd_req_debug_file);
 	} else {
-		ldmsd_log(LDMSD_LALL, fmt, ap);
+		ovis_log(config_log, OVIS_LALWAYS, fmt, ap);
 	}
 	va_end(ap);
 }
@@ -929,7 +931,7 @@ int ldmsd_handle_request(ldmsd_req_ctxt_t reqc)
 int ldmsd_handle_response(ldmsd_req_cmd_t rcmd)
 {
 	if (!rcmd->resp_handler) {
-		ldmsd_log(LDMSD_LERROR, "No response handler "
+		ovis_log(config_log, OVIS_LERROR, "No response handler "
 				"for request id %" PRIu32 "\n", rcmd->reqc->req_id);
 		return ENOTSUP;
 	}
@@ -949,7 +951,7 @@ size_t Snprintf(char **dst, size_t *len, char *fmt, ...)
 		*len = 1024;
 	}
 	if (!*dst) {
-		ldmsd_log(LDMSD_LERROR, "Out of memory\n");
+		ovis_log(config_log, OVIS_LERROR, "Out of memory\n");
 		return 0;
 	}
 
@@ -989,7 +991,7 @@ int linebuf_printf(struct ldmsd_req_ctxt *reqc, char *fmt, ...)
 			reqc->line_buf = realloc(reqc->line_buf,
 						(2 * reqc->line_len) + cnt);
 			if (!reqc->line_buf) {
-				ldmsd_log(LDMSD_LERROR, "Out of memory\n");
+				ovis_log(config_log, OVIS_LERROR, "Out of memory\n");
 				return ENOMEM;
 			}
 			va_copy(ap_copy, ap);
@@ -1202,7 +1204,7 @@ int ldmsd_process_config_request(ldmsd_cfg_xprt_t xprt, ldmsd_req_hdr_t request)
 			snprintf(errstr, 255, "The message no %" PRIu32
 					" was not found.", key.msg_no);
 			rc = ENOENT;
-			ldmsd_log(LDMSD_LERROR, "The message no %" PRIu32 ":%" PRIu64
+			ovis_log(config_log, OVIS_LERROR, "The message no %" PRIu32 ":%" PRIu64
 					" was not found.\n", key.msg_no, key.conn_id);
 			ldmsd_send_error_reply(xprt, key.msg_no, rc,
 						errstr, strlen(errstr));
@@ -1231,7 +1233,7 @@ int ldmsd_process_config_request(ldmsd_cfg_xprt_t xprt, ldmsd_req_hdr_t request)
 	rc = validate_ldmsd_req((ldmsd_req_hdr_t)reqc->req_buf);
 	if (!rc) {
 		char *errstr = "LDMSD received a bad request.";
-		ldmsd_log(LDMSD_LERROR, "%s\n", errstr);
+		ovis_log(config_log, OVIS_LERROR, "%s\n", errstr);
 		ldmsd_send_error_reply(xprt, key.msg_no, rc, errstr, strlen(errstr)+1);
 		goto err_out;
 	}
@@ -1253,7 +1255,7 @@ int ldmsd_process_config_request(ldmsd_cfg_xprt_t xprt, ldmsd_req_hdr_t request)
  out:
 	return rc;
  oom:
-	ldmsd_log(LDMSD_LCRITICAL, "%s\n", oom_errstr);
+	ovis_log(config_log, OVIS_LCRITICAL, "%s\n", oom_errstr);
 	rc = ENOMEM;
 	ldmsd_send_error_reply(xprt, key.msg_no, rc, oom_errstr, strlen(oom_errstr));
  err_out:
@@ -1280,7 +1282,7 @@ int ldmsd_process_config_response(ldmsd_cfg_xprt_t xprt, ldmsd_req_hdr_t respons
 		key.conn_id = (uint64_t)xprt;
 
 	if (ntohl(response->marker) != LDMSD_RECORD_MARKER) {
-		ldmsd_log(LDMSD_LERROR,
+		ovis_log(config_log, OVIS_LERROR,
 			  "Config request is missing record marker\n");
 		rc = EINVAL;
 		goto out;
@@ -1295,7 +1297,7 @@ int ldmsd_process_config_response(ldmsd_cfg_xprt_t xprt, ldmsd_req_hdr_t respons
 		cnt = snprintf(errstr, 256, "Cannot find the original request"
 					" of a response number %d:%" PRIu64,
 					key.msg_no, key.conn_id);
-		ldmsd_log(LDMSD_LERROR, "%s\n", errstr);
+		ovis_log(config_log, OVIS_LERROR, "%s\n", errstr);
 		rc = ENOENT;
 		goto err_out;
 	}
@@ -1322,7 +1324,7 @@ int ldmsd_process_config_response(ldmsd_cfg_xprt_t xprt, ldmsd_req_hdr_t respons
 	rc = validate_ldmsd_req((ldmsd_req_hdr_t)reqc->req_buf);
 	if (!rc) {
 		char *errstr = "LDMSD received a bad response.";
-		ldmsd_log(LDMSD_LERROR, "%s\n", errstr);
+		ovis_log(config_log, OVIS_LERROR, "%s\n", errstr);
 		goto err_out;
 	}
 
@@ -4852,7 +4854,7 @@ static int plugn_load_handler(ldmsd_req_ctxt_t reqc)
 	attr_name = "name";
 	plugin_name = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_NAME);
 	if (!plugin_name) {
-		ldmsd_log(LDMSD_LERROR, "load plugin called without name=$plugin");
+		ovis_log(config_log, OVIS_LERROR, "load plugin called without name=$plugin");
 		goto einval;
 	}
 
@@ -4964,7 +4966,7 @@ static int plugn_config_handler(ldmsd_req_ctxt_t reqc)
 
 	reqc->errcode = tokenize(config_attr, kw_list, av_list);
 	if (reqc->errcode) {
-		ldmsd_log(LDMSD_LERROR, "Memory allocation failure "
+		ovis_log(config_log, OVIS_LERROR, "Memory allocation failure "
 				"processing '%s'\n", config_attr);
 		cnt = Snprintf(&reqc->line_buf, &reqc->line_len,
 				"Out of memory");
@@ -5301,8 +5303,10 @@ out:
 static int verbosity_change_handler(ldmsd_req_ctxt_t reqc)
 {
 	char *level_s = NULL;
+	char *subsys = NULL;
 	size_t cnt = 0;
 	int is_test = 0;
+	int level;
 
 	level_s = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_LEVEL);
 	if (!level_s) {
@@ -5311,13 +5315,22 @@ static int verbosity_change_handler(ldmsd_req_ctxt_t reqc)
 				"The attribute 'level' is required.");
 		goto out;
 	}
+	subsys = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_NAME);
 
-	int rc = ldmsd_loglevel_set(level_s);
-	if (rc < 0) {
+	level = ovis_log_str_to_level(level_s);
+	if (level < 0) {
+		reqc->errcode = EINVAL;
+		cnt = Snprintf(&reqc->line_buf, &reqc->line_len,
+				"The given level %s is invalid.", level_s);
+		goto out;
+	}
+	int rc = ovis_log_set_level(subsys, level);
+	if (rc) {
 		reqc->errcode = EINVAL;
 		cnt = Snprintf(&reqc->line_buf, &reqc->line_len,
 				"Invalid verbosity level, expecting DEBUG, "
-				"INFO, ERROR, CRITICAL and QUIET\n");
+				"INFO, ERROR, CRITICAL, a common-separated "
+				"list of them or QUIET\n");
 		goto out;
 	}
 
@@ -5327,12 +5340,12 @@ static int verbosity_change_handler(ldmsd_req_ctxt_t reqc)
 	__dlog(DLOG_CFGOK, "loglevel level=%s%s\n", level_s,
 		is_test ? " test" : "");
 	if (is_test) {
-		ldmsd_log(LDMSD_LDEBUG, "TEST DEBUG\n");
-		ldmsd_log(LDMSD_LINFO, "TEST INFO\n");
-		ldmsd_log(LDMSD_LWARNING, "TEST WARNING\n");
-		ldmsd_log(LDMSD_LERROR, "TEST ERROR\n");
-		ldmsd_log(LDMSD_LCRITICAL, "TEST CRITICAL\n");
-		ldmsd_log(LDMSD_LALL, "TEST ALWAYS\n");
+		ovis_log(config_log, OVIS_LDEBUG, "TEST DEBUG\n");
+		ovis_log(config_log, OVIS_LINFO, "TEST INFO\n");
+		ovis_log(config_log, OVIS_LWARNING, "TEST WARNING\n");
+		ovis_log(config_log, OVIS_LERROR, "TEST ERROR\n");
+		ovis_log(config_log, OVIS_LCRITICAL, "TEST CRITICAL\n");
+		ovis_log(config_log, OVIS_LALWAYS, "TEST ALWAYS\n");
 	}
 
 out:
@@ -5568,7 +5581,7 @@ static int exit_daemon_handler(ldmsd_req_ctxt_t reqc)
 {
 	cleanup_requested = 1;
 	__dlog(DLOG_CFGOK, "daemon_exit\n");
-	ldmsd_log(LDMSD_LINFO, "User requested exit.\n");
+	ovis_log(config_log, OVIS_LINFO, "User requested exit.\n");
 	Snprintf(&reqc->line_buf, &reqc->line_len,
 				"exit daemon request received");
 	ldmsd_send_req_response(reqc, reqc->line_buf);
@@ -5615,7 +5628,7 @@ static int __greeting_path_req_handler(ldmsd_req_ctxt_t reqc)
 	ldmsd_cfg_unlock(LDMSD_CFGOBJ_PRDCR);;
 	char *myself = strdup(ldmsd_myname_get());
 	if (!myself) {
-		ldmsd_log(LDMSD_LERROR, "Out of memory\n");
+		ovis_log(config_log, OVIS_LERROR, "Out of memory\n");
 		return ENOMEM;
 	}
 	if (!prdcr) {
@@ -5669,7 +5682,7 @@ static int greeting_handler(ldmsd_req_ctxt_t reqc)
 	str = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_NAME);
 	if (str) {
 		cnt = snprintf(reqc->line_buf, reqc->line_len, "Hello '%s'", str);
-		ldmsd_log(LDMSD_LDEBUG, "strlen(name)=%zu. %s\n", strlen(str), str);
+		ovis_log(config_log, OVIS_LDEBUG, "strlen(name)=%zu. %s\n", strlen(str), str);
 		ldmsd_send_req_response(reqc, reqc->line_buf);
 	} else if (ldmsd_req_attr_keyword_exist_by_name(reqc->req_buf, "test")) {
 		cnt = snprintf(reqc->line_buf, reqc->line_len, "Hi");
@@ -6692,7 +6705,7 @@ static int stream_publish_handler(ldmsd_req_ctxt_t reqc)
 	stream_name = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_NAME);
 	if (!stream_name) {
 		reqc->errcode = EINVAL;
-		ldmsd_log(LDMSD_LERROR, "%s: The stream name is missing "
+		ovis_log(config_log, OVIS_LERROR, "%s: The stream name is missing "
 			  "in the config message\n", __func__);
 		cnt = Snprintf(&reqc->line_buf, &reqc->line_len,
 			       "The stream name is missing.");
@@ -6739,7 +6752,7 @@ static int __on_republish_resp(ldmsd_req_cmd_t rcmd)
 	ldmsd_req_attr_t attr;
 	ldmsd_req_hdr_t resp = (ldmsd_req_hdr_t)(rcmd->reqc->req_buf);
 	attr = ldmsd_first_attr(resp);
-	ldmsd_log(LDMSD_LDEBUG, "%s: %s\n", __func__, (char *)attr->attr_value);
+	ovis_log(config_log, OVIS_LDEBUG, "%s: %s\n", __func__, (char *)attr->attr_value);
 	return 0;
 }
 
@@ -6754,7 +6767,7 @@ static int stream_republish_cb(ldmsd_stream_client_t c, void *ctxt,
 	ldmsd_req_cmd_t rcmd = ldmsd_req_cmd_new(ldms, LDMSD_STREAM_PUBLISH_REQ,
 						 NULL, __on_republish_resp, NULL);
 	if (!rcmd) {
-		ldmsd_log(LDMSD_LCRITICAL, "ldmsd is out of memory\n");
+		ovis_log(config_log, OVIS_LCRITICAL, "ldmsd is out of memory\n");
 		return ENOMEM;
 	}
 	rc = ldmsd_req_cmd_attr_append_str(rcmd, LDMSD_ATTR_NAME, stream);
@@ -7021,13 +7034,13 @@ static int stream_new_handler(ldmsd_req_ctxt_t reqc)
 
 	name = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_NAME);
 	if (!name) {
-		ldmsd_log(LDMSD_LERROR, "Received %s without the stream name\n",
+		ovis_log(config_log, OVIS_LERROR, "Received %s without the stream name\n",
 				ldmsd_req_id2str(reqc->req_id));
 		return 0;
 	}
 	rc = ldmsd_stream_new(name);
 	if (rc) {
-		ldmsd_log(LDMSD_LERROR, "Error %d: failed to create stream %s\n",
+		ovis_log(config_log, OVIS_LERROR, "Error %d: failed to create stream %s\n",
 									rc, name);
 		free(name);
 	}
@@ -7111,7 +7124,7 @@ int ldmsd_auth_opt_add(struct attr_value_list *auth_attrs, char *name, char *val
 	struct attr_value *attr;
 	attr = &(auth_attrs->list[auth_attrs->count]);
 	if (auth_attrs->count == auth_attrs->size) {
-		ldmsd_log(LDMSD_LERROR, "Too many auth options\n");
+		ovis_log(config_log, OVIS_LERROR, "Too many auth options\n");
 		return EINVAL;
 	}
 	attr->name = strdup(name);
@@ -7512,7 +7525,7 @@ send_reply:
 enomem:
 	snprintf(reqc->line_buf, reqc->line_len, "ldmsd is out of memory.");
 	reqc->errcode = ENOMEM;
-	ldmsd_log(LDMSD_LCRITICAL, "Out of memroy\n");
+	ovis_log(config_log, OVIS_LCRITICAL, "Out of memroy\n");
 	rc = ENOMEM;
 	goto send_reply;
 }
