@@ -89,13 +89,13 @@ int basic_smoke_test(void)
 
 	plugin = get_plugin(test_log);
 	if (!plugin) {
-		log_fn(LDMSD_LERROR, "get_plugin failed\n");
+		log_fn(OVIS_LERROR, "get_plugin failed\n");
 		return -1;
 	}
 
 	cfg = malloc(sizeof(*cfg));
 	if (!cfg) {
-		log_fn(LDMSD_LERROR, "malloc failed\n");
+		log_fn(OVIS_LERROR, "malloc failed\n");
 		return -1;
 	}
 
@@ -103,7 +103,7 @@ int basic_smoke_test(void)
 
 	rc = cfg->sampler->sample(cfg->sampler);
 	if (rc != 0) {
-		log_fn(LDMSD_LERROR, "sample failed: %d\n", rc);
+		log_fn(OVIS_LERROR, "sample failed: %d\n", rc);
 		return -1;
 	}
 
@@ -120,13 +120,13 @@ void main(void)
 	log_fn = test_log;
 
 	if (mm_init(512 * 1024 * 1024, 1024)) {
-		log_fn(LDMSD_LERROR, "mm_init failed\n");
+		log_fn(OVIS_LERROR, "mm_init failed\n");
 		return;
 	}
 
 	rc = basic_smoke_test();
 	if (rc != 0) {
-		log_fn(LDMSD_LERROR, "basic_smoke_test failed: %d\n", rc);
+		log_fn(OVIS_LERROR, "basic_smoke_test failed: %d\n", rc);
 		return;
 	}
 }
