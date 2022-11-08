@@ -97,7 +97,9 @@
  *
  */
 
-static ovis_log_t config_log;
+extern ovis_log_t config_log; /* defined in ldmsd.c */
+extern ovis_log_t config_cmd_log;  /* defined in ldmsd.c */
+extern ovis_log_t query_log;  /* defined in ldmsd.c */
 
 pthread_mutex_t msg_tree_lock = PTHREAD_MUTEX_INITIALIZER;
 
@@ -892,7 +894,7 @@ int ldmsd_handle_request(ldmsd_req_ctxt_t reqc)
 	if (LDMSD_CFG_TYPE_LDMS == reqc->xprt->type)
 		ldms = reqc->xprt->ldms.ldms;
 
-	__dlog(DLOG_DEBUG, "handling req %s\n", ldmsd_req_id2str(reqc->req_id));
+	ovis_log(config_log, OVIS_LDEBUG, "handling req %s\n", ldmsd_req_id2str(reqc->req_id));
 
 	/* Check for request id outside of range */
 	if ((int)request->req_id < 0 ||
@@ -1171,7 +1173,7 @@ int ldmsd_process_config_request(ldmsd_cfg_xprt_t xprt, ldmsd_req_hdr_t request)
 		goto out;
 	}
 
-	__dlog(DLOG_DEBUG, "processing message %d:%lu %s\n",
+	ovis_log(config_log, OVIS_LDEBUG, "processing message %d:%lu %s\n",
 		   key.msg_no, key.conn_id,
 		   ldmsd_req_id2str(ntohl(request->req_id)));
 
@@ -1288,7 +1290,7 @@ int ldmsd_process_config_response(ldmsd_cfg_xprt_t xprt, ldmsd_req_hdr_t respons
 		goto out;
 	}
 
-	__dlog(DLOG_DEBUG, "processing response %d:%lu\n", key.msg_no, key.conn_id);
+	ovis_log(config_log, OVIS_LDEBUG, "processing response %d:%lu\n", key.msg_no, key.conn_id);
 
 	req_ctxt_tree_lock();
 	reqc = find_req_ctxt(&key);
@@ -1534,7 +1536,7 @@ static int prdcr_add_handler(ldmsd_req_ctxt_t reqc)
 		else
 			goto enomem;
 	}
-	__dlog(DLOG_CFGOK, "prdcr_add name=%s xprt=%s host=%s port=%u type=%s "
+	ovis_log(config_cmd_log, OVIS_LALWAYS, "prdcr_add name=%s xprt=%s host=%s port=%u type=%s "
 		"interval=%d auth=%s uid=%d gid=%d perm=%o\n",
 		name, xprt, host, port_no, type_s,
 		interval_us, auth ? auth : "none", (int)uid, (int)gid,
@@ -1601,7 +1603,7 @@ static int prdcr_del_handler(ldmsd_req_ctxt_t reqc)
 	reqc->errcode = ldmsd_prdcr_del(name, &sctxt);
 	switch (reqc->errcode) {
 	case 0:
-		__dlog(DLOG_CFGOK, "prdcr_del name=%s\n", name);
+		ovis_log(config_cmd_log, OVIS_LALWAYS, "prdcr_del name=%s\n", name);
 		break;
 	case ENOENT:
 		Snprintf(&reqc->line_buf, &reqc->line_len,
@@ -1650,7 +1652,7 @@ static int prdcr_start_handler(ldmsd_req_ctxt_t reqc)
 	reqc->errcode = ldmsd_prdcr_start(name, interval_str, &sctxt);
 	switch (reqc->errcode) {
 	case 0:
-		__dlog(DLOG_CFGOK, "prdcr_start name=%s interval=%s\n",
+		ovis_log(config_cmd_log, OVIS_LALWAYS, "prdcr_start name=%s interval=%s\n",
 			name, interval_str);
 		break;
 	case EBUSY:
@@ -1699,7 +1701,7 @@ static int prdcr_stop_handler(ldmsd_req_ctxt_t reqc)
 	reqc->errcode = ldmsd_prdcr_stop(name, &sctxt);
 	switch (reqc->errcode) {
 	case 0:
-		__dlog(DLOG_CFGOK, "prdcr_stop name=%s\n", name);
+		ovis_log(config_cmd_log, OVIS_LALWAYS, "prdcr_stop name=%s\n", name);
 		break;
 	case EBUSY:
 		cnt = Snprintf(&reqc->line_buf, &reqc->line_len,
@@ -1750,7 +1752,7 @@ static int prdcr_start_regex_handler(ldmsd_req_ctxt_t reqc)
 					reqc->line_buf, reqc->line_len, &sctxt);
 	/* on error, reqc->line_buf will be filled */
 	if (reqc->line_buf[0] == '\0' || reqc->line_buf[0] == '0')
-		__dlog(DLOG_CFGOK, "prdcr_start_regex regex=%s%s%s\n",
+		ovis_log(config_cmd_log, OVIS_LALWAYS, "prdcr_start_regex regex=%s%s%s\n",
 			prdcr_regex, interval_str ? " interval=" :"",
 			interval_str ? interval_str : "");
 
@@ -1782,7 +1784,7 @@ static int prdcr_stop_regex_handler(ldmsd_req_ctxt_t reqc)
 				reqc->line_buf, reqc->line_len, &sctxt);
 	/* on error, reqc->line_buf will be filled */
 	if (reqc->line_buf[0] == '\0' || reqc->line_buf[0] == '0')
-		__dlog(DLOG_CFGOK, "prdcr_stop_regex regex=%s\n", prdcr_regex);
+		ovis_log(config_cmd_log, OVIS_LALWAYS, "prdcr_stop_regex regex=%s\n", prdcr_regex);
 
 send_reply:
 	ldmsd_send_req_response(reqc, reqc->line_buf);
@@ -1822,7 +1824,7 @@ static int prdcr_subscribe_regex_handler(ldmsd_req_ctxt_t reqc)
 						    reqc->line_len, &sctxt);
 	/* on error, reqc->line_buf will be filled */
 	if (reqc->line_buf[0] == '\0' || reqc->line_buf[0] == '0')
-		__dlog(DLOG_CFGOK, "prdcr_subscribe_regex prdcr_regex=%s stream=%s\n",
+		ovis_log(config_cmd_log, OVIS_LALWAYS, "prdcr_subscribe_regex prdcr_regex=%s stream=%s\n",
 			prdcr_regex, stream_name);
 
 send_reply:
@@ -1864,7 +1866,7 @@ static int prdcr_unsubscribe_regex_handler(ldmsd_req_ctxt_t reqc)
 						      reqc->line_len, &sctxt);
 	/* on error, reqc->line_buf will be filled */
 	if (reqc->line_buf[0] == '\0' || reqc->line_buf[0] == '0')
-		__dlog(DLOG_CFGOK, "prdcr_unsubscribe_regex prdcr_regex=%s stream=%s\n",
+		ovis_log(config_cmd_log, OVIS_LALWAYS, "prdcr_unsubscribe_regex prdcr_regex=%s stream=%s\n",
 			prdcr_regex, stream_name);
 
 send_reply:
@@ -2478,7 +2480,7 @@ static int strgp_add_handler(ldmsd_req_ctxt_t reqc)
 		strgp->decomp_name = NULL;
 	}
 	if (reqc->line_buf[0] == '\0' || reqc->line_buf[0] == '0')
-		__dlog(DLOG_CFGOK, "strgp_add name=%s plugin=%s container=%s"
+		ovis_log(config_cmd_log, OVIS_LALWAYS, "strgp_add name=%s plugin=%s container=%s"
 			"%s%s" "%s%s" "%s%s" "%s%s" "%s%s\n",
 			name, plugin, container,
 			schema ? " schema=" : "", schema ? schema : "",
@@ -2549,7 +2551,7 @@ static int strgp_del_handler(ldmsd_req_ctxt_t reqc)
 	reqc->errcode = ldmsd_strgp_del(name, &sctxt);
 	switch (reqc->errcode) {
 	case 0:
-		__dlog(DLOG_CFGOK, "strgp_del name=%s\n", name);
+		ovis_log(config_cmd_log, OVIS_LALWAYS, "strgp_del name=%s\n", name);
 		break;
 	case ENOENT:
 		cnt = Snprintf(&reqc->line_buf, &reqc->line_len,
@@ -2599,7 +2601,7 @@ static int strgp_prdcr_add_handler(ldmsd_req_ctxt_t reqc)
 				reqc->line_buf, reqc->line_len, &sctxt);
 	switch (reqc->errcode) {
 	case 0:
-		__dlog(DLOG_CFGOK, "strgp_prdcr_add name=%s regex=%s\n",
+		ovis_log(config_cmd_log, OVIS_LALWAYS, "strgp_prdcr_add name=%s regex=%s\n",
 			name, regex_str);
 		break;
 	case ENOENT:
@@ -2661,7 +2663,7 @@ static int strgp_prdcr_del_handler(ldmsd_req_ctxt_t reqc)
 	reqc->errcode = ldmsd_strgp_prdcr_del(name, regex_str, &sctxt);
 	switch (reqc->errcode) {
 	case 0:
-		__dlog(DLOG_CFGOK, "strgp_prdcr_del name=%s regex=%s\n",
+		ovis_log(config_cmd_log, OVIS_LALWAYS, "strgp_prdcr_del name=%s regex=%s\n",
 			name, regex_str);
 		break;
 	case ENOENT:
@@ -2725,7 +2727,7 @@ static int strgp_metric_add_handler(ldmsd_req_ctxt_t reqc)
 	reqc->errcode = ldmsd_strgp_metric_add(name, metric_name, &sctxt);
 	switch (reqc->errcode) {
 	case 0:
-		__dlog(DLOG_CFGOK, "strgp_metric_add name=%s metric=%s\n",
+		ovis_log(config_cmd_log, OVIS_LALWAYS, "strgp_metric_add name=%s metric=%s\n",
 			name, metric_name);
 		break;
 	case ENOENT:
@@ -2792,7 +2794,7 @@ static int strgp_metric_del_handler(ldmsd_req_ctxt_t reqc)
 	reqc->errcode = ldmsd_strgp_metric_del(name, metric_name, &sctxt);
 	switch (reqc->errcode) {
 	case 0:
-		__dlog(DLOG_CFGOK, "strgp_metric_del name=%s metric=%s\n",
+		ovis_log(config_cmd_log, OVIS_LALWAYS, "strgp_metric_del name=%s metric=%s\n",
 			name, metric_name);
 		break;
 	case ENOENT:
@@ -2867,7 +2869,7 @@ static int strgp_start_handler(ldmsd_req_ctxt_t reqc)
 			"The storage policy is already running.");
 		goto send_reply;
 	case 0:
-		__dlog(DLOG_CFGOK, "strgp_start name=%s\n", name);
+		ovis_log(config_cmd_log, OVIS_LALWAYS, "strgp_start name=%s\n", name);
 		break;
 	default:
 		break;
@@ -2902,7 +2904,7 @@ static int strgp_stop_handler(ldmsd_req_ctxt_t reqc)
 	reqc->errcode = ldmsd_strgp_stop(name, &sctxt);
 	switch (reqc->errcode) {
 	case 0:
-		__dlog(DLOG_CFGOK, "strgp_stop name=%s\n", name);
+		ovis_log(config_cmd_log, OVIS_LALWAYS, "strgp_stop name=%s\n", name);
 		break;
 	case ENOENT:
 		cnt = Snprintf(&reqc->line_buf, &reqc->line_len,
@@ -3007,7 +3009,7 @@ static int strgp_status_handler(ldmsd_req_ctxt_t reqc)
 
 	reqc->errcode = 0;
 	name = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_NAME);
-	__dlog(DLOG_QUERY, "strgp_status %s%s\n",
+	ovis_log(query_log, OVIS_LALWAYS, "strgp_status %s%s\n",
 		name ? " name=" : "", name ? name : "");
 	if (name) {
 		strgp = ldmsd_strgp_find(name);
@@ -3239,7 +3241,7 @@ static int updtr_add_handler(ldmsd_req_ctxt_t reqc)
 				       "The updtr could not be created.");
 		}
 	} else {
-		__dlog(DLOG_CFGOK, "updtr_add name=%s interval=%s offset=%s%s%s"
+		ovis_log(config_cmd_log, OVIS_LALWAYS, "updtr_add name=%s interval=%s offset=%s%s%s"
 			"%s%s%s%s\n", name, interval_str,
 			offset_str ? offset_str : "0",
 			auto_interval ? " auto_interval=" : "",
@@ -3275,7 +3277,7 @@ static int updtr_del_handler(ldmsd_req_ctxt_t reqc)
 	reqc->errcode = ldmsd_updtr_del(name, &sctxt);
 	switch (reqc->errcode) {
 	case 0:
-		__dlog(DLOG_CFGOK, "updtr_del name=%s\n", name);
+		ovis_log(config_cmd_log, OVIS_LALWAYS, "updtr_del name=%s\n", name);
 		break;
 	case ENOENT:
 		cnt = Snprintf(&reqc->line_buf, &reqc->line_len,
@@ -3335,7 +3337,7 @@ static int updtr_prdcr_add_handler(ldmsd_req_ctxt_t reqc)
 				reqc->line_buf, reqc->line_len, &sctxt);
 	switch (reqc->errcode) {
 	case 0:
-		__dlog(DLOG_CFGOK, "updtr_prdcr_add name=%s regex=%s\n",
+		ovis_log(config_cmd_log, OVIS_LALWAYS, "updtr_prdcr_add name=%s regex=%s\n",
 			updtr_name, prdcr_regex);
 		break;
 	case EACCES:
@@ -3403,7 +3405,7 @@ static int updtr_prdcr_del_handler(ldmsd_req_ctxt_t reqc)
 			reqc->line_buf, reqc->line_len, &sctxt);
 	switch (reqc->errcode) {
 	case 0:
-		__dlog(DLOG_CFGOK, "updtr_prdcr_del name=%s regex=%s\n",
+		ovis_log(config_cmd_log, OVIS_LALWAYS, "updtr_prdcr_del name=%s regex=%s\n",
 			updtr_name, prdcr_regex);
 		break;
 	case EACCES:
@@ -3466,7 +3468,7 @@ static int updtr_match_add_handler(ldmsd_req_ctxt_t reqc)
 			reqc->line_buf, reqc->line_len, &sctxt);
 	switch (reqc->errcode) {
 	case 0:
-		__dlog(DLOG_CFGOK, "updtr_match_add name=%s regex=%s%s%s\n",
+		ovis_log(config_cmd_log, OVIS_LALWAYS, "updtr_match_add name=%s regex=%s%s%s\n",
 			updtr_name, regex_str, match_str ? " match=" : "",
 			match_str ? match_str : "");
 		break;
@@ -3543,7 +3545,7 @@ static int updtr_match_del_handler(ldmsd_req_ctxt_t reqc)
 					      &sctxt);
 	switch (reqc->errcode) {
 	case 0:
-		__dlog(DLOG_CFGOK, "updtr_match_del name=%s regex=%s%s%s\n",
+		ovis_log(config_cmd_log, OVIS_LALWAYS, "updtr_match_del name=%s regex=%s%s%s\n",
 			updtr_name, regex_str, match_str ? " match=" : "",
 			match_str ? match_str : "");
 		break;
@@ -3645,7 +3647,7 @@ static int updtr_match_list_handler(ldmsd_req_ctxt_t reqc)
 	reqc->errcode = 0;
 
 	name = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_NAME);
-	__dlog(DLOG_QUERY, "updtr_match_list%s%s\n",
+	ovis_log(query_log, OVIS_LALWAYS, "updtr_match_list%s%s\n",
 		name ? " name=" : "", name ? name : "");
 	if (name) {
 		updtr = ldmsd_updtr_find(name);
@@ -3788,10 +3790,10 @@ static int updtr_start_handler(ldmsd_req_ctxt_t reqc)
 	ldmsd_req_ctxt_sec_get(reqc, &sctxt);
 	reqc->errcode = ldmsd_updtr_start(updtr_name, interval_str, offset_str,
 					  auto_interval, &sctxt);
-	__dlog(DLOG_CFGOK, "UPDTR_START %d\n", reqc->errcode);
+	ovis_log(config_cmd_log, OVIS_LALWAYS, "UPDTR_START %d\n", reqc->errcode);
 	switch (reqc->errcode) {
 	case 0:
-		__dlog(DLOG_CFGOK, "updtr_start name=%s" "%s%s" "%s%s" "%s%s\n",
+		ovis_log(config_cmd_log, OVIS_LALWAYS, "updtr_start name=%s" "%s%s" "%s%s" "%s%s\n",
 			updtr_name,
 			interval_str ? " interval=" : "",
 			interval_str ? interval_str : "",
@@ -3846,7 +3848,7 @@ static int updtr_stop_handler(ldmsd_req_ctxt_t reqc)
 	reqc->errcode = ldmsd_updtr_stop(updtr_name, &sctxt);
 	switch (reqc->errcode) {
 	case 0:
-		__dlog(DLOG_CFGOK, "updtr_stop name=%s\n", updtr_name);
+		ovis_log(config_cmd_log, OVIS_LALWAYS, "updtr_stop name=%s\n", updtr_name);
 		break;
 	case ENOENT:
 		cnt = Snprintf(&reqc->line_buf, &reqc->line_len,
@@ -3960,7 +3962,7 @@ static int updtr_status_handler(ldmsd_req_ctxt_t reqc)
 	reqc->errcode = 0;
 
 	name = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_NAME);
-	__dlog(DLOG_QUERY, "updtr_status %s%s\n",
+	ovis_log(query_log, OVIS_LALWAYS, "%s%s\n",
 		name ? " name=" : "", name ? name : "");
 	if (name) {
 		updtr = ldmsd_updtr_find(name);
@@ -4094,7 +4096,7 @@ static int updtr_task_status_handler(ldmsd_req_ctxt_t reqc)
 	struct ldmsd_req_attr_s attr;
 
 	name = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_NAME);
-	__dlog(DLOG_QUERY, "updtr_task_status%s%s\n",
+	ovis_log(query_log, OVIS_LALWAYS, "updtr_task_status%s%s\n",
 		name ? " name=" : "", name ? name : "");
 	if (name) {
 		updtr = ldmsd_updtr_find(name);
@@ -4250,7 +4252,7 @@ static int prdcr_hint_tree_status_handler(ldmsd_req_ctxt_t reqc)
 	struct ldmsd_req_attr_s attr;
 
 	name = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_NAME);
-	__dlog(DLOG_QUERY, "prdcr_hint_tree_status%s%s\n",
+	ovis_log(query_log, OVIS_LALWAYS, "prdcr_hint_tree_status%s%s\n",
 		name ? " name=" : "", name ? name : "");
 	if (name) {
 		prdcr = ldmsd_prdcr_find(name);
@@ -4391,7 +4393,7 @@ static int setgroup_add_handler(ldmsd_req_ctxt_t reqc)
 		goto err;
 	}
 	/* rc is 0 */
-	__dlog(DLOG_CFGOK, "setgroup_add name=%s" "%s%s" "%s%s" "%s%s\n",
+	ovis_log(config_cmd_log, OVIS_LALWAYS, "setgroup_add name=%s" "%s%s" "%s%s" "%s%s\n",
 		name, producer ? " producer=" : "", producer ? producer : "",
 		interval ? " interval=" : "", interval ? interval : "",
 		offset ? " offset=" : "", offset ? offset : "");
@@ -4464,7 +4466,7 @@ static int setgroup_mod_handler(ldmsd_req_ctxt_t reqc)
 		}
 	}
 	/* rc is 0 */
-	__dlog(DLOG_CFGOK, "setgroup_mod name=%s" "%s%s" "%s%s\n",
+	ovis_log(config_cmd_log, OVIS_LALWAYS, "setgroup_mod name=%s" "%s%s" "%s%s\n",
 		name, interval ? " interval=" : "", interval ? interval : "",
 		offset ? " offset=" : "", offset ? offset : "");
 	goto out;
@@ -4518,7 +4520,7 @@ static int setgroup_del_handler(ldmsd_req_ctxt_t reqc)
 		goto out;
 	}
 
-	__dlog(DLOG_CFGOK, "setgroup_del name=%s\n", name);
+	ovis_log(config_cmd_log, OVIS_LALWAYS, "setgroup_del name=%s\n", name);
 	ldms_set_delete(grp);
 	rc = 0;
 
@@ -4580,7 +4582,7 @@ static int setgroup_ins_handler(ldmsd_req_ctxt_t reqc)
 		sname = strtok_r(NULL, delim, &p);
 	}
 	/* rc is 0 */
-	__dlog(DLOG_CFGOK, "setgroup_ins name=%s%s%s\n", name,
+	ovis_log(config_cmd_log, OVIS_LALWAYS, "setgroup_ins name=%s%s%s\n", name,
 		instance ? " instance=" : "", instance ? instance : "");
 
 out:
@@ -4644,7 +4646,7 @@ static int setgroup_rm_handler(ldmsd_req_ctxt_t reqc)
 		sname = strtok_r(NULL, delim, &p);
 	}
 	/* rc is 0 */
-	__dlog(DLOG_CFGOK, "setgroup_rm name=%s%s%s\n", name,
+	ovis_log(config_cmd_log, OVIS_LALWAYS, "setgroup_rm name=%s%s%s\n", name,
 		instance ? " instance=" : "", instance ? instance : "");
 
 out:
@@ -4697,7 +4699,7 @@ static int plugn_start_handler(ldmsd_req_ctxt_t reqc)
 
 	reqc->errcode = ldmsd_start_sampler(plugin_name, interval_us, offset);
 	if (reqc->errcode == 0) {
-		__dlog(DLOG_CFGOK, "start name=%s%s%s%s%s\n", plugin_name,
+		ovis_log(config_cmd_log, OVIS_LALWAYS, "start name=%s%s%s%s%s\n", plugin_name,
 			interval_us ? " interval=" : "",
 			interval_us ? interval_us : "",
 			offset ? " offset=" : "", offset ? offset : "");
@@ -4753,7 +4755,7 @@ static int plugn_stop_handler(ldmsd_req_ctxt_t reqc)
 
 	reqc->errcode = ldmsd_stop_sampler(plugin_name);
 	if (reqc->errcode == 0) {
-		__dlog(DLOG_CFGOK, "stop name=%s\n", plugin_name);
+		ovis_log(config_cmd_log, OVIS_LALWAYS, "stop name=%s\n", plugin_name);
 		goto send_reply;
 	} else if (reqc->errcode == ENOENT) {
 		cnt = Snprintf(&reqc->line_buf, &reqc->line_len,
@@ -4823,7 +4825,7 @@ static int plugn_status_handler(ldmsd_req_ctxt_t reqc)
 	int rc;
 	struct ldmsd_req_attr_s attr;
 
-	__dlog(DLOG_QUERY, "plugn_status\n");
+	ovis_log(query_log, OVIS_LALWAYS, "plugn_status\n");
 	rc = __plugn_status_json_obj(reqc);
 	if (rc)
 		return rc;
@@ -4863,7 +4865,7 @@ static int plugn_load_handler(ldmsd_req_ctxt_t reqc)
 	if (reqc->errcode)
 		cnt = strlen(reqc->line_buf) + 1;
 	else
-		__dlog(DLOG_CFGOK, "load name=%s\n", plugin_name);
+		ovis_log(config_cmd_log, OVIS_LALWAYS, "load name=%s\n", plugin_name);
 	goto send_reply;
 
 einval:
@@ -4889,7 +4891,7 @@ static int plugn_term_handler(ldmsd_req_ctxt_t reqc)
 
 	reqc->errcode = ldmsd_term_plugin(plugin_name);
 	if (reqc->errcode == 0) {
-		__dlog(DLOG_CFGOK, "term name=%s\n", plugin_name);
+		ovis_log(config_cmd_log, OVIS_LALWAYS, "term name=%s\n", plugin_name);
 		goto send_reply;
 	} else if (reqc->errcode == ENOENT) {
 		cnt = Snprintf(&reqc->line_buf, &reqc->line_len,
@@ -4980,7 +4982,7 @@ static int plugn_config_handler(ldmsd_req_ctxt_t reqc)
 				"Plugin '%s' configuration error.",
 				plugin_name);
 	} else {
-		__dlog(DLOG_CFGOK, "config name=%s %s\n", plugin_name,
+		ovis_log(config_cmd_log, OVIS_LALWAYS, "config name=%s %s\n", plugin_name,
 			attr_copy);
 	}
 	goto send_reply;
@@ -5046,7 +5048,7 @@ static int plugn_list_handler(ldmsd_req_ctxt_t reqc)
 	int rc;
 	struct ldmsd_req_attr_s attr;
 
-	__dlog(DLOG_QUERY, "usage\n");
+	ovis_log(query_log, OVIS_LALWAYS, "usage\n");
 	rc = __plugn_list_string(reqc);
 	if (rc)
 		return rc;
@@ -5110,7 +5112,7 @@ static int plugn_sets_handler(ldmsd_req_ctxt_t reqc)
 	int plugn_count;
 
 	plugin = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_NAME);
-	__dlog(DLOG_QUERY, "plugn_sets%s%s\n", plugin? " name=" : "",
+	ovis_log(query_log, OVIS_LALWAYS, "plugn_sets%s%s\n", plugin? " name=" : "",
 		plugin ? plugin : "");
 	ldmsd_set_tree_lock();
 	if (plugin) {
@@ -5213,7 +5215,7 @@ static int set_udata_handler(ldmsd_req_ctxt_t reqc)
 	reqc->errcode = ldmsd_set_udata(set_name, metric_name, udata, &sctxt);
 	switch (reqc->errcode) {
 	case 0:
-		__dlog(DLOG_CFGOK, "udata instance=%s metric=%s udata=%s\n",
+		ovis_log(config_cmd_log, OVIS_LALWAYS, "udata instance=%s metric=%s udata=%s\n",
 			set_name, metric_name, udata);
 		break;
 	case EACCES:
@@ -5283,7 +5285,7 @@ static int set_udata_regex_handler(ldmsd_req_ctxt_t reqc)
 	reqc->errcode = ldmsd_set_udata_regex(set_name, regex, base_s, inc_s,
 				reqc->line_buf, reqc->line_len, &sctxt);
 	if (!reqc->errcode)
-		__dlog(DLOG_CFGOK, "udata_regex instance=%s regex=%s base=%s"
+		ovis_log(config_cmd_log, OVIS_LALWAYS, "udata_regex instance=%s regex=%s base=%s"
 			"%s%s\n", set_name, regex, base_s,
 			inc_s ? " incr=" : "", inc_s ? inc_s : "");
 	goto out;
@@ -5337,7 +5339,7 @@ static int verbosity_change_handler(ldmsd_req_ctxt_t reqc)
 	if (ldmsd_req_attr_keyword_exist_by_id(reqc->req_buf, LDMSD_ATTR_TEST))
 		is_test = 1;
 
-	__dlog(DLOG_CFGOK, "loglevel level=%s%s\n", level_s,
+	ovis_log(config_cmd_log, OVIS_LALWAYS, "loglevel level=%s%s\n", level_s,
 		is_test ? " test" : "");
 	if (is_test) {
 		ovis_log(config_log, OVIS_LDEBUG, "TEST DEBUG\n");
@@ -5379,7 +5381,7 @@ static int daemon_status_handler(ldmsd_req_ctxt_t reqc)
 	int rc;
 	struct ldmsd_req_attr_s attr;
 
-	__dlog(DLOG_QUERY, "daemon_status\n");
+	ovis_log(query_log, OVIS_LALWAYS, "daemon_status\n");
 	rc = __daemon_status_json_obj(reqc);
 	if (rc)
 		return rc;
@@ -5404,7 +5406,7 @@ static int version_handler(ldmsd_req_ctxt_t reqc)
 	struct ldms_version ldms_version;
 	struct ldmsd_version ldmsd_version;
 
-	__dlog(DLOG_QUERY, "version\n");
+	ovis_log(query_log, OVIS_LALWAYS, "version\n");
 	ldms_version_get(&ldms_version);
 	size_t cnt = snprintf(reqc->line_buf, reqc->line_len,
 			"LDMS Version: %hhu.%hhu.%hhu.%hhu\n",
@@ -5475,7 +5477,7 @@ static int env_handler(ldmsd_req_ctxt_t reqc)
 					v->name, v->value, STRERROR(rc));
 			goto out;
 		}
-		__dlog(DLOG_CFGOK, "env %s=%s\n", v->name, v->value);
+		ovis_log(config_cmd_log, OVIS_LALWAYS, "env %s=%s\n", v->name, v->value);
 	}
 out:
 	ldmsd_send_req_response(reqc, reqc->line_buf);
@@ -5544,7 +5546,7 @@ static int oneshot_handler(ldmsd_req_ctxt_t reqc)
 		cnt = strlen(reqc->line_buf) + 1;
 		goto out;
 	}
-	__dlog(DLOG_CFGOK, "oneshot name=%s time=%s\n", name, time_s);
+	ovis_log(config_cmd_log, OVIS_LALWAYS, "oneshot name=%s time=%s\n", name, time_s);
 	ldmsd_send_req_response(reqc, NULL);
 	free(name);
 	free(time_s);
@@ -5580,7 +5582,7 @@ static int logrotate_handler(ldmsd_req_ctxt_t reqc)
 static int exit_daemon_handler(ldmsd_req_ctxt_t reqc)
 {
 	cleanup_requested = 1;
-	__dlog(DLOG_CFGOK, "daemon_exit\n");
+	ovis_log(config_cmd_log, OVIS_LALWAYS, "daemon_exit\n");
 	ovis_log(config_log, OVIS_LINFO, "User requested exit.\n");
 	Snprintf(&reqc->line_buf, &reqc->line_len,
 				"exit daemon request received");
@@ -5990,7 +5992,7 @@ static int set_route_handler(ldmsd_req_ctxt_t reqc)
 		(void) ldmsd_send_req_response(reqc, reqc->line_buf);
 		goto out;
 	}
-	__dlog(DLOG_QUERY, "set_route instance=%s\n", inst_name);
+	ovis_log(query_log, OVIS_LALWAYS, "set_route instance=%s\n", inst_name);
 	is_internal = ldmsd_req_attr_keyword_exist_by_id(reqc->req_buf, LDMSD_ATTR_TYPE);
 
 	info = ldmsd_set_info_get(inst_name);
@@ -6310,7 +6312,7 @@ static int xprt_stats_handler(ldmsd_req_ctxt_t req)
 	struct ldmsd_req_attr_s attr;
 
 	s = ldmsd_req_attr_str_value_get_by_id(req, LDMSD_ATTR_RESET);
-	__dlog(DLOG_QUERY, "xprt_stats%s%s\n", s ? " reset=" : "", s? s : "");
+	ovis_log(query_log, OVIS_LALWAYS, "xprt_stats%s%s\n", s ? " reset=" : "", s? s : "");
 	if (s) {
 		if (0 != strcasecmp(s, "false"))
 			reset = 1;
@@ -6416,7 +6418,7 @@ static int thread_stats_handler(ldmsd_req_ctxt_t req)
 	struct ldmsd_req_attr_s attr;
 
 	s = ldmsd_req_attr_str_value_get_by_id(req, LDMSD_ATTR_RESET);
-	__dlog(DLOG_QUERY, "thread_stats%s%s\n", s ? " reset=" : "", s? s : "");
+	ovis_log(query_log, OVIS_LALWAYS, "thread_stats%s%s\n", s ? " reset=" : "", s? s : "");
 	if (s) {
 		if (0 != strcasecmp(s, "false"))
 			reset = 1;
@@ -6531,7 +6533,7 @@ static int prdcr_stats_handler(ldmsd_req_ctxt_t req)
 	size_t json_sz;
 	struct ldmsd_req_attr_s attr;
 
-	__dlog(DLOG_QUERY, "prdcr_stats\n");
+	ovis_log(query_log, OVIS_LALWAYS, "prdcr_stats\n");
 	json_s = __prdcr_stats_as_json(&json_sz);
 	if (!json_s)
 		goto err;
@@ -6660,7 +6662,7 @@ static int set_stats_handler(ldmsd_req_ctxt_t req)
 	size_t json_sz;
 	struct ldmsd_req_attr_s attr;
 
-	__dlog(DLOG_QUERY, "set_stats\n");
+	ovis_log(query_log, OVIS_LALWAYS, "set_stats\n");
 	json_s = __set_stats_as_json(&json_sz);
 	if (!json_s)
 		goto err;
@@ -6939,7 +6941,7 @@ static int stream_subscribe_handler(ldmsd_req_ctxt_t reqc)
 	reqc->errcode = 0;
 	cnt = Snprintf(&reqc->line_buf, &reqc->line_len, "OK");
 	__RSE_rbt_unlock();
-	__dlog(DLOG_CFGOK, "subscribe name=%s\n", stream_name);
+	ovis_log(config_cmd_log, OVIS_LALWAYS, "subscribe name=%s\n", stream_name);
 send_reply:
 	free(stream_name);
 	ldmsd_send_req_response(reqc, reqc->line_buf);
@@ -6987,7 +6989,7 @@ static int stream_unsubscribe_handler(ldmsd_req_ctxt_t reqc)
 	reqc->errcode = 0;
 	cnt = Snprintf(&reqc->line_buf, &reqc->line_len, "OK");
 	__RSE_rbt_unlock();
-	__dlog(DLOG_CFGOK, "unsubscribe name=%s\n", stream_name);
+	ovis_log(config_cmd_log, OVIS_LALWAYS, "unsubscribe name=%s\n", stream_name);
 
 send_reply:
 	free(stream_name);
@@ -7001,7 +7003,7 @@ static int stream_client_dump_handler(ldmsd_req_ctxt_t reqc)
 	struct ldmsd_req_attr_s attr;
 	char *json;
 
-	__dlog(DLOG_QUERY, "stream_client_dump\n");
+	ovis_log(query_log, OVIS_LALWAYS, "stream_client_dump\n");
 	/* constructin JSON reply */
 	json = ldmsd_stream_client_dump();
 	if (!json)

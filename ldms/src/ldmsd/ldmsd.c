@@ -126,6 +126,8 @@ ovis_log_t stream_log;
 ovis_log_t config_log;
 ovis_log_t sampler_log;
 ovis_log_t fo_log; /* failover */
+ovis_log_t config_cmd_log; /* successfully executed configuration commands */
+ovis_log_t query_log; /* query configuration, e.g., *_status */
 
 char *progname;
 char myname[512]; /* name to identify ldmsd */
@@ -1902,6 +1904,10 @@ void log_init()
 	config_log = ovis_log_create("config", "Messages for the configuration infrastructure");
 	sampler_log = ovis_log_create("sampler", "Messages for the common sampler infrastructure");
 	fo_log = ovis_log_create("failover", "Messages for the failover infrastructure");
+	config_cmd_log = ovis_log_create("config_cmd", "Successfully executed configuration commands");
+	query_log = ovis_log_create("query", "Successfully executed query commands");
+	ovis_log_set_level("config_cmd", OVIS_LQUIET); /* Disabled until it is enabled thru the cmd-line option. */
+	ovis_log_set_level("query", OVIS_LQUIET); /* Disabled until it is enabled thru the cmd-line option. */
 }
 
 int main(int argc, char *argv[])

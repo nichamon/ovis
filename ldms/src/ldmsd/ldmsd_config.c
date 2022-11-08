@@ -83,8 +83,9 @@
 #include "config.h"
 
 extern void cleanup(int x, char *reason);
-/* Defined in ldmsd.c */
-extern ovis_log_t config_log;
+
+extern ovis_log_t config_log; /* Defined in ldmsd.c */
+extern ovis_log_t config_cmd_log; /* Defined in ldmsd.c */
 
 pthread_mutex_t host_list_lock = PTHREAD_MUTEX_INITIALIZER;
 LIST_HEAD(host_list_s, hostspec) host_list;
@@ -687,7 +688,7 @@ parse:
 		rc = req_filter(&xprt, request, ctxt);
 		/* rc = 0, filter OK */
 		if (rc == 0) {
-			__dlog(DLOG_CFGOK, "# deferring line %d (%s): %s\n",
+			ovis_log(config_cmd_log, OVIS_LALWAYS, "# deferring line %d (%s): %s\n",
 				lineno, path, line);
 			goto next_req;
 		}
@@ -856,7 +857,7 @@ int ldmsd_cfgobjs_start(int (*filter)(ldmsd_cfgobj_t))
 			ldmsd_cfg_unlock(LDMSD_CFGOBJ_PRDCR);
 			goto out;
 		}
-		__dlog(DLOG_CFGOK, "prdcr_start name=%s interval=%ld # delay\n",
+		ovis_log(config_cmd_log, OVIS_LALWAYS, "prdcr_start name=%s interval=%ld # delay\n",
 			obj->name, ((ldmsd_prdcr_t)obj)->conn_intrvl_us);
 	}
 	ldmsd_cfg_unlock(LDMSD_CFGOBJ_PRDCR);
@@ -873,7 +874,7 @@ int ldmsd_cfgobjs_start(int (*filter)(ldmsd_cfgobj_t))
 			ldmsd_cfg_unlock(LDMSD_CFGOBJ_UPDTR);
 			goto out;
 		}
-		__dlog(DLOG_CFGOK, "updtr_start name=%s interval=%ld"
+		ovis_log(config_cmd_log, OVIS_LALWAYS, "updtr_start name=%s interval=%ld"
 			" offset=%ld auto_interval=%d # delayed\n",
 			obj->name,
 			((ldmsd_updtr_t)obj)->default_task.sched.intrvl_us,
@@ -894,8 +895,8 @@ int ldmsd_cfgobjs_start(int (*filter)(ldmsd_cfgobj_t))
 			ldmsd_cfg_unlock(LDMSD_CFGOBJ_STRGP);
 			goto out;
 		}
-                __dlog(DLOG_CFGOK, "strgp_start name=%s # delayed \n",
-                        obj->name);
+		ovis_log(config_cmd_log, OVIS_LALWAYS, "strgp_start name=%s # delayed \n",
+									obj->name);
 	}
 	ldmsd_cfg_unlock(LDMSD_CFGOBJ_STRGP);
 
