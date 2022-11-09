@@ -879,7 +879,6 @@ ldmsd_store_close(struct ldmsd_store *store, ldmsd_store_handle_t sh)
 	store->close(sh);
 }
 
-typedef void (*ldmsd_msg_log_f)(enum ldmsd_loglevel level, const char *fmt, ...);
 typedef struct ldmsd_plugin *(*ldmsd_plugin_get_f)();
 
 /* ldmsctl command callback function definition */
