@@ -114,41 +114,6 @@ static char * __thread_stats_as_json(size_t *json_sz);
 static char * __xprt_stats_as_json(size_t *json_sz);
 extern const char *prdcr_state_str(enum ldmsd_prdcr_state state);
 
-struct timeval ldmsd_req_last_time;
-__attribute__((format(printf, 2, 3)))
-void __dlog(int match, const char *fmt, ...)
-{
-	if (!ldmsd_req_debug || !(match & ldmsd_req_debug))
-		return;
-	va_list ap;
-	va_start(ap, fmt);
-	if (ldmsd_req_debug_file) {
-		struct timeval tv;
-		if (ldmsd_req_debug & (DLOG_EPOCH | DLOG_DELTA)) {
-			gettimeofday(&tv, NULL);
-			if (ldmsd_req_debug & DLOG_EPOCH) {
-				fprintf(ldmsd_req_debug_file,"%lu.%06lu: ",
-					tv.tv_sec, tv.tv_usec);
-			}
-			if (ldmsd_req_debug & DLOG_DELTA) {
-				struct timeval *end = &tv;
-				struct timeval *start = &ldmsd_req_last_time;
-				double delta = (end->tv_sec - start->tv_sec)*1.0
-					+ 1e-6*(end->tv_usec - start->tv_usec);
-
-				fprintf(ldmsd_req_debug_file, "%.6f: ",
-					delta);
-			}
-			ldmsd_req_last_time = tv;
-		}
-		vfprintf(ldmsd_req_debug_file, fmt, ap);
-		fflush(ldmsd_req_debug_file);
-	} else {
-		ovis_log(config_log, OVIS_LALWAYS, fmt, ap);
-	}
-	va_end(ap);
-}
-
 __attribute__((format(printf, 3, 4)))
 size_t Snprintf(char **dst, size_t *len, char *fmt, ...);
 

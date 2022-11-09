@@ -934,8 +934,6 @@ int process_config_file(const char *path, int *lno, int trust)
 
 static inline void __log_sent_req(ldmsd_cfg_xprt_t xprt, ldmsd_req_hdr_t req)
 {
-	if (!ldmsd_req_debug) /* defined in ldmsd_request.c */
-		return;
 	/* req is in network byte order */
 	struct ldmsd_req_hdr_s hdr;
 	hdr.marker = htonl(req->marker);
