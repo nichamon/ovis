@@ -78,9 +78,9 @@
  * its major and/or minor numbers different from the version numbers below
  * may not be loaded or started.
  */
-#define LDMSD_VERSION_MAJOR	0x03
-#define LDMSD_VERSION_MINOR	0x02
-#define LDMSD_VERSION_PATCH	0x02
+#define LDMSD_VERSION_MAJOR	0x04
+#define LDMSD_VERSION_MINOR	0x00
+#define LDMSD_VERSION_PATCH	0x00
 #define LDMSD_VERSION_FLAGS	0x00
 
 #define LDMSD_DEFAULT_FILE_PERM 0600
@@ -880,7 +880,7 @@ ldmsd_store_close(struct ldmsd_store *store, ldmsd_store_handle_t sh)
 }
 
 typedef void (*ldmsd_msg_log_f)(enum ldmsd_loglevel level, const char *fmt, ...);
-typedef struct ldmsd_plugin *(*ldmsd_plugin_get_f)(ldmsd_msg_log_f pf);
+typedef struct ldmsd_plugin *(*ldmsd_plugin_get_f)();
 
 /* ldmsctl command callback function definition */
 typedef int (*ldmsctl_cmd_fn_t)(char *, struct attr_value_list*, struct attr_value_list *);
