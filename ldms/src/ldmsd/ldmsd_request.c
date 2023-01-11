@@ -8250,7 +8250,8 @@ enomem:
 
 static int
 __prdset_upd_time_stats_json_obj(ldmsd_req_ctxt_t reqc, ldmsd_updtr_t updtr,
-				ldmsd_prdcr_t prdcr, ldmsd_name_match_t match, int prd_cnt)
+				ldmsd_prdcr_t prdcr, ldmsd_name_match_t match,
+				int prd_cnt, int reset)
 {
 	int rc;
 	ldmsd_prdcr_set_t prdset;
@@ -8294,6 +8295,8 @@ __prdset_upd_time_stats_json_obj(ldmsd_req_ctxt_t reqc, ldmsd_updtr_t updtr,
 				prdset->updt_stat.max,
 				prdset->updt_stat.avg,
 				prdset->updt_stat.count);
+		if (reset)
+			memset(&prdset->updt_stat, 0, sizeof(prdset->updt_stat));
 		pthread_mutex_unlock(&prdset->lock);
 		if (rc)
 			goto end_quote;
@@ -8311,7 +8314,7 @@ unlock:
 extern ldmsd_prdcr_ref_t updtr_prdcr_ref_first(ldmsd_updtr_t updtr);
 extern ldmsd_prdcr_ref_t updtr_prdcr_ref_next(ldmsd_prdcr_ref_t ref);
 static int
-__upd_time_stats_json_obj(ldmsd_req_ctxt_t reqc, ldmsd_updtr_t updtr)
+__upd_time_stats_json_obj(ldmsd_req_ctxt_t reqc, ldmsd_updtr_t updtr, int reset)
 {
 	int rc;
 	ldmsd_name_match_t match;
@@ -8327,7 +8330,7 @@ __upd_time_stats_json_obj(ldmsd_req_ctxt_t reqc, ldmsd_updtr_t updtr)
 			for (ref = updtr_prdcr_ref_first(updtr); ref;
 					ref = updtr_prdcr_ref_next(ref)) {
 				rc = __prdset_upd_time_stats_json_obj(reqc, updtr,
-							  ref->prdcr, match, cnt);
+						ref->prdcr, match, cnt, reset);
 				if (rc && rc != ENOTCONN)
 					goto out;
 				else if (!rc)
@@ -8339,7 +8342,7 @@ __upd_time_stats_json_obj(ldmsd_req_ctxt_t reqc, ldmsd_updtr_t updtr)
 		for (ref = updtr_prdcr_ref_first(updtr); ref;
 				ref = updtr_prdcr_ref_next(ref)) {
 			rc = __prdset_upd_time_stats_json_obj(reqc, updtr,
-						   ref->prdcr, NULL, cnt);
+						   ref->prdcr, NULL, cnt, reset);
 			if (rc && rc != ENOTCONN)
 				goto out;
 			else if (!rc)
@@ -8355,8 +8358,18 @@ static int update_time_stats_handler(ldmsd_req_ctxt_t reqc)
 {
 	int rc;
 	ldmsd_updtr_t updtr;
-	char *name = NULL;
+	char *name, *reset_s;
+	name = reset_s = NULL;
 	int cnt = 0;
+	int reset = 0;
+
+	reset_s = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_RESET);
+	if (reset_s) {
+		if (0 != strcasecmp(reset_s, "false"))
+			reset = 1;
+		free(reset_s);
+	}
+
 
 	rc = linebuf_printf(reqc, "{");
 	if (rc)
@@ -8373,7 +8386,7 @@ static int update_time_stats_handler(ldmsd_req_ctxt_t reqc)
 			ldmsd_send_req_response(reqc, reqc->line_buf);
 			return 0;
 		}
-		rc = __upd_time_stats_json_obj(reqc, updtr);
+		rc = __upd_time_stats_json_obj(reqc, updtr, reset);
 	} else {
 		ldmsd_cfg_lock(LDMSD_CFGOBJ_UPDTR);
 		for (updtr = ldmsd_updtr_first(); updtr;
@@ -8385,7 +8398,7 @@ static int update_time_stats_handler(ldmsd_req_ctxt_t reqc)
 					goto err;
 				}
 			}
-			rc = __upd_time_stats_json_obj(reqc, updtr);
+			rc = __upd_time_stats_json_obj(reqc, updtr, reset);
 			if (rc) {
 				ldmsd_cfg_unlock(LDMSD_CFGOBJ_UPDTR);
 				goto err;
