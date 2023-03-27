@@ -21,6 +21,11 @@ if ENABLE_AMQP
 libstore_amqp_la_SOURCES = store_amqp.c
 libstore_amqp_la_LIBADD = -lrabbitmq $(STORE_LIBADD)
 pkglib_LTLIBRARIES += libstore_amqp.la
+
+libstore_amqp_new_la_SOURCES = store_amqp_new.c
+libstore_amqp_new_la_LIBADD = $(STORE_LIBADD) -lrabbitmq @OVIS_AUTH_LIBS@ \
+			      $(top_builddir)/lib/src/ovis_log/libovis_log.la
+pkglib_LTLIBRARIES += libstore_amqp_new.la
 endif
 
 if ENABLE_KOKKOS
