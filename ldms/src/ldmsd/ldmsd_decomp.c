@@ -108,8 +108,8 @@ static ldmsd_decomp_t decomp_get(const char *decomp, ldmsd_req_ctxt_t reqc)
 	char *path = getenv("LDMSD_PLUGIN_LIBPATH");
 	void *d = NULL;
 	char *dlerr;
-	struct stat st;
 	int rc;
+	struct stat st;
 	decomp_rbn_t drbn;
 	ldmsd_decomp_t (*get)(), dc;
 
@@ -136,6 +136,8 @@ static ldmsd_decomp_t decomp_get(const char *decomp, ldmsd_req_ctxt_t reqc)
 				/*
 				 * We will print a not-found log message
 				 * after we search all paths in pathdir.
+				 *
+				 * Check the next path.
 				 */
 			} else {
 				DECOMP_ERR(reqc, rc, "Failed to load %s. %s\n",
