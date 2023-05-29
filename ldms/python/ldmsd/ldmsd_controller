@@ -1108,9 +1108,11 @@ class LdmsdCmdParser(cmd.Cmd):
                 if pstats['max'] < prdset['max']:
                     pstats['max'] = prdset['max']
                     pstats['max_prdset'] = s
-                pstats['avg'] = pstats['avg'] * (pstats['cnt']/(pstats['cnt'] + prdset['cnt']))
-                pstats['avg'] += prdset['avg'] * (prdset['cnt']/(pstats['cnt'] + prdset['cnt']))
-                pstats['cnt'] += prdset['cnt']
+
+                if prdset['cnt'] > 0:
+                    pstats['avg'] = pstats['avg'] * (pstats['cnt']/(pstats['cnt'] + prdset['cnt']))
+                    pstats['avg'] += prdset['avg'] * (prdset['cnt']/(pstats['cnt'] + prdset['cnt']))
+                    pstats['cnt'] += prdset['cnt']
             stats['producers'][p] = pstats
 
             if stats['min'] > pstats['min']:
@@ -1119,9 +1121,10 @@ class LdmsdCmdParser(cmd.Cmd):
             if stats['max'] < pstats['max']:
                 stats['max'] = pstats['max']
                 stats['max_prdcr'] = p
-            stats['avg'] = stats['avg'] * (stats['cnt']/(stats['cnt'] + pstats['cnt']))
-            stats['avg'] += pstats['avg'] * (pstats['cnt']/(stats['cnt'] + pstats['cnt']))
-            stats['cnt'] += pstats['cnt']
+            if pstats['cnt'] > 0:
+                stats['avg'] = stats['avg'] * (stats['cnt']/(stats['cnt'] + pstats['cnt']))
+                stats['avg'] += pstats['avg'] * (pstats['cnt']/(stats['cnt'] + pstats['cnt']))
+                stats['cnt'] += pstats['cnt']
         return stats
 
     def do_update_time_stats(self, arg):
@@ -1136,7 +1139,7 @@ class LdmsdCmdParser(cmd.Cmd):
         arg = self.handle_args('update_time_stats', arg)
         if not arg:
             return
-        rc, msg = self.comm.update_time_stats(arg['name'])
+        rc, msg = self.comm.update_time_stats(name = arg['name'], reset = arg['reset'])
         if rc != 0:
             print(f'Error {rc}: {msg}')
             return
@@ -1198,7 +1201,7 @@ class LdmsdCmdParser(cmd.Cmd):
         arg = self.handle_args('store_time_stats', arg)
         if not arg:
             return
-        rc, msg = self.comm.store_time_stats(arg['name'])
+        rc, msg = self.comm.store_time_stats(name = arg['name'], reset = arg['reset'])
         if rc != 0:
             print(f"Error {rc}: {msg}")
             return
