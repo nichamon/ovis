@@ -173,13 +173,23 @@ int ovis_log_set_level(ovis_log_t mylog, int level)
 	return 0;
 }
 
+ovis_log_t __ovis_log_new(const char *name);
 int ovis_log_set_level_by_name(const char *name, int level)
 {
 	ovis_log_t log = NULL;
 	if (name) {
 		log = __find_log(name);
-		if (!log)
-			return ENOENT;
+		if (!log) {
+			/*
+			 * Create the log object now.
+			 * This is to support the case that
+			 * the application set the log level
+			 * of the log handler before it has been registered.
+			 */
+			log = __ovis_log_new(name);
+			if (!log)
+				return ENOMEM;
+		}
 	}
 	return ovis_log_set_level(log, level);
 }
@@ -404,6 +414,29 @@ void ovis_log_destroy(ovis_log_t log)
 	__ovis_log_put(log);
 }
 
+ovis_log_t __ovis_log_new(const char *name)
+{
+	ovis_log_t log;
+	log = calloc(1, sizeof(*log));
+	if (!log) {
+		errno = ENOMEM;
+		return NULL;
+	}
+	log->name = strdup(name);
+	if (!log->name) {
+		errno = ENOMEM;
+		free(log);
+		return NULL;
+	}
+	log->ref_count = 1;
+	log->level = OVIS_LDEFAULT;
+	rbn_init(&log->rbn, (void *)log->name);
+	pthread_mutex_lock(&subsys_tree_lock);
+	rbt_ins(&subsys_tree, &log->rbn);
+	pthread_mutex_unlock(&subsys_tree_lock);
+	return log;
+}
+
 ovis_log_t ovis_log_register(const char *subsys_name, const char *desc)
 {
 	ovis_log_t log;
@@ -414,35 +447,34 @@ ovis_log_t ovis_log_register(const char *subsys_name, const char *desc)
 	}
 
 	log = __find_log(subsys_name);
-	if (log) {
-		errno = EEXIST;
-		return NULL;
+	if (log && log->desc) {
+		/*
+		 * The log object has been already registered,
+		 * nothing to do
+		 */
+		return log;
 	}
-	log = malloc(sizeof(*log));
+
 	if (!log) {
-		errno = ENOMEM;
-		return NULL;
+		log = __ovis_log_new(subsys_name);
+		if (!log) {
+			errno = ENOMEM;
+			return NULL;
+		}
+	} else {
+		/*
+		 * The log level has been set before the log object
+		 * has been registered. The only left to do is to
+		 * set the description.
+		 */
 	}
-	log->name = strdup(subsys_name);
-	if (!log->name) {
-		errno = ENOMEM;
-		goto free_log;
-	}
+
 	log->desc = strdup(desc);
-	if (!log->desc) {
-		errno = ENOMEM;
-		goto free_log;
-	}
-	log->ref_count = 1;
-	log->level = OVIS_LDEFAULT;
-	rbn_init(&log->rbn, (void *)log->name);
-	pthread_mutex_lock(&subsys_tree_lock);
-	rbt_ins(&subsys_tree, &log->rbn);
-	pthread_mutex_unlock(&subsys_tree_lock);
+	/*
+	 * Intentionally ignore whether strdup() success or not
+	 * as long as the log object exists.
+	 */
 	return log;
-free_log:
-	__free_log(log);
-	return NULL;
 }
 
 struct ovis_log_buf {
