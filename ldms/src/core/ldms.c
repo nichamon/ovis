@@ -854,7 +854,7 @@ static void __destroy_set_no_lock(void *v)
 	mm_free(set->meta);
 	__ldms_set_info_delete(&set->local_info);
 	__ldms_set_info_delete(&set->remote_info);
-	zap_unmap(set->lmap);
+//	zap_unmap(set->lmap);
 	if (set->rmap)
 		zap_unmap(set->rmap);
 	free(set);
@@ -872,6 +872,8 @@ void __ldms_set_delete(ldms_set_t s, int notify)
 	ldms_t x;
 	struct ldms_set *__set;
 
+	/* Unmap the memory to prevent clients from reading the memory */
+	zap_unmap(s->lmap);
 	__ldms_set_tree_lock();
 	__set = __ldms_set_by_id(s->set_id);
 	if (!__set) {
