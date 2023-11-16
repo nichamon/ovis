@@ -170,7 +170,7 @@ void ldmsd_prdcr_set_ref_put(ldmsd_prdcr_set_t set)
 
 static void prdcr_set_del(ldmsd_prdcr_set_t set)
 {
-	set->state = LDMSD_PRDCR_SET_STATE_START;
+	set->state = LDMSD_PRDCR_SET_STATE_DELETING;
 	ldmsd_prdcr_set_ref_put(set);
 }
 
@@ -220,6 +220,11 @@ void prdcr_hint_tree_update(ldmsd_prdcr_t prdcr, ldmsd_prdcr_set_t prd_set,
 
 static void prdcr_reset_set(ldmsd_prdcr_t prdcr, ldmsd_prdcr_set_t prd_set)
 {
+	/*
+	 * Moving the state to DELETED to prevent other threads
+	 * from updating/looking up the set.
+	 */
+	prd_set->state = LDMSD_PRDCR_SET_STATE_DELETING;
 	prdcr_hint_tree_update(prdcr, prd_set,
 			       &prd_set->updt_hint, UPDT_HINT_TREE_REMOVE);
 	rbt_del(&prdcr->set_tree, &prd_set->rbn);
@@ -526,6 +531,7 @@ static void __prdcr_remote_set_delete(ldmsd_prdcr_t prdcr, const char *name)
 {
 	const char *state_str = "bad_state";
 	ldmsd_prdcr_set_t prdcr_set;
+	int is_reset = 1;
 	prdcr_set = ldmsd_prdcr_set_find(prdcr, name);
 	if (!prdcr_set)
 		return;
@@ -544,15 +550,17 @@ static void __prdcr_remote_set_delete(ldmsd_prdcr_t prdcr, const char *name)
 	case LDMSD_PRDCR_SET_STATE_UPDATING:
 		state_str = "UPDATING";
 		break;
-	case LDMSD_PRDCR_SET_STATE_DELETED:
+	case LDMSD_PRDCR_SET_STATE_DELETING:
 		state_str = "DELETING";
+		is_reset = 0;
 		break;
 	}
 	ldmsd_log(LDMSD_LINFO,
 			"Deleting %s in the %s state\n",
 			prdcr_set->inst_name, state_str);
 	pthread_mutex_unlock(&prdcr_set->lock);
-	prdcr_reset_set(prdcr, prdcr_set);
+	if (is_reset)
+		prdcr_reset_set(prdcr, prdcr_set);
 }
 
 const char *_conn_state_str[] = {

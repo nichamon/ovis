@@ -511,7 +511,7 @@ static int __setgrp_members_lookup(ldmsd_prdcr_set_t setgrp)
 					goto out;
 				}
 				break;
-			case LDMSD_PRDCR_SET_STATE_DELETED:
+			case LDMSD_PRDCR_SET_STATE_DELETING:
 			default:
 				continue;
 		}
@@ -662,7 +662,7 @@ static void schedule_prdcr_updates(ldmsd_updtr_task_t task,
 				"there is an outstanding update.\n",
 				__func__, prd_set->inst_name);
 			__atomic_fetch_add(&prd_set->skipped_upd_cnt, 1, __ATOMIC_SEQ_CST);
-		case LDMSD_PRDCR_SET_STATE_DELETED:
+		case LDMSD_PRDCR_SET_STATE_DELETING:
 		default:
 			goto next_prd_set;
 		}
