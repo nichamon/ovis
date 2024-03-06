@@ -2208,23 +2208,37 @@ int main(int argc, char *argv[])
 	if (!foreground) {
 		/* Create pidfile for daemon that usually goes away on exit. */
 		/* user arg, then env, then default to get pidfile name */
-		if (pidfile) {
-			if( !access( pidfile, F_OK ) ) {
-				ovis_log(NULL, OVIS_LERROR, "Existing pid file named '%s': %s\n",
-					pidfile, "overwritten if writable");
-			}
-			FILE *pfile = fopen_perm(pidfile,"w", LDMSD_DEFAULT_FILE_PERM);
-			if (!pfile) {
-				int piderr = errno;
-				ovis_log(NULL, OVIS_LERROR, "Could not open the pid file named '%s': %s\n",
-					pidfile, STRERROR(piderr));
-				free(pidfile);
-				pidfile = NULL;
+		if (!pidfile) {
+			char *pidpath = getenv("LDMSD_PIDFILE");
+			if (!pidpath) {
+				pidfile = malloc(strlen(LDMSD_PIDFILE_FMT)
+						+ strlen(basename(argv[0]) + 1));
+				if (pidfile)
+					sprintf(pidfile, LDMSD_PIDFILE_FMT, basename(argv[0]));
 			} else {
-				pid_t mypid = getpid();
-				fprintf(pfile,"%ld\n",(long)mypid);
-				fclose(pfile);
+				pidfile = strdup(pidpath);
 			}
+			if (!pidfile) {
+				ovis_log(NULL, OVIS_LERROR, "Out of memory\n");
+				av_free(auth_opt);
+				exit(1);
+			}
+		}
+		if( !access( pidfile, F_OK ) ) {
+			ovis_log(NULL, OVIS_LERROR, "Existing pid file named '%s': %s\n",
+				pidfile, "overwritten if writable");
+		}
+		FILE *pfile = fopen_perm(pidfile,"w", LDMSD_DEFAULT_FILE_PERM);
+		if (!pfile) {
+			int piderr = errno;
+			ovis_log(NULL, OVIS_LERROR, "Could not open the pid file named '%s': %s\n",
+				pidfile, STRERROR(piderr));
+			free(pidfile);
+			pidfile = NULL;
+		} else {
+			pid_t mypid = getpid();
+			fprintf(pfile,"%ld\n",(long)mypid);
+			fclose(pfile);
 		}
 		if (pidfile && banner) {
 			char *suffix = ".version";
