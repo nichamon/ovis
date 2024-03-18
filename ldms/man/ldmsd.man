@@ -83,13 +83,12 @@ checking the nodes state (see ZAP_UGNI_STATE_INTERVAL, above).
 .SS
 General/Configuration Options:
 .TP
-.BR -F
-Run in foreground mode; don't daemonize the program. Default is false.
-.TP
 .BI "-B, --banner" " version-file-mode [0, 1, 2]"
-When run in daemon mode, controls the existence of the banner file.
-Mode 0 suppresses the version file. Mode 1 deletes it at daemon exit. Mode >= 2 leaves it in place for debugging after daemon exit. Default mode is 1.
-The banner contains the software and protocol versions information, which is also logged at the INFO level. The banner file name is always the pidfile name with .version appended.
+Controls the existence of the banner file.
+Mode 0 suppresses the version file. Mode 1 deletes it at process exit. Mode >= 2
+leaves it in place for debugging after process exit. Default mode is 1. The
+banner contains the software and protocol versions information, which is also
+logged at the INFO level. The banner file name is always the pidfile name with .version appended.
 .TP
 .BI "-c " CONFIG_PATH
 The path to configuration file (optional, default: <none>). The configuration
@@ -113,12 +112,8 @@ For example, 20M or 20mb are 20 megabytes. The default is adequate for most ldms
 For aggregating ldmsd, a rough estimate of preallocated memory needed is (Number of nodes aggregated) x (Number of metric sets per node) x 4k.
 Data sets containing arrays may require more. The estimate can be checked by enabling DEBUG logging and examining the mm_stat bytes_used+holes value at ldmsd exit.
 .TP
-.BI "-n, --daemon_name" " NAME"
-.br
-The name of the daemon. By default, it is "\fIHOSTNAME:PORT\fR". The failover feature uses the daemon name to verify the buddy name, and the producer name of kernel metric sets is the daemon name.
-.TP
 .BI "-r, --pid_file" " pid_file"
-The path to the pid file and prefix of the .version banner file for daemon mode.
+The path to the pid file and prefix of the .version banner file.
 .TP
 .BR -V
 Display LDMS version information and then exit.
@@ -155,15 +150,6 @@ Passing the \fINAME\fR=\fIVALUE\fR option to the LDMS Authentication plugin.
 This command line option can be given multiple times. Please see
 \fBldms_authentication\fR(7) for more information, and consult the plugin manual
 page for plugin-specific options.
-.TP
-.BI "-C, --credits" " BYTES"
-The daemon's advertised send credits (default: -1, unlimited). This number
-limits how much data our daemon holds for each peer. The peers drop messages
-when they don't have enough send credits. The specified credits apply to both
-passive connections (other processes connect to us) and active connections (we
-connect to other processes by 'prdcr_add' command). The active connections can
-override the credits value by specifying the \fIcredits\fR attribute to
-\fBpdrcr_add\fR command (see \fBldmsd_controller\fR(8)).
 
 
 .SS
@@ -181,9 +167,6 @@ LOG_LEVEL can be one of DEBUG, INFO, ERROR, CRITICAL or QUIET.
 The default level is ERROR. QUIET produces only user-requested output.
 (Note: this has changed from the previous release where q designated no (QUIET) logging).
 .TP
-.BR -t
-Truncate the log file if it already exists.
-.TP
 .BI -L, --log_config " <CINT:PATH> | <CINT> | <PATH>"
 .br
 Append configuration replay messages or configuration debugging messages to the log indicated by -l (when PATH is omitted) or to the file named PATH. Bit values of CINT correspond to:
@@ -197,21 +180,6 @@ Append configuration replay messages or configuration debugging messages to the 
      32: include epoch timestamp prefix when using PATH
 .fi
 These values may be added together to enable multiple outputs. All messages are logged at the user-requested level, LDMSD_LALL. CINT values 2, 26 and 27 are often interesting. When CINT is omitted, 1 is the default. When PATH is used, the log messages are flushed to as they are generated.
-
-.SS
-Kernel Metric Options:
-.TP
-.BR "-k, --publish_kernel"
-Publish kernel metrics.
-.TP
-.BI "-s, --kernel_set_file" " SETFILE"
-Text file containing kernel metric sets to publish. Default: /proc/sys/kldms/set_list
-
-.SS Thread Options:
-.TP
-.BI "-P, --worker_threads" " THR_COUNT"
-.br
-THR_COUNT is the number of event threads to start.
 
 .SH SPECIFYING COMMAND-LINE OPTIONS IN CONFIGURATION FILES
 .PP
