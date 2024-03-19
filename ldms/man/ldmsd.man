@@ -181,6 +181,25 @@ Append configuration replay messages or configuration debugging messages to the 
 .fi
 These values may be added together to enable multiple outputs. All messages are logged at the user-requested level, LDMSD_LALL. CINT values 2, 26 and 27 are often interesting. When CINT is omitted, 1 is the default. When PATH is used, the log messages are flushed to as they are generated.
 
+.SH CONFIGURATION FILES
+.PP
+While command-line options are useful for quick configuration, complex setups
+or repeated deployments benefit from configuration files. These files provide a
+centralized location to define all initial settings for LDMSD, promoting
+readability, maintainability, and easy sharing across deployments.
+
+This section list configuration commands used to define the global setting of
+LDMSD. These commands provide an alternative approach to the command-line
+options described previously.
+
+.SS Sets the path for the LDMSD log file
+.PP
+
+   log_file path=<path to log file>
+
+
+
+
 .SH SPECIFYING COMMAND-LINE OPTIONS IN CONFIGURATION FILES
 .PP
 Users can use the 'option' command to specify some command-line options in a configuration file.
