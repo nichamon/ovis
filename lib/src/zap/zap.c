@@ -995,6 +995,10 @@ zap_thrstat_t zap_thrstat_new(const char *name, int window_size)
 			goto err_3;
 		zap_thrstat_reset(stats);
 	}
+
+	stats->new_stat.num_buckets = NUM_BUCKET;
+	stats->new_stat.bucket_sz = 10000; /* 10 milliseconds */
+
 	pthread_mutex_lock(&thrstat_list_lock);
 	LIST_INSERT_HEAD(&thrstat_list, stats, entry);
 	thrstat_count++;
@@ -1053,6 +1057,45 @@ static uint64_t zap_accumulate(uint64_t sample_no,
 	return sum;
 }
 
+void __new_stat_update(struct new_zap_thrstat *stat, uint8_t is_idle, unsigned short v)
+{
+	if (is_idle)
+		stat->idle_bucket[stat->curr_idx] += v;
+	else
+		stat->active_bucket[stat->curr_idx] += v;
+}
+
+void __new_stat_collect(struct zap_thrstat *_stat, uint64_t elapsed)
+{
+	struct new_zap_thrstat *stat = &(_stat->new_stat);
+	uint64_t space;
+	uint64_t remaining;
+	int is_idle = (_stat->waiting)?0:1;
+
+	space = stat->bucket_sz -
+			(stat->active_bucket[stat->curr_idx] + stat->idle_bucket[stat->curr_idx]);
+	remaining = elapsed;
+	while (remaining) {
+		if (remaining < space) {
+			if (is_idle)
+				stat->idle_bucket[stat->curr_idx] += elapsed;
+			else
+				stat->active_bucket[stat->curr_idx] += elapsed;
+			remaining = 0;
+		} else {
+			if (is_idle)
+				stat->idle_bucket[stat->curr_idx] += space;
+			else
+				stat->active_bucket[stat->curr_idx] += space;
+			remaining = remaining - space;
+
+			stat->curr_idx = (stat->curr_idx + 1) % stat->num_buckets;
+			stat->idle_bucket[stat->curr_idx] = 0;
+			stat->active_bucket[stat->curr_idx] = 0;
+		}
+	}
+}
+
 void zap_thrstat_wait_start(zap_thrstat_t stats)
 {
 	struct timespec now;
@@ -1069,6 +1112,8 @@ void zap_thrstat_wait_start(zap_thrstat_t stats)
 					 stats->proc_window);
 	stats->proc_tot += proc_us;
 	stats->proc_count += 1;
+
+	__new_stat_collect(stats, proc_us);
 }
 
 void zap_thrstat_wait_end(zap_thrstat_t stats)
@@ -1085,6 +1130,8 @@ void zap_thrstat_wait_end(zap_thrstat_t stats)
 					 stats->wait_window);
 	stats->wait_tot += wait_us;
 	stats->wait_count += 1;
+
+	__new_stat_collect(stats, wait_us);
 }
 
 const char *zap_thrstat_get_name(zap_thrstat_t stats)
@@ -1116,6 +1163,36 @@ double zap_thrstat_get_utilization(zap_thrstat_t in)
 	return zap_utilization(in, &now);
 }
 
+void __new_get(struct new_zap_thrstat *stat, struct zap_thrstat_result_entry *rent)
+{
+	int need_bucket = 300; /* 3 seconds */
+	int i, idx;
+
+	/*
+	 * Ignore the current bucket because idle + active of the current bucket
+	 * is less bucket total size. If we use it, we cannot calculate the rates
+	 * over a fixed time window.
+	 */
+
+	if (need_bucket > stat->num_buckets - 1)
+		need_bucket = stat->num_buckets-1;
+
+	rent->new_idle_us = rent->new_active_us = rent->new_interval = 0;
+	idx = ((stat->curr_idx-1 < 0)?(stat->num_buckets-1):(stat->curr_idx-1));
+	for (i = 1; i < need_bucket + 1; i++) {
+		assert((stat->idle_bucket[idx] + stat->active_bucket[idx] != 10000) || (stat->idle_bucket[idx] + stat->active_bucket[idx] != 0));
+		if (stat->idle_bucket[idx] + stat->active_bucket[idx] == 0)
+			break;
+
+		rent->new_interval += stat->bucket_sz;
+		rent->new_idle_us += stat->idle_bucket[idx];
+		rent->new_active_us += stat->active_bucket[idx];
+
+		idx = ((idx-1 < 0)?stat->num_buckets-1:idx-1);
+	}
+}
+
+
 struct zap_thrstat_result *zap_thrstat_get_result()
 {
 	struct zap_thrstat_result *res = NULL;
@@ -1146,6 +1223,8 @@ struct zap_thrstat_result *zap_thrstat_get_result()
 		res->entries[i].wait_end = t->wait_end;
 		res->entries[i].waiting = t->waiting;
 		res->entries[i].start = t->start;
+
+		__new_get(&(t->new_stat), &(res->entries[i]));
 		i += 1;
 	}
 out:

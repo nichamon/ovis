@@ -511,6 +511,20 @@ zap_err_t zap_io_thread_ep_release(zap_ep_t ep);
  */
 zap_err_t zap_io_thread_ep_remove(zap_ep_t ep);
 
+#define NUM_BUCKET 6001
+struct new_zap_thrstat {
+	int curr_idx;
+	int num_buckets;
+	unsigned short bucket_sz; /* microsecond */
+	/*
+	 * TODO: make 6001 variable
+	 * A bucket contains the idle duration within a 10-millitsecond window.
+	 * In total we can collect the data in the last 1 minute and 10 milliseconds.
+	 */
+	unsigned short idle_bucket[NUM_BUCKET];
+	unsigned short active_bucket[NUM_BUCKET];
+};
+
 /*
  * The zap_thrstat structure maintains state for
  * the Zap thread utilization tracking functions.
@@ -534,6 +548,8 @@ struct zap_thrstat {
 	uint64_t wait_tot; /* Total idle time since reset in micro-seconds */
 	uint64_t proc_tot; /* Total busy time since reset  in micro-seconds */
 	LIST_ENTRY(zap_thrstat) entry;
+
+	struct new_zap_thrstat new_stat;
 
 	int pool_idx;
 	uint64_t thread_id;

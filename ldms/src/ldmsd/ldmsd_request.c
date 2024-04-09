@@ -7248,6 +7248,8 @@ static char * __thread_stats_as_json(size_t *json_sz)
 		__APPEND("   \"utilization\": %g,\n", zthr->utilization);
 		__APPEND("   \"sq_sz\": %lu,\n", zthr->sq_sz);
 		__APPEND("   \"n_eps\": %lu,\n", zthr->n_eps);
+		__APPEND("   \"idle\": %g,\n", zthr->new_idle_us*1.0/zthr->new_interval);
+		__APPEND("   \"active\": %g,\n", zthr->new_active_us*1.0/zthr->new_interval);
 		__APPEND("   \"ldms_xprt\": {\n");
 		__APPEND("     \"Idle\": %ld,\n", res->entries[i].idle);
 		__APPEND("     \"Zap\": %ld,\n", res->entries[i].zap_time);

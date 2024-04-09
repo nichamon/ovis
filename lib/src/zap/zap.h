@@ -877,6 +877,11 @@ struct zap_thrstat_result_entry {
 	struct timespec wait_end;	/*< The last timestamp the thread woke up */
 	int waiting;			/*< A non-zero value means the thread is active. */
 	void *app_ctxt;			/*< Pointer to application's context */
+
+	uint64_t new_idle_us;
+	uint64_t new_active_us;
+	uint64_t new_interval; /* The total time to calculate rate */
+
 };
 
 struct zap_thrstat_result {
