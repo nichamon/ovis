@@ -12,7 +12,7 @@ ldmsd_sampler_disconvery - Manual for LDMSD Sampler Discovery
 
 .IP \fBadvertise_add
 .RI "name=" NAME " xprt=" XPRT " host=" HOST " port=" PORT
-.RI " [auth=" AUTH_DOMAIN "]"
+.RI "[auth=" AUTH_DOMAIN "]"
 
 .IP \fBadvertise_start
 .RI "name=" NAME
@@ -24,14 +24,14 @@ ldmsd_sampler_disconvery - Manual for LDMSD Sampler Discovery
 .RI "name=" NAME
 
 .IP \fBadvertise_status
-.RI " [name=" NAME "]"
+.RI "[name=" NAME "]"
 
 .PP
 **Aggregator Side Commands**
 
 .IP \fBprdcr_listen-add
-.RI "name=" NAME " regex=" REGEX " " RECONNECT=" INTVL
-.RI " [rail=" SIZE " [credits=" BYTES " ] [rx_rate=" RATE_LIMIT "]"
+.RI "name=" NAME " RECONNECT=" INTVL
+.RI "[regex=" REGEX "] [rail=" SIZE "] [credits=" BYTES "] [rx_rate=" RATE_LIMIT "]"
 
 .IP \fBprdcr_listen_start
 .RI "name=" NAME
@@ -119,15 +119,15 @@ Advertisement name
 .RS
 .IP \fBname\fR=\fINAME
 String of the prdcr_listen name.
-.IP \fBregex\fR=\fIREGEX
-Regular expression to match with hostnames in sampler advertisements
 .IP \fBreconnect\fR=\fIINTERVAL
 Reconnect interval of the auto-generated producers that the hostname matches the regular expression
-.IP \fBrail\fR=\fIRAIL
+.IP \fB[regex\fR=\fIREGEX\fB]
+Regular expression to match with hostnames in sampler advertisements
+.IP \fB[rail\fR=\fIRAIL\fB]
 Number of rails
-.IP \fBcredit\fR=\fICREDIT
+.IP \fB[credit\fR=\fICREDIT\fB]
 Receive credits each producer connection accepts in bytes
-.IP \fBrx_rate\fR=\fIRATE
+.IP \fB[rx_rate\fR=\fIRATE\fB]
 Receive rate limit each producer connection acceipts
 .RE
 

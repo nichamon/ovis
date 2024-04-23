@@ -9382,8 +9382,6 @@ static int prdcr_listen_add_handler(ldmsd_req_ctxt_t reqc)
 
 	attr_name = "regex";
 	regex_str = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_REGEX);
-	if (!regex_str)
-		goto einval;
 
 	attr_name = "reconnect";
 	reconnect_str = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_INTERVAL);
@@ -9446,17 +9444,20 @@ static int prdcr_listen_add_handler(ldmsd_req_ctxt_t reqc)
 	if (!pl)
 		goto enomem;
 
-	pl->hostname_regex_s = strdup(regex_str);
-	if (!pl->hostname_regex_s) {
-		ldmsd_cfgobj_put(&pl->obj);
-		goto enomem;
-	}
+	if (regex_str) {
+		pl->hostname_regex_s = strdup(regex_str);
+		if (!pl->hostname_regex_s) {
+			ldmsd_cfgobj_put(&pl->obj);
+			goto enomem;
+		}
 
-	rc = ldmsd_compile_regex(&pl->regex, regex_str, reqc->line_buf, reqc->line_len);
-	if (rc) {
-		reqc->errcode = EINVAL;
-		ldmsd_cfgobj_put(&pl->obj);
-		goto send_reply;
+		rc = ldmsd_compile_regex(&pl->regex, regex_str, reqc->line_buf, reqc->line_len);
+		if (rc) {
+			reqc->errcode = EINVAL;
+			ldmsd_cfgobj_put(&pl->obj);
+			goto send_reply;
+		}
+
 	}
 
 	pl->prdcr_conn_intvl = reconnect_us;
@@ -9816,8 +9817,8 @@ static int advertise_notification_handler(ldmsd_req_ctxt_t reqc)
 	{
 		if (lt_prdcr->state != LDMSD_PRDCR_LISTEN_STATE_RUNNING)
 			continue;
-		rc = regexec(&lt_prdcr->regex, hostname, 0, NULL, 0);
-		if (rc == 0) {
+		if ((!lt_prdcr->hostname_regex_s) ||
+				(0 == regexec(&lt_prdcr->regex, hostname, 0, NULL, 0))) {
 			/* The hostname matches the regular expression. */
 			reqc->errcode = __get_prdcr(reqc, lt_prdcr);
 			if (reqc->errcode) {
@@ -9840,10 +9841,10 @@ static int advertise_notification_handler(ldmsd_req_ctxt_t reqc)
 	snprintf(reqc->line_buf, reqc->line_len,
 			"The given hostname '%s' doesn't match "
 			"any `prdcr_listen`'s regex.", hostname);
-
-	ovis_log(NULL, OVIS_LINFO, "Received a producer advertisement "
-			"with hostname '%s', which isn't matched any listening producer.\n",
-			hostname);
+	ovis_log(NULL, OVIS_LERROR, "Received a producer advertisement "
+			"with hostname '%s' from %s, which isn't matched any listening producers. "
+			"Stop the advertisement, update its configuration, and then restart.\n",
+			hostname, buff);
 send_reply:
 	ldmsd_send_req_response(reqc, reqc->line_buf);
 	return rc;

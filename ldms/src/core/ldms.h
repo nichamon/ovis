@@ -902,6 +902,8 @@ int ldms_xprt_sockaddr(ldms_t x, struct sockaddr *local_sa,
 		       struct sockaddr *remote_sa,
 		       socklen_t *sa_len);
 
+const char *ldms_sockaddr_ntop(struct sockaddr *sa, char *buff, size_t sz);
+
 /**
  * \brief Close a connection to an LDMS host.
  *

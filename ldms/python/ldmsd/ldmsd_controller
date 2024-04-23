@@ -2923,8 +2923,8 @@ class LdmsdCmdParser(cmd.Cmd):
 
         Parameters:
                 name=     A unique name of the producer listen
-                regex=    A regular expression to match sampler hostnames
                 reconnect= The retry interval to check for connection establishment of producers matched the regular expression.
+                [regex=]    A regular expression to match sampler hostnames
                 [rail=]   The number of rail endpoints for the prdcr (default: 1).
                 [credits=] The send credits our ldmsd (the one we are controlling)
                            advertises to the prdcr (default: value from ldmsd --credits
