@@ -2806,7 +2806,7 @@ class LdmsdCmdParser(cmd.Cmd):
         if rc:
             print(f"Failed to reset the statistics")
 
-    def do_advertise_add(self, arg):
+    def do_advertiser_add(self, arg):
         """
         Add an advertisement of its hostname to an aggregator. This is a part of the sampler discovery feature.
         Parameters:
@@ -2825,15 +2825,13 @@ class LdmsdCmdParser(cmd.Cmd):
                 [rx_rate=] The recv rate (bytes/sec) limit for this connection. The
                            default is -1 (unlimited).
         """
-        arg = f"{arg} type=advertise" # Automatically add the type
-        arg = self.handle_args('prdcr_add', arg)
+        arg = self.handle_args('advertiser_add', arg)
         if arg is None:
             return
         if arg['reconnect'] is None:
             print(f"The attribute 'reconnect' is missing.")
         else:
-            rc, msg = self.comm.prdcr_add(arg['name'],
-                                          "advertise",
+            rc, msg = self.comm.advertiser_add(arg['name'],
                                           arg['xprt'],
                                           arg['host'],
                                           arg['port'],
@@ -2846,47 +2844,62 @@ class LdmsdCmdParser(cmd.Cmd):
             if rc:
                 print(f'Error adding Bridge {arg["name"]}: {msg}')
 
-    def complete_advertise_add(self, text, line, begidx, endidx):
-        return self.__complete_attr_list('advertise_add', text)
+    def complete_advertiser_add(self, text, line, begidx, endidx):
+        return self.__complete_attr_list('advertiser_add', text)
 
-    def do_advertise_del(self, arg):
+    def do_advertiser_del(self, arg):
         """
         Delete an advertise from the sampler daemon. The advertise connot be in use.
         Parameters:
         name =   The advertise name
         """
-        self.do_prdcr_del(arg)
+        arg = self.handle_args('advertiser_del', arg)
+        if arg is None:
+            return
+        rc, msg = self.comm.advertiser_del(**arg)
+        if rc:
+            print(f"Error deleting advertiser {arg['name']}: {msg}")
 
-    def complete_advertise_del(self, text, line, begidx, endidx):
+    def complete_advertiser_del(self, text, line, begidx, endidx):
         return self.complete_prdcr_del(text, line, begidx, endidx)
 
-    def do_advertise_start(self, arg):
+    def do_advertiser_start(self, arg):
         """
         Start an advertisement
         Parameters:
         name =   The advertise name
         """
-        self.do_prdcr_start(arg)
+        arg = self.handle_args('advertiser_start', arg)
+        if arg is None:
+            return
+        rc, msg = self.comm.advertiser_start(**arg)
+        if rc:
+            print(f"Error starting advertiser {arg['name']}: {msg}")
 
-    def complete_advertise_del(self, text, line, begidx, endidx):
+    def complete_advertiser_del(self, text, line, begidx, endidx):
         return self.complete_prdcr_start(text, line, begidx, endidx)
 
-    def do_advertise_stop(self, arg):
+    def do_advertiser_stop(self, arg):
         """
         Stop an advertisement
         Parameters:
         name =   The advertise name
         """
-        self.do_prdcr_stop(arg)
+        arg = self.handle_args('advertiser_stop', arg)
+        if arg is None:
+            return
+        rc, msg = self.comm.advertiser_stop(**arg)
+        if rc:
+            print(f"Error stopping advertiser {arg['name']}: {msg}")
 
-    def complete_advertise_stop(self, text, line, begidx, endidx):
+    def complete_advertiser_stop(self, text, line, begidx, endidx):
         return self.complete_prdcr_stop(text, line, begidx, endidx)
 
-    def do_advertise_status(self, arg):
+    def do_advertiser_status(self, arg):
         """
-        Get the statuses of advertisements
+        Get the statuses of advertisers
         Parameters:
-        [name=]        Advertise name
+        [name=]        Advertiser name
         """
         arg = self.handle_args('prdcr_status', arg)
         if arg:

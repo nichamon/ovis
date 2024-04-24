@@ -63,10 +63,10 @@ struct req_str_id {
 
 const struct req_str_id req_str_id_table[] = {
 	/* This table need to be sorted by keyword for bsearch() */
-	{  "advertise_add",      LDMSD_ADVERTISE_ADD_REQ  },
-	{  "advertise_del",      LDMSD_PRDCR_DEL_REQ  },
-	{  "advertise_start",    LDMSD_PRDCR_START_REQ  },
-	{  "advertise_stop",     LDMSD_PRDCR_STOP_REQ  },
+	{  "advertise_add",      LDMSD_ADVERTISER_ADD_REQ  },
+	{  "advertise_del",      LDMSD_ADVERTISER_DEL_REQ  },
+	{  "advertise_start",    LDMSD_ADVERTISER_START_REQ  },
+	{  "advertise_stop",     LDMSD_ADVERTISER_STOP_REQ  },
 	{  "auth_add",           LDMSD_AUTH_ADD_REQ  },
 	{  "auth_del",           LDMSD_AUTH_DEL_REQ  },
 	{  "banner",             LDMSD_BANNER_MODE_REQ  },
@@ -878,6 +878,7 @@ out:
 	return rc;
 }
 
+/* The function adds the attribute 'type' with the 'advertise' value to the request */
 int __ldmsd_parse_advertise_add_req(struct ldmsd_parse_ctxt *ctxt)
 {
 	char *av = ctxt->av;
@@ -1011,7 +1012,8 @@ ldmsd_parse_config_str(const char *cfg, uint32_t msg_no, size_t xprt_max_msg)
 	case LDMSD_DEFAULT_AUTH_REQ:
 		rc = __ldmsd_parse_default_auth_req(&ctxt);
 		break;
-	case LDMSD_ADVERTISE_ADD_REQ:
+	case LDMSD_ADVERTISER_ADD_REQ:
+	case LDMSD_ADVERTISER_START_REQ:
 		rc = __ldmsd_parse_advertise_add_req(&ctxt);
 		break;
 	default:
@@ -1120,6 +1122,14 @@ ldmsd_req_attr_t ldmsd_req_attr_get_by_id(char *request, uint32_t attr_id)
 		attr = ldmsd_next_attr(attr);
 	}
 	return NULL;
+}
+
+char *ldmsd_req_attr_value_by_id(char *request, uint32_t attr_id)
+{
+	ldmsd_req_attr_t attr = ldmsd_req_attr_get_by_id(request, attr_id);
+	if (!attr)
+		return NULL;
+	return str_repl_env_vars((char *)attr->attr_value);
 }
 
 ldmsd_req_attr_t ldmsd_req_attr_get_by_name(char *request, const char *name)
