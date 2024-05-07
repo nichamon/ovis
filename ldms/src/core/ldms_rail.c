@@ -1411,6 +1411,55 @@ const char *ldms_addr_ntop(struct ldms_addr *addr, char *buff, size_t sz)
 	return buff;
 }
 
+/* *2 for the two hex digits needed for each 16-bit value, * 8 for the 8 groups of values, + 7 for the 7 colons */
+#define MAX_IPV6_STR_LEN (sizeof(uint16_t) * 2 * 8 + 7)
+int ldms_cidr2addr(const char *cdir_str, struct ldms_addr *addr, int *prefix_len)
+{
+	int rc;
+	int is_ipv6 = 0;
+	char netaddr_str[MAX_IPV6_STR_LEN];
+	int _prefix_len;
+
+	if (strchr(cdir_str, ':') != NULL)
+		is_ipv6 = 1;
+
+	rc = sscanf(cdir_str, "%[^/]/%d", netaddr_str, &_prefix_len);
+	if (rc != 2) {
+		return EINVAL;
+	}
+
+	if (prefix_len)
+		*prefix_len = _prefix_len;
+
+	if (addr) {
+		if (is_ipv6) {
+			addr->sa_family = AF_INET6;
+			rc = inet_pton(AF_INET6, netaddr_str, &addr->addr);
+		} else {
+			addr->sa_family = AF_INET;
+			rc = inet_pton(AF_INET, netaddr_str, &addr->addr);
+		}
+	}
+
+	if (rc != 1)
+		return rc;
+	return 0;
+}
+
+int ldms_addr_in_network_addr(struct ldms_addr *ip_addr,
+				struct ldms_addr *net_addr, int prefix_len)
+{
+	if (ip_addr->sa_family != net_addr->sa_family)
+		return 0;
+
+	int i;
+	for (i = 0; i < prefix_len/16; i++) {
+		if (ip_addr->addr[i] != net_addr->addr[i])
+			return 0;
+	}
+	return 1;
+}
+
 ldms_t __ldms_xprt_to_rail(ldms_t x)
 {
 	if (XTYPE_IS_RAIL(x->xtype)) {

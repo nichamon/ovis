@@ -9448,6 +9448,7 @@ static int prdcr_listen_add_handler(ldmsd_req_ctxt_t reqc)
 	int rc = 0;
 	char *name;
 	char *regex_str;
+	char *cidr_str;
 	char *reconnect_str;
 	char *rail_str;
 	char *credits_str;
@@ -9464,8 +9465,8 @@ static int prdcr_listen_add_handler(ldmsd_req_ctxt_t reqc)
 	if (!name)
 		goto einval;
 
-	attr_name = "regex";
 	regex_str = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_REGEX);
+	cidr_str = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_CIDR);
 
 	rail_str = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_RAIL);
 	if (rail_str) {
@@ -9519,10 +9520,25 @@ static int prdcr_listen_add_handler(ldmsd_req_ctxt_t reqc)
 		rc = ldmsd_compile_regex(&pl->regex, regex_str, reqc->line_buf, reqc->line_len);
 		if (rc) {
 			reqc->errcode = EINVAL;
+			reqc->line_off = snprintf(reqc->line_buf, reqc->line_len,
+						"The regular expression string "
+						"'%s' is invalid.", regex_str);
 			ldmsd_cfgobj_put(&pl->obj);
 			goto send_reply;
 		}
 
+	}
+
+	if (cidr_str) {
+		rc = ldms_cidr2addr(cidr_str, &pl->net_addr, &pl->prefix_len);
+		if (rc) {
+			reqc->errcode = EINVAL;
+			reqc->line_off = snprintf(reqc->line_buf, reqc->line_len,
+						"The given CIDR string '%s' "
+						"is invalid.", cidr_str);
+			ldmsd_cfgobj_put(&pl->obj);
+			goto send_reply;
+		}
 	}
 
 	pl->rails = rail;
@@ -9811,7 +9827,7 @@ extern int __ldmsd_updtr_prdcr_add(ldmsd_updtr_t updtr, ldmsd_prdcr_t prdcr);
 /* The implementations are in ldmsd_prdcr.c */
 extern ldmsd_prdcr_ref_t prdcr_ref_new(ldmsd_prdcr_t prdcr);
 extern void prdcr_connect_cb(ldms_t x, ldms_xprt_event_t e, void *cb_arg);
-static int __get_prdcr(ldmsd_req_ctxt_t reqc, ldmsd_prdcr_listen_t lp)
+static int __get_prdcr(ldmsd_req_ctxt_t reqc, ldmsd_prdcr_listen_t pl)
 {
 	int rc = 0;
 	char *name;
@@ -9849,7 +9865,7 @@ static int __get_prdcr(ldmsd_req_ctxt_t reqc, ldmsd_prdcr_listen_t lp)
 		prdcr = ldmsd_prdcr_new_with_auth(name, xprt_s, hostname, -1,
 				LDMSD_PRDCR_TYPE_GENERATED, INT_MAX,
 				NULL, uid, gid, 0770,
-				lp->rails, lp->recv_credits, lp->rate_limits);
+				pl->rails, pl->recv_credits, pl->rate_limits);
 		if (!prdcr) {
 			reqc->errcode = ENOMEM;
 			reqc->line_off = snprintf(reqc->line_buf, reqc->line_len,
@@ -9861,7 +9877,7 @@ static int __get_prdcr(ldmsd_req_ctxt_t reqc, ldmsd_prdcr_listen_t lp)
 		is_start = 1;
 	}
 
-	rbn = rbt_find(&lp->prdcr_tree, name);
+	rbn = rbt_find(&pl->prdcr_tree, name);
 	if (!rbn) {
 		pl_pref = prdcr_ref_new(prdcr);
 		if (!pl_pref) {
@@ -9872,7 +9888,7 @@ static int __get_prdcr(ldmsd_req_ctxt_t reqc, ldmsd_prdcr_listen_t lp)
 			rc = ENOMEM;
 			goto out;
 		}
-		rbt_ins(&lp->prdcr_tree, &pl_pref->rbn);
+		rbt_ins(&pl->prdcr_tree, &pl_pref->rbn);
 	}
 
 	/* Add the producer to any updaters that the producer matches */
@@ -9974,6 +9990,34 @@ err:
 	goto out;
 }
 
+/*
+ * If the producer listen contains both hostname regex and CIDR IP address range,
+ * the advertiser matches only when its hostname and IP address are matched
+ * the prdcr_listen's hostname regex and IP range.
+ */
+int __is_advertiser_matched(ldmsd_prdcr_listen_t pl, struct ldms_addr *advts_addr,
+						 const char *advts_hostname)
+{
+	int is_host_matched = 1;
+	int is_ip_matched = 1;
+
+	if (pl->hostname_regex_s) {
+		if (0 != regexec(&pl->regex, advts_hostname, 0, NULL, 0))
+			is_host_matched = 0;
+	}
+
+	if (pl->prefix_len) {
+		/* A CIDR IP address was given. */
+		if (0 == ldms_addr_in_network_addr(advts_addr, &pl->net_addr, pl->prefix_len))
+			is_ip_matched = 0;
+	}
+
+	if (is_host_matched && is_ip_matched)
+		return 1;
+	else
+		return 0;
+}
+
 static int advertise_notification_handler(ldmsd_req_ctxt_t reqc)
 {
 	int rc = 0;
@@ -9981,6 +10025,7 @@ static int advertise_notification_handler(ldmsd_req_ctxt_t reqc)
 	char *hostname;
 	char *name;
 	hostname = name = NULL;
+	struct ldms_addr rem_addr;
 
 	hostname = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_HOST);
 	if (!hostname) {
@@ -9990,13 +10035,21 @@ static int advertise_notification_handler(ldmsd_req_ctxt_t reqc)
 		goto send_reply;
 	}
 
+	rc = ldms_xprt_addr(reqc->xprt->ldms.ldms, NULL, &rem_addr);
+	if (rc) {
+		reqc->errcode = rc;
+		reqc->line_off = snprintf(reqc->line_buf, reqc->line_len,
+						"An error %d occurred on the aggregator "
+						"while processing the advertisement.", rc);
+		goto send_reply;
+	}
+
 	for (pl = (ldmsd_prdcr_listen_t)ldmsd_cfgobj_first(LDMSD_CFGOBJ_PRDCR_LISTEN);
 			pl; pl = (ldmsd_prdcr_listen_t)ldmsd_cfgobj_next(&pl->obj))
 	{
 		if (pl->state != LDMSD_PRDCR_LISTEN_STATE_RUNNING)
 			continue;
-		if ((!pl->hostname_regex_s) ||
-				(0 == regexec(&pl->regex, hostname, 0, NULL, 0))) {
+		if (__is_advertiser_matched(pl, &rem_addr, hostname)) {
 			/* The hostname matches the regular expression. */
 			reqc->errcode = __get_prdcr(reqc, pl);
 			if (reqc->errcode) {

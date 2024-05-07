@@ -294,7 +294,9 @@ class LDMSD_Req_Attr(object):
     CREDITS = 39
     RX_RATE = 40
     SUMMARY = 41
-    LAST = 42
+    SIZE = 42
+    CIDR = 43
+    LAST = 44
 
     NAME_ID_MAP = {'name': NAME,
                    'interval': INTERVAL,
@@ -341,6 +343,8 @@ class LDMSD_Req_Attr(object):
                    'rx_rate' : RX_RATE,
                    'reconnect' : INTERVAL,
                    'summary' : SUMMARY,
+                   'size' : SIZE,
+                   'CIDR' : CIDR,
                    'TERMINATING': LAST
         }
 

@@ -395,6 +395,10 @@ typedef struct ldmsd_prdcr_listen {
 	int recv_credits; /* bytes */
 	int rate_limits; /* bytes/sec */
 
+	/* Network Address & prefix_len from a given CIDR IP address string */
+	struct ldms_addr net_addr;
+	int prefix_len;
+
 	/*
 	 * For query the prdcr_listen information, ldmsd could report which
 	 * producers were added because their hostnames match the regex of

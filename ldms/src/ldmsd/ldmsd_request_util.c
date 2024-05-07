@@ -174,6 +174,7 @@ const struct req_str_id attr_str_id_table[] = {
 	{  "auto_interval",     LDMSD_ATTR_AUTO_INTERVAL  },
 	{  "auto_switch",       LDMSD_ATTR_AUTO_SWITCH  },
 	{  "base",              LDMSD_ATTR_BASE  },
+	{  "cidr",              LDMSD_ATTR_CIDR  },
 	{  "container",         LDMSD_ATTR_CONTAINER  },
 	{  "credits",           LDMSD_ATTR_CREDITS  },
 	{  "decomposition",     LDMSD_ATTR_DECOMP  },
