@@ -213,6 +213,7 @@ LDMSD_CTRL_CMD_MAP = {'usage': {'req_attr': [], 'opt_attr': ['name']},
                                         'opt_attr' : [ 'auth', 'perm', 'interval',
                                                    'reconnect', 'rail',
                                                    'credits', 'rx_rate' ] },
+                      'advertiser_del': {'req_attr': ['name'], 'opt_attr': []},
                       'advertiser_start': {'req_attr': ['name'],
                                         'opt_attr' : ['xprt', 'host', 'port',
                                                       'auth', 'perm',
@@ -221,6 +222,7 @@ LDMSD_CTRL_CMD_MAP = {'usage': {'req_attr': [], 'opt_attr': ['name']},
                       'advertiser_stop': {'req_attr': ['name'], 'opt_attr': []},
                       'prdcr_listen_add': {'req_attr': ['name', 'reconnect'],
                                            'opt_attr': ['rail', 'credits', 'rx_rate', 'regex']},
+                      'prdcr_listen_del': {'req_attr': ['name'], 'opt_attr': []},
                       'prdcr_listen_start': {'req_attr': ['name'], 'opt_attr': []},
                       'prdcr_listen_stop': {'req_attr': ['name'], 'opt_attr': []},
                       'prdcr_listen_status': {'req_attr': [], 'opt_attr': []},
@@ -2161,7 +2163,7 @@ class Communicator(object):
         args_d = {'name': name, 'ptype': ptype, 'xprt': xprt, 'host': host, 'port': port,
                   'reconnect': reconnect, 'auth': auth, 'perm': perm,
                   'rail': rail, 'credits': credits, 'rx_rate': rx_rate}
-        attrs = self._prdcr_add_attr_prep(args_d)
+        attrs = self._prdcr_add_attr_prep(**args_d)
         req = LDMSD_Request( command_id = LDMSD_Request.PRDCR_ADD, attrs = attrs)
         try:
             req.send(self)
@@ -2479,7 +2481,7 @@ class Communicator(object):
         args_d = {'name': name, 'xprt': xprt, 'host': host, 'port': port,
                   'reconnect': reconnect, 'auth': auth, 'perm': perm,
                   'rail': rail, 'credits': credits, 'rx_rate': rx_rate}
-        attrs = self._prdcr_add(args_d)
+        attrs = self._prdcr_add_attr_prep(**args_d)
         attrs.append(LDMSD_Req_Attr(attr_id=LDMSD_Req_Attr.TYPE, value="advertise"))
         req = LDMSD_Request( command_id = LDMSD_Request.ADVERTISER_ADD, attrs = attrs)
         try:

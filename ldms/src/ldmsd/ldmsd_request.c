@@ -318,6 +318,7 @@ static int banner_mode_handler(ldmsd_req_ctxt_t reqc);
 
 /* Sampler discovery */
 static int prdcr_listen_add_handler(ldmsd_req_ctxt_t reqc);
+static int prdcr_listen_del_handler(ldmsd_req_ctxt_t reqc);
 static int prdcr_listen_start_handler(ldmsd_req_ctxt_t reqc);
 static int prdcr_listen_stop_handler(ldmsd_req_ctxt_t reqc);
 static int prdcr_listen_status_handler(ldmsd_req_ctxt_t reqc);
@@ -715,6 +716,9 @@ static struct request_handler_entry request_handler[] = {
 	},
 	[LDMSD_PRDCR_LISTEN_ADD_REQ] = {
 		LDMSD_PRDCR_LISTEN_ADD_REQ, prdcr_listen_add_handler, XUG
+	},
+	[LDMSD_PRDCR_LISTEN_DEL_REQ] = {
+		LDMSD_PRDCR_LISTEN_DEL_REQ, prdcr_listen_del_handler, XUG
 	},
 	[LDMSD_PRDCR_LISTEN_START_REQ] = {
 		LDMSD_PRDCR_LISTEN_START_REQ, prdcr_listen_start_handler, XUG | MOD
@@ -9541,6 +9545,87 @@ einval:
 	goto send_reply;
 }
 
+/* This is implemented in ldmsd_cfgobj.c */
+extern struct rbt *cfgobj_trees[];
+static int prdcr_listen_del_handler(ldmsd_req_ctxt_t reqc)
+{
+	int rc = 0;
+	char *name = NULL;
+	struct ldmsd_sec_ctxt sctxt;
+	ldmsd_prdcr_listen_t pl;
+
+	name = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_NAME);
+	if (!name) {
+		reqc->errcode = EINVAL;
+		reqc->line_off = snprintf(reqc->line_buf, reqc->line_len,
+					"The attribute 'name' is required,");
+		goto send_reply;
+	}
+
+	ldmsd_req_ctxt_sec_get(reqc, &sctxt);
+
+	ldmsd_cfg_lock(LDMSD_CFGOBJ_PRDCR_LISTEN);
+	for (pl = (ldmsd_prdcr_listen_t)ldmsd_cfgobj_first(LDMSD_CFGOBJ_PRDCR_LISTEN); pl;
+			pl = (ldmsd_prdcr_listen_t)ldmsd_cfgobj_next(&pl->obj)) {
+		if (0 != strcmp(name, pl->obj.name))
+			continue;
+
+		ldmsd_cfgobj_lock(&pl->obj);
+		rc = ldmsd_cfgobj_access_check(&pl->obj, 0222, &sctxt);
+		if (rc) {
+			ldmsd_cfgobj_unlock(&pl->obj);
+			ldmsd_cfg_unlock(LDMSD_CFGOBJ_PRDCR_LISTEN);
+			reqc->errcode = EACCES;
+			reqc->line_off = snprintf(reqc->line_buf, reqc->line_len,
+						"Permission denied");
+			goto send_reply;
+		}
+
+		if (pl->state != LDMSD_PRDCR_LISTEN_STATE_STOPPED) {
+			ldmsd_cfgobj_unlock(&pl->obj);
+			ldmsd_cfg_unlock(LDMSD_CFGOBJ_PRDCR_LISTEN);
+			reqc->errcode = EBUSY;
+			reqc->line_off = snprintf(reqc->line_buf, reqc->line_len,
+						"The producer listen '%s' is in use.\n",
+						name);
+			goto send_reply;
+		}
+
+		if (ldmsd_cfgobj_refcount(&pl->obj) > 2) {
+			ldmsd_cfgobj_unlock(&pl->obj);
+			ldmsd_cfg_unlock(LDMSD_CFGOBJ_PRDCR_LISTEN);
+			reqc->errcode = EBUSY;
+			reqc->line_off = snprintf(reqc->line_buf, reqc->line_len,
+						"The producer listen '%s' is in use.\n",
+						name);
+			goto send_reply;
+		}
+
+		rbt_del(cfgobj_trees[LDMSD_CFGOBJ_PRDCR_LISTEN], &pl->obj.rbn);
+		ldmsd_cfgobj_put(&pl->obj); /* Put back the reference from the tree */
+		ldmsd_cfgobj_unlock(&pl->obj);
+		goto unlock_tree;
+	}
+
+	if (!pl) {
+		ldmsd_cfg_unlock(LDMSD_CFGOBJ_PRDCR_LISTEN);
+		reqc->errcode = ENOENT;
+		reqc->line_off = snprintf(reqc->line_buf, reqc->line_len,
+					"The producer listen '%s' does not exist.\n",
+					name);
+		goto send_reply;
+	}
+
+unlock_tree:
+	ldmsd_cfg_unlock(LDMSD_CFGOBJ_PRDCR_LISTEN);
+
+send_reply:
+	if (pl)
+		ldmsd_cfgobj_put(&pl->obj); /* Put back the 'first' or 'next' reference */
+	ldmsd_send_req_response(reqc, reqc->line_buf);
+	return rc;
+}
+
 static int prdcr_listen_start_handler(ldmsd_req_ctxt_t reqc)
 {
 	int rc = 0;
@@ -9579,6 +9664,7 @@ static int prdcr_listen_start_handler(ldmsd_req_ctxt_t reqc)
 
 	pl->obj.perm |= LDMSD_PERM_DSTART;
 	pl->state = LDMSD_PRDCR_LISTEN_STATE_RUNNING;
+	ldmsd_cfgobj_put(&pl->obj); /* Put back the 'find' reference */
 	ldmsd_cfgobj_unlock(&pl->obj);
 
 send_reply:
@@ -9627,6 +9713,7 @@ static int prdcr_listen_stop_handler(ldmsd_req_ctxt_t reqc)
 	pl->obj.perm &= ~LDMSD_PERM_DSTART;
 	pl->state = LDMSD_PRDCR_LISTEN_STATE_STOPPED;
 out:
+	ldmsd_cfgobj_put(&pl->obj); /* Put back the 'find' reference */
 	ldmsd_cfgobj_unlock(&pl->obj);
 
 send_reply:
@@ -9890,7 +9977,7 @@ err:
 static int advertise_notification_handler(ldmsd_req_ctxt_t reqc)
 {
 	int rc = 0;
-	ldmsd_prdcr_listen_t lt_prdcr;
+	ldmsd_prdcr_listen_t pl;
 	char *hostname;
 	char *name;
 	hostname = name = NULL;
@@ -9903,16 +9990,15 @@ static int advertise_notification_handler(ldmsd_req_ctxt_t reqc)
 		goto send_reply;
 	}
 
-	for (lt_prdcr = (ldmsd_prdcr_listen_t)ldmsd_cfgobj_first(LDMSD_CFGOBJ_PRDCR_LISTEN);
-			lt_prdcr;
-			lt_prdcr = (ldmsd_prdcr_listen_t)ldmsd_cfgobj_next(&lt_prdcr->obj))
+	for (pl = (ldmsd_prdcr_listen_t)ldmsd_cfgobj_first(LDMSD_CFGOBJ_PRDCR_LISTEN);
+			pl; pl = (ldmsd_prdcr_listen_t)ldmsd_cfgobj_next(&pl->obj))
 	{
-		if (lt_prdcr->state != LDMSD_PRDCR_LISTEN_STATE_RUNNING)
+		if (pl->state != LDMSD_PRDCR_LISTEN_STATE_RUNNING)
 			continue;
-		if ((!lt_prdcr->hostname_regex_s) ||
-				(0 == regexec(&lt_prdcr->regex, hostname, 0, NULL, 0))) {
+		if ((!pl->hostname_regex_s) ||
+				(0 == regexec(&pl->regex, hostname, 0, NULL, 0))) {
 			/* The hostname matches the regular expression. */
-			reqc->errcode = __get_prdcr(reqc, lt_prdcr);
+			reqc->errcode = __get_prdcr(reqc, pl);
 			if (reqc->errcode) {
 				if (reqc->errcode == EBUSY) {
 					snprintf(reqc->line_buf, reqc->line_len,
@@ -9923,6 +10009,7 @@ static int advertise_notification_handler(ldmsd_req_ctxt_t reqc)
 						"An error '%d' occurred on the peer.", reqc->errcode);
 				}
 			}
+			ldmsd_cfgobj_put(&pl->obj); /* Put back the 'first' or 'next' reference */
 			goto send_reply;
 		}
 	}
@@ -10005,7 +10092,7 @@ static int advertiser_stop_handler(ldmsd_req_ctxt_t reqc)
 
 static int advertiser_del_handler(ldmsd_req_ctxt_t reqc)
 {
-	int rc = __prdcr_stop_handler(reqc, "advertiser_del", "advertiser");
+	int rc = __prdcr_del_handler(reqc, "advertiser_del", "advertiser");
 	ldmsd_send_req_response(reqc, reqc->line_buf);
 	return rc;
 }
