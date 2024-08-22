@@ -3301,8 +3301,9 @@ void __ldms_xprt_init(struct ldms_xprt *x, const char *name, int is_active)
 	x->ops = ldms_xprt_ops;
 
 	ldms_xprt_ops_t op_e;
-	for (op_e = 0; op_e < LDMS_XPRT_OP_COUNT; op_e++)
+	for (op_e = 0; op_e < LDMS_XPRT_OP_COUNT; op_e++) {
 		x->stats.ops[op_e].min_us = LLONG_MAX;
+	}
 
 	TAILQ_INIT(&x->ctxt_list);
 	sem_init(&x->sem, 0, 0);

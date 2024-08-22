@@ -197,6 +197,7 @@ ldms_t ldms_xprt_rail_new(const char *xprt_name,
 	ldms_rail_t r;
 	zap_t zap;
 	int i;
+	enum ldms_xprt_ops_e op_e;
 
 	if (n <= 0) {
 		errno = EINVAL;
@@ -226,6 +227,7 @@ ldms_t ldms_xprt_rail_new(const char *xprt_name,
 	r->recv_limit = recv_limit;
 	r->recv_rate_limit = rate_limit;
 	rbt_init(&r->stream_client_rbt, __str_rbn_cmp);
+
 	snprintf(r->name, sizeof(r->name), "%s", xprt_name);
 	snprintf(r->auth_name, sizeof(r->auth_name), "%s", auth_name);
 	if (auth_av_list) {
@@ -245,6 +247,9 @@ ldms_t ldms_xprt_rail_new(const char *xprt_name,
 		r->eps[i].rate_credit.ts.tv_nsec   = 0;
 		r->eps[i].remote_is_rail = -1;
 		rbt_init(&r->eps[i].sbuf_rbt, __stream_buf_cmp);
+		for (op_e = 0; op_e < LDMS_XPRT_OP_COUNT; op_e++) {
+			TAILQ_INIT(&r->eps[i]->op_stat_lists[op_e]);
+		}
 	}
 
 	zap = __ldms_zap_get(xprt_name);

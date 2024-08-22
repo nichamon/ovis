@@ -1800,8 +1800,56 @@ typedef enum ldms_xprt_ops_e {
 	LDMS_XPRT_OP_DIR_REP,
 	LDMS_XPRT_OP_SEND,
 	LDMS_XPRT_OP_RECV,
+	LDMS_XPRT_OP_STREAM_PUBLISH,
+	LDMS_XPRT_OP_STREAM_SUBSCRIBE,
+	LDMS_XPRT_OP_STREAM_UNSUBSCRIBE,
 	LDMS_XPRT_OP_COUNT
 } ldms_xprt_ops_t;
+
+struct  ldms_op_stat {
+	enum ldms_xprt_ops_e op_type;
+	union {
+		struct lookup_op_stat {
+			struct timespec app_req_ts;
+			struct timespec req_send_ts;
+			struct timespec req_recv_ts;
+			struct timespec share_ts;
+			struct timespec rendzv_ts;
+			struct timespec read_ts;
+			struct timespec read_complete_ts;
+			struct timespec app_deliver_ts;
+		} lookup;
+		struct update_op_stat {
+
+		} update;
+		struct set_delete_op_stat {
+
+		} set_del;
+		struct dir_req_op_stat {
+
+		} dir_req;
+		struct dir_rep_op_stat {
+
+		} dir_rep;
+		struct send_op_stat {
+
+		} send;
+		struct recv_op_stat {
+
+		} recv;
+		struct strm_publish_op_stat {
+
+		} stream_publish;
+		struct strm_subscribe_op_stat {
+
+		} stream_subscribe;
+		struct strm_unsubscribe_op_stat {
+
+		} stream_unsubscribe;
+	};
+	TAILQ_ENTRY(op_stat_ent) ent;
+};
+TAILQ_HEAD(ldms_op_stat_list, ldms_op_stat);
 
 extern const char *ldms_xprt_op_names[];
 
