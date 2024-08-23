@@ -1816,7 +1816,7 @@ struct  ldms_op_stat {
 			struct timespec share_ts;
 			struct timespec rendzv_ts;
 			struct timespec read_ts;
-			struct timespec read_complete_ts;
+			struct timespec complete_ts;
 			struct timespec app_deliver_ts;
 		} lookup;
 		struct update_op_stat {
@@ -1847,7 +1847,7 @@ struct  ldms_op_stat {
 
 		} stream_unsubscribe;
 	};
-	TAILQ_ENTRY(op_stat_ent) ent;
+	TAILQ_ENTRY(ldms_op_stat) ent;
 };
 TAILQ_HEAD(ldms_op_stat_list, ldms_op_stat);
 
@@ -1958,6 +1958,7 @@ typedef struct ldms_xprt_stats {
 	struct timespec disconnected;
 	struct timespec last_op;
 	struct ldms_stats_entry ops[LDMS_XPRT_OP_COUNT];
+	struct ldms_op_stat_list op_stat_lists[LDMS_XPRT_OP_COUNT];
 } *ldms_xprt_stats_t;
 
 /**

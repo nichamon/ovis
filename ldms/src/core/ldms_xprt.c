@@ -95,6 +95,10 @@ static void ldms_zap_cb(zap_ep_t zep, zap_event_t ev);
  */
 void ldms_zap_auto_cb(zap_ep_t zep, zap_event_t ev);
 
+/* The implementation is is ldms_rail.c. */
+struct ldms_op_stat_list *
+__rail_op_stat_list(ldms_t x, enum ldms_xprt_ops_e op_e);
+
 #if 0
 #define TF() XPRT_LOG(NULL, OVIS_LALWAYS, "%s:%d\n", __FUNCTION__, __LINE__)
 #else
@@ -1312,6 +1316,7 @@ static int __send_lookup_reply(struct ldms_xprt *x, struct ldms_set *set,
 
 	ldms_name_t name = get_instance_name(set->meta);
 	ldms_name_t schema = get_schema_name(set->meta);
+	struct ldms_thrstat *thrstat = zap_thrstat_ctxt_get(x->zap_ep);
 	/*
 	 * The lookup.set_info encodes schema name, instance name
 	 * and the set info key value pairs as follows.
@@ -1381,6 +1386,8 @@ static int __send_lookup_reply(struct ldms_xprt *x, struct ldms_set *set,
 	msg->lookup.meta_len = htonl(__le32_to_cpu(set->meta->meta_sz));
 	msg->lookup.card = htonl(__le32_to_cpu(set->meta->card));
 	msg->lookup.array_card = htonl(__le32_to_cpu(set->meta->array_card));
+	memcpy(&msg->lookup.req_recv, &thrstat->last_op_start, sizeof(struct timespec));
+	(void)clock_gettime(CLOCK_REALTIME, &msg->lookup.share);
 
 	XPRT_LOG(x, OVIS_LDEBUG, "%s(): x %p: sharing ... remote lookup ctxt %p\n",
 							   __func__, x, (void *)xid);
@@ -1744,6 +1751,12 @@ static
 void process_lookup_reply(struct ldms_xprt *x, struct ldms_reply *reply,
 			  struct ldms_context *ctxt)
 {
+	struct ldms_thrstat *thrstat;
+
+	thrstat = zap_thrstat_ctxt_get(x->zap_ep);
+	memcpy(&ctxt->op_stat->lookup.complete_ts, &thrstat->last_op_start,
+					    sizeof(struct timespec));
+
 	int rc = ntohl(reply->hdr.rc);
 	if (!rc) {
 		/* A peer should only receive error in lookup_reply.
@@ -2532,6 +2545,8 @@ static void handle_zap_read_complete(zap_ep_t zep, zap_event_t ev)
 		break;
 	case LDMS_CONTEXT_LOOKUP_READ:
 		thrstat->last_op = LDMS_THRSTAT_OP_LOOKUP_REPLY;
+		memcpy(&ctxt->op_stat->lookup.complete_ts, &thrstat->last_op_start,
+							sizeof(struct timespec));
 		__handle_lookup(x, ctxt, ev);
 		break;
 	default:
@@ -2646,6 +2661,12 @@ static void handle_rendezvous_lookup(zap_ep_t zep, zap_event_t ev,
 	int rc;
 	ldms_name_t schema_name, inst_name;
 
+	struct ldms_thrstat *thrstat = zap_thrstat_ctxt_get(zep);
+	struct ldms_op_stat *op_stat = ctxt->op_stat;
+	memcpy(&op_stat->lookup.rendzv_ts, &thrstat->last_op_start, sizeof(struct timespec));
+	memcpy(&op_stat->lookup.req_recv_ts, &lu->req_recv, sizeof(struct timespec));
+	memcpy(&op_stat->lookup.share_ts, &lu->share, sizeof(struct timespec));
+
 #ifdef DEBUG
 	if (!__is_lookup_name_good(x, lu, ctxt)) {
 		XPRT_LOG(x, OVIS_LALWAYS,
@@ -2705,8 +2726,10 @@ static void handle_rendezvous_lookup(zap_ep_t zep, zap_event_t ev,
 	rd_ctxt->sem = ctxt->sem;
 	rd_ctxt->sem_p = ctxt->sem_p;
 	rd_ctxt->rc = ctxt->rc;
+	rd_ctxt->op_stat = ctxt->op_stat;
 	pthread_mutex_unlock(&x->lock);
 	assert((zep == x->zap_ep) && (x == rd_ctxt->x));
+	(void)clock_gettime(CLOCK_REALTIME, &op_stat->lookup.read_ts);
 	rc = zap_read(zep,
 		      lset->rmap, zap_map_addr(lset->rmap),
 		      lset->lmap, zap_map_addr(lset->lmap),
@@ -3692,12 +3715,20 @@ int __ldms_remote_lookup(ldms_t _x, const char *path,
 	struct ldms_request *req;
 	struct ldms_context *ctxt;
 	size_t len;
+	struct ldms_op_stat *op_stat;
 
 	if (!ldms_xprt_connected(x))
 		return ENOTCONN;
 
 	if (LDMS_XPRT_AUTH_GUARD(x))
 		return EPERM;
+
+	/*
+	 * It's always the last entry in the queue because
+	 * we hold the rail lock before we enqueue the entry.
+	 */
+	op_stat = TAILQ_LAST(__rail_op_stat_list(x, LDMS_XPRT_OP_LOOKUP),
+							ldms_op_stat_list);
 
 	__ldms_set_tree_lock();
 	struct ldms_set *set = __ldms_find_local_set(path);
@@ -3723,6 +3754,7 @@ int __ldms_remote_lookup(ldms_t _x, const char *path,
 		ldms_xprt_put(x);
 		return ENOMEM;
 	}
+	ctxt->op_stat = op_stat;
 	req = (struct ldms_request *)(ctxt + 1);
 
 	len = format_lookup_req(req, flags, path, (uint64_t)(unsigned long)ctxt);
@@ -3736,6 +3768,7 @@ int __ldms_remote_lookup(ldms_t _x, const char *path,
 	XPRT_LOG(x, OVIS_LDEBUG, "remote_lookup: get ref %p: active_lookup = %d\n",
 		x->zap_ep, x->active_lookup);
 #endif /* DEBUG */
+	(void)clock_gettime(CLOCK_REALTIME, &op_stat->lookup.req_send_ts);
 	zap_err_t zerr = zap_send(x->zap_ep, req, len);
 	if (zerr) {
 		pthread_mutex_lock(&x->lock);
@@ -3789,7 +3822,28 @@ int ldms_xprt_lookup(ldms_t x, const char *path, enum ldms_lookup_flags flags,
 
 static void __ldms_xprt_stats(ldms_t _x, ldms_xprt_stats_t stats)
 {
+	struct ldms_op_stat_list *src_list, *dst_list;
+	struct ldms_op_stat *src, *dst;
+	enum ldms_xprt_ops_e op_e;
+
 	*stats = _x->stats;
+	for (op_e = 0; op_e < LDMS_XPRT_OP_COUNT; op_e++) {
+		TAILQ_INIT(&stats->op_stat_lists[op_e]);
+		dst_list = &stats->op_stat_lists[op_e];
+		src_list = __rail_op_stat_list(_x, op_e);
+
+		TAILQ_FOREACH(src, src_list, ent) {
+			dst = malloc(sizeof(*dst));
+			if (!dst) {
+				ovis_log(NULL, OVIS_LCRIT, "Memory allocation failure.\n");
+				return;
+			}
+			memcpy(dst, src, sizeof(*dst));
+			dst->ent.tqe_next = NULL;
+			dst->ent.tqe_prev = NULL;
+			TAILQ_INSERT_TAIL(dst_list, dst, ent);
+		}
+	}
 }
 
 void ldms_xprt_stats(ldms_t _x, ldms_xprt_stats_t stats)

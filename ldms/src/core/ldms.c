@@ -100,6 +100,9 @@ const char *ldms_xprt_op_names[] = {
 	"DIR_REP",
 	"SEND",
 	"RECV",
+	"STREAM_PUBLISH",
+	"STREAM_SUBSCRIBE",
+	"STREAM_UNSUBSCRIBE"
 };
 static char *type_names[];
 

@@ -249,6 +249,8 @@ struct ldms_rendezvous_lookup_param {
 	uint32_t card; /* card of dict */
 	uint32_t schema_len;
 	uint32_t array_card; /* card of array */
+	struct timespec req_recv; /* Timestamp when server has received the lookup request. */
+	struct timespec share; /* Timestamp when server has called zap_share(). */
 	/* schema name, then instance name, and then set_info key value pairs */
 	char set_info[OVIS_FLEX];
 };
@@ -345,6 +347,7 @@ struct ldms_context {
 	int rc;
 	struct ldms_xprt *x;
 	ldms_context_type_t type;
+	struct ldms_op_stat *op_stat;
 	union {
 		struct {
 			ldms_dir_cb_t cb;

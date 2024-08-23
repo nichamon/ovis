@@ -124,6 +124,10 @@ struct ldms_rail_ep_s {
 	struct rbt sbuf_rbt; /* stream message buffer */
 	int remote_is_rail;
 	struct ldms_rail_rate_credit_s rate_credit; /* rate credit */
+	/*
+	 * Array of lists, where each list contains the probe data of
+	 * each ldms_xprt operation, including ldms_stream.
+	 */
 	struct ldms_op_stat_list op_stat_lists[LDMS_XPRT_OP_COUNT];
 };
 

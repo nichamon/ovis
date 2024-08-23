@@ -248,7 +248,7 @@ ldms_t ldms_xprt_rail_new(const char *xprt_name,
 		r->eps[i].remote_is_rail = -1;
 		rbt_init(&r->eps[i].sbuf_rbt, __stream_buf_cmp);
 		for (op_e = 0; op_e < LDMS_XPRT_OP_COUNT; op_e++) {
-			TAILQ_INIT(&r->eps[i]->op_stat_lists[op_e]);
+			TAILQ_INIT(&(r->eps[i].op_stat_lists[op_e]));
 		}
 	}
 
@@ -1160,12 +1160,14 @@ struct ldms_rail_lookup_ctxt_s {
 	ldms_lookup_cb_t app_cb;
 	void *cb_arg;
 	enum ldms_lookup_flags flags;
+	struct ldms_op_stat *op_stat;
 } *ldms_rail_lookup_ctxt_t;
 
 void __rail_lookup_cb(ldms_t x, enum ldms_lookup_status status,
 			int more, ldms_set_t s, void *arg)
 {
 	ldms_rail_lookup_ctxt_t lc = arg;
+	(void)clock_gettime(CLOCK_REALTIME, &lc->op_stat->lookup.deliver_ts);
 	lc->app_cb((void*)lc->r, status, more, s, lc->cb_arg);
 	if (!more)
 		free(lc);
@@ -1178,6 +1180,12 @@ static int __rail_lookup(ldms_t _r, const char *name, enum ldms_lookup_flags fla
 	int rc;
 	struct ldms_rail_ep_s *rep;
 	ldms_rail_lookup_ctxt_t lc;
+
+	struct ldms_op_stat *op_stat = calloc(1, sizeof(*op_stat));
+	if (!op_stat)
+		return ENOMEM;
+	(void)clock_gettime(CLOCK_REALTIME, &op_stat->lookup.app_req_ts);
+
 	pthread_mutex_lock(&r->mutex);
 	if (r->state != LDMS_RAIL_EP_CONNECTED) {
 		rc = ENOTCONN;
@@ -1192,12 +1200,16 @@ static int __rail_lookup(ldms_t _r, const char *name, enum ldms_lookup_flags fla
 	lc->app_cb = cb;
 	lc->cb_arg = cb_arg;
 	lc->flags = flags;
+	lc->op_stat = op_stat;
 	rep = &r->eps[r->lookup_rr++];
 	r->lookup_rr %= r->n_eps;
+	TAILQ_INSERT_TAIL(&(rep->op_stat_lists[LDMS_XPRT_OP_LOOKUP]), op_stat, ent);
 	rc = ldms_xprt_lookup(rep->ep, name, flags, __rail_lookup_cb, lc);
 	if (rc) {
 		/* synchronous error */
 		free(lc);
+		TAILQ_REMOVE(&rep->op_stat_lists[LDMS_XPRT_OP_LOOKUP], op_stat, ent);
+		free(op_stat);
 	}
  out:
 	pthread_mutex_unlock(&r->mutex);
@@ -1406,6 +1418,13 @@ void __rail_process_send_credit(ldms_t x, struct ldms_request *req)
 	ev.credit.ep_idx = rep->idx;
 	ev.type = LDMS_XPRT_EVENT_SEND_CREDIT_DEPOSITED;
 	rep->rail->event_cb((ldms_t)rep->rail, &ev, rep->rail->event_cb_arg);
+}
+
+struct ldms_op_stat_list *
+__rail_op_stat_list(struct ldms_xprt *x, enum ldms_xprt_ops_e op_e)
+{
+	struct ldms_rail_ep_s *rep = ldms_xprt_ctxt_get(x);
+	return &(rep->op_stat_lists[op_e]);
 }
 
 int ldms_xprt_rail_send_credit_get(ldms_t _r, uint64_t *credits, int n)
