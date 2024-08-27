@@ -160,6 +160,7 @@ LDMSD_CTRL_CMD_MAP = {'usage': {'req_attr': [], 'opt_attr': ['name']},
                       'set_sec_mod' : {'req_attr': ['regex'], 'opt_attr': ['uid', 'gid', 'perm']},
                       'log_status' : {'req_attr' : [], 'opt_attr' : ['name']},
                       'stats_reset' : {'req_attr' : [], 'opt_attr' : ['list']},
+                      'xprt_probe' : {'req_attr' : [], 'opt_attr' : []},
                       ##### Failover. #####
                       'failover_config': {
                                 'req_attr': [
@@ -585,6 +586,7 @@ class LDMSD_Request(object):
     SET_SEC_MOD = 0x600 + 19
     LOG_STATUS = 0x600 + 20
     STATS_RESET = 0x600 + 21
+    XPRT_PROBE = 0x600 + 31
 
     FAILOVER_CONFIG        = 0x700
     FAILOVER_PEERCFG_START = 0x700  +  1
@@ -693,6 +695,7 @@ class LDMSD_Request(object):
             'failover_stop'          : {'id' : FAILOVER_STOP},
             'set_route'     :  {'id': SET_ROUTE},
             'xprt_stats'    :  {'id' : XPRT_STATS},
+            'xprt_probe'    :  {'id' : XPRT_PROBE},
             'thread_stats'  :  {'id' : THREAD_STATS},
             'prdcr_stats'   :  {'id' : PRDCR_STATS},
             'set_stats'     :  {'id' : SET_STATS},
@@ -3333,6 +3336,17 @@ class Communicator(object):
                     LDMSD_Req_Attr(attr_id=LDMSD_Req_Attr.LEVEL,
                                    value=str(level))
                 ])
+        try:
+            req.send(self)
+            resp = req.receive(self)
+            return resp['errcode'], resp['msg']
+        except Exception as e:
+            self.close()
+            return errno.ENOTCONN, str(e)
+
+    def xprt_probe(self):
+        req = LDMSD_Request(
+                command_id=LDMSD_Request.XPRT_PROBE)
         try:
             req.send(self)
             resp = req.receive(self)

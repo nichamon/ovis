@@ -2405,6 +2405,22 @@ class LdmsdCmdParser(cmd.Cmd):
     def complete_xprt_stats(self, text, line, begidx, endidx):
         return self.__complete_attr_list('xprt_stats', text)
 
+    def do_xprt_probe(self, arg):
+        """
+        Query the LDMS transport operation data
+        """
+        arg = self.handle_args('xprt_probe', arg)
+        if not arg:
+            return
+        rc, msg = self.comm.xprt_probe()
+        if msg == "":
+            return
+        if rc != 0:
+            print(f"Error: {rc} {msg}")
+            return
+        stats = fmt_status(msg)
+        print(stats)
+
     def do_updtr_task(self, arg):
         """
         Report the updater tasks

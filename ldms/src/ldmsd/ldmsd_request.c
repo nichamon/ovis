@@ -264,6 +264,7 @@ static int update_time_stats_handler(ldmsd_req_ctxt_t reqc);
 static int set_sec_mod_handler(ldmsd_req_ctxt_t reqc);
 static int log_status_handler(ldmsd_req_ctxt_t reqc);
 static int stats_reset_handler(ldmsd_req_ctxt_t reqc);
+static int xprt_probe_handler(ldmsd_req_ctxt_t req);
 
 /* these are implemented in ldmsd_failover.c */
 int failover_config_handler(ldmsd_req_ctxt_t req_ctxt);
@@ -555,6 +556,10 @@ static struct request_handler_entry request_handler[] = {
 
 	[LDMSD_SET_DEFAULT_AUTHZ_REQ] = {
 		LDMSD_SET_DEFAULT_AUTHZ_REQ, set_default_authz_handler, XUG | MOD
+	},
+
+	[LDMSD_XPRT_PROBE_REQ] = {
+		LDMSD_XPRT_PROBE_REQ, xprt_probe_handler, XALL
 	},
 
 	/* FAILOVER user commands */
@@ -7198,6 +7203,122 @@ struct store_time_thread {
 	uint64_t store_time;
 	struct rbn rbn;
 };
+
+double __ts2double(struct timespec ts)
+{
+	return ts.tv_sec + ((double)ts.tv_nsec)/1000000000.0;
+}
+
+json_t *__xprt_op_stat_as_json(struct ldms_op_stat *xs, enum ldms_xprt_ops_e op_e)
+{
+	json_t *stat;
+	stat = json_object();
+	switch (op_e) {
+	case LDMS_XPRT_OP_LOOKUP:
+		json_object_set_new(stat, "app_req",
+				json_real(__ts2double(xs->lookup.app_req_ts)));
+		json_object_set_new(stat, "req_send",
+				json_real(__ts2double(xs->lookup.req_send_ts)));
+		json_object_set_new(stat, "req_recv",
+				json_real(__ts2double(xs->lookup.req_recv_ts)));
+		json_object_set_new(stat, "share",
+				json_real(__ts2double(xs->lookup.share_ts)));
+		json_object_set_new(stat, "rendzv",
+				json_real(__ts2double(xs->lookup.rendzv_ts)));
+		json_object_set_new(stat, "read",
+				json_real(__ts2double(xs->lookup.read_ts)));
+		json_object_set_new(stat, "complete",
+				json_real(__ts2double(xs->lookup.complete_ts)));
+		json_object_set_new(stat, "deliver",
+				json_real(__ts2double(xs->lookup.deliver_ts)));
+		break;
+	default:
+		break;
+	}
+	return stat;
+}
+
+int __xprt_probe_as_json(json_t **_obj)
+{
+	json_t *obj, *ep, *op;
+	ldms_t x;
+	struct ldms_xprt_stats stats;
+	struct ldms_op_stat *xs;
+	int rc;
+	enum ldms_xprt_ops_e op_e;
+	char lhostname[128], lport_no[32], rhostname[128], rport_no[32], name[161];
+
+	obj = json_object();
+	if (!obj) {
+		ovis_log(config_log, OVIS_LCRIT, "Memory allocation failure\n");
+		return ENOMEM;
+	}
+
+	for (x = ldms_xprt_first(); x; x = ldms_xprt_next(x)) {
+		rc = ldms_xprt_names(x, lhostname, sizeof(lhostname),
+					lport_no, sizeof(lport_no),
+					rhostname, sizeof(rhostname),
+					rport_no, sizeof(rport_no),
+					NI_NAMEREQD | NI_NUMERICSERV);
+		if (rc) {
+			if (rc == ENOTCONN)
+				continue;
+		}
+
+		ldms_xprt_stats(x, &stats);
+		snprintf(name, 160, "%s:%s", rhostname, rport_no);
+		ep = json_object();
+		for (op_e = 0; op_e < LDMS_XPRT_OP_COUNT; op_e++) {
+			op = json_array();
+			TAILQ_FOREACH(xs, &stats.op_stat_lists[op_e], ent) {
+				json_array_append_new(op, __xprt_op_stat_as_json(xs, op_e));
+			}
+			json_object_set_new(ep, ldms_xprt_op_names[op_e], op);
+
+		}
+		json_object_set_new(obj, name, ep);
+	}
+	*_obj = obj;
+	return 0;
+}
+
+static int xprt_probe_handler(ldmsd_req_ctxt_t req)
+{
+	json_t *obj;
+	char *json_as_str;
+	int rc;
+	struct ldmsd_req_attr_s attr;
+	size_t str_len;
+
+	rc = __xprt_probe_as_json(&obj);
+	json_as_str = json_dumps(obj, JSON_INDENT(0));
+	str_len = strlen(json_as_str);
+
+	attr.discrim = 1;
+	attr.attr_id = LDMSD_ATTR_JSON;
+	attr.attr_len = str_len;
+	ldmsd_hton_req_attr(&attr);
+
+	if (ldmsd_append_reply(req, (const char *)&attr, sizeof(attr), LDMSD_REQ_SOM_F))
+		goto err;
+
+	if (ldmsd_append_reply(req, json_as_str, str_len, 0))
+		goto err;
+
+	attr.discrim = 0;
+	if (ldmsd_append_reply(req, (const char *)&attr.discrim, sizeof(attr.discrim), LDMSD_REQ_EOM_F))
+		goto err;
+
+	free(obj);
+	free(json_as_str);
+	return 0;
+err:
+	free(obj);
+	free(json_as_str);
+	req->errcode = rc;
+	ldmsd_send_req_response(req, "Failed to get ldms_xprt's probe data");
+	return ENOMEM;
+}
 
 int __store_time_thread_cmp(void *tree_key, const void *key)
 {
