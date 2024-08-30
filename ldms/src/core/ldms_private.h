@@ -149,6 +149,11 @@ struct ldms_set {
 	struct ldms_context *notify_ctxt; /* Notify req context */
 	ldms_heap_t heap;
 	struct ldms_heap_instance heap_inst;
+
+	/*
+	 * Handle to the op_stat of the last ldms_xprt operation.
+	 */
+	struct ldms_op_stat *last_op_stat;
 };
 
 /* Convenience macro to roundup a value to a multiple of the _s parameter */

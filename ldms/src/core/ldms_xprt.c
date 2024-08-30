@@ -1556,6 +1556,22 @@ static int do_read_all(ldms_t x, ldms_set_t s, ldms_update_cb_t cb, void *arg)
 		goto out;
 	}
 	assert(x == ctxt->x);
+	ctxt->op_stat = s->last_op_stat;
+	if (0 == ctxt->op_stat->update.read_ts.tv_sec) {
+		/*
+		 * If the data read timestamp is not set,
+		 * record the current time as the start of the read operation.
+		 *
+		 * The read operation may involve reading the entire set at once,
+		 * reading the meta followed by data,
+		 * or reading multiple times to obtain the updated copy of the set.
+		 */
+		(void)clock_gettime(CLOCK_REALTIME, &ctxt->op_stat->update.read_ts);
+	} else {
+		/*
+		 * Continue reading the set. The read operation has already started.
+		 */
+	}
 	rc = zap_read(x->zap_ep, s->rmap, zap_map_addr(s->rmap),
 		      s->lmap, zap_map_addr(s->lmap), len, ctxt);
 	if (rc) {
@@ -1582,6 +1598,18 @@ static int do_read_meta(ldms_t x, ldms_set_t s, ldms_update_cb_t cb, void *arg)
 		goto out;
 	}
 	assert(x == ctxt->x);
+	ctxt->op_stat = s->last_op_stat;
+	if (0 == ctxt->op_stat->update.read_ts.tv_sec) {
+		/*
+		 * If the data read timestamp is not set,
+		 * record the current time as the start of the read operation.
+		 */
+		(void)clock_gettime(CLOCK_REALTIME, &ctxt->op_stat->update.read_ts);
+	} else {
+		/*
+		 * Continue reading the set. The read operation has already started.
+		 */
+	}
 	rc = zap_read(x->zap_ep, s->rmap, zap_map_addr(s->rmap),
 			s->lmap, zap_map_addr(s->lmap), meta_sz, ctxt);
 	if (rc) {
@@ -1605,7 +1633,6 @@ static int do_read_data(ldms_t x, ldms_set_t s, int idx_from, int idx_to,
 
 	ctxt = __ldms_alloc_ctxt(x, sizeof(*ctxt), LDMS_CONTEXT_UPDATE,
 						s, cb, arg, idx_from, idx_to);
-
 	if (!ctxt) {
 		rc = ENOMEM;
 		goto out;
@@ -1616,6 +1643,18 @@ static int do_read_data(ldms_t x, ldms_set_t s, int idx_from, int idx_to,
 	dlen = (idx_to - idx_from + 1) * data_sz;
 
 	assert(x == ctxt->x);
+	ctxt->op_stat = s->last_op_stat;
+	if (0 == ctxt->op_stat->update.read_ts.tv_sec) {
+		/*
+		 * If the data read timestamp is not set,
+		 * record the current time as the start of the read operation.
+		 */
+		(void)clock_gettime(CLOCK_REALTIME, &ctxt->op_stat->update.read_ts);
+	} else {
+		/*
+		 * Continue reading the set. The read operation has already started.
+		 */
+	}
 	rc = zap_read(x->zap_ep, s->rmap, zap_map_addr(s->rmap) + doff,
 		      s->lmap, zap_map_addr(s->lmap) + doff, dlen, ctxt);
 	if (rc) {
@@ -2537,10 +2576,24 @@ static void handle_zap_read_complete(zap_ep_t zep, zap_event_t ev)
 	switch (ctxt->type) {
 	case LDMS_CONTEXT_UPDATE:
 		thrstat->last_op = LDMS_THRSTAT_OP_UPDATE_REPLY;
+		/*
+		 * If read complete timestamp is already set,
+		 * we replace it with a new timestamp.
+		 *
+		 * We collect the timestamp of the beginning of thr first read and
+		 * the timestamp of the completion of the last read.
+		 */
+		memcpy(&ctxt->op_stat->update.read_complete_ts, &thrstat->last_op_start,
+							sizeof(struct timespec));
 		__handle_update_data(x, ctxt, ev);
 		break;
 	case LDMS_CONTEXT_UPDATE_META:
-		thrstat->last_op = LDMS_THRSTAT_OP_UPDATE_REPLY;
+		/*
+		 * With the same reason as in the LDMS_CONTEXT_UPDATE case,
+		 * we set or reset the read complete timestamp.
+		 */
+		memcpy(&ctxt->op_stat->update.read_complete_ts, &thrstat->last_op_start,
+							sizeof(struct timespec));
 		__handle_update_meta(x, ctxt, ev);
 		break;
 	case LDMS_CONTEXT_LOOKUP_READ:

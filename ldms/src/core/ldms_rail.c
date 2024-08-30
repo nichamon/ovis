@@ -1290,6 +1290,10 @@ void __rail_update_cb(ldms_t x, ldms_set_t s, int flags, void *arg)
 {
 	struct ldms_rail_ep_s *rep = ldms_xprt_ctxt_get(x);
 	ldms_rail_update_ctxt_t uc = arg;
+	struct ldms_op_stat *op_stat = s->last_op_stat;
+
+	(void)clock_gettime(CLOCK_REALTIME, &op_stat->update.deliver_ts);
+	s->last_op_stat = NULL;
 	uc->app_cb((ldms_t)rep->rail, s, flags, uc->cb_arg);
 	if (!(flags & LDMS_UPD_F_MORE)) {
 		free(uc);
@@ -1301,17 +1305,33 @@ static int __rail_update(ldms_t _r, struct ldms_set *set,
 {
 	ldms_rail_t r = (void*)_r;
 	ldms_rail_update_ctxt_t uc;
+	struct ldms_op_stat *op_stat;
+	struct ldms_rail_ep_s *rep;
 	int rc;
 
+	op_stat = calloc(1, sizeof(*op_stat));
+	if (!op_stat)
+		return ENOMEM;
+	op_stat->op_type = LDMS_XPRT_OP_UPDATE;
+	(void)clock_gettime(CLOCK_REALTIME, &op_stat->update.app_req_ts);
+
 	uc = calloc(1, sizeof(*uc));
-	if (!uc)
+	if (!uc) {
+		free(op_stat);
 		return errno;
+	}
 	uc->r = r;
 	uc->app_cb = cb;
 	uc->cb_arg = arg;
+
+	rep = ldms_xprt_ctxt_get(set->xprt);
+	TAILQ_INSERT_TAIL(&(rep->op_stat_lists[LDMS_XPRT_OP_UPDATE]), op_stat, ent);
+	set->last_op_stat = op_stat;
 	rc = set->xprt->ops.update(set->xprt, set, __rail_update_cb, uc);
 	if (rc) {
 		/* synchronously error, clean up the context */
+		set->last_op_stat = NULL;
+		free(op_stat);
 		free(uc);
 	}
 	return rc;

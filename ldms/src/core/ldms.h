@@ -1817,10 +1817,13 @@ struct  ldms_op_stat {
 			struct timespec rendzv_ts;
 			struct timespec read_ts;
 			struct timespec complete_ts;
-			struct timespec app_deliver_ts;
+			struct timespec deliver_ts;
 		} lookup;
 		struct update_op_stat {
-
+			struct timespec app_req_ts;
+			struct timespec read_ts;
+			struct timespec read_complete_ts;
+			struct timespec deliver_ts;
 		} update;
 		struct set_delete_op_stat {
 
