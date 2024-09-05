@@ -7232,6 +7232,16 @@ json_t *__xprt_op_stat_as_json(struct ldms_op_stat *xs, enum ldms_xprt_ops_e op_
 		json_object_set_new(stat, "deliver",
 				json_real(__ts2double(xs->lookup.deliver_ts)));
 		break;
+	case LDMS_XPRT_OP_UPDATE:
+		json_object_set_new(stat, "app_req",
+				json_real(__ts2double(xs->update.app_req_ts)));
+		json_object_set_new(stat, "read_start",
+				json_real(__ts2double(xs->update.read_ts)));
+		json_object_set_new(stat, "read_complete",
+				json_real(__ts2double(xs->update.read_complete_ts)));
+		json_object_set_new(stat, "deliver",
+				json_real(__ts2double(xs->update.deliver_ts)));
+		break;
 	default:
 		break;
 	}
