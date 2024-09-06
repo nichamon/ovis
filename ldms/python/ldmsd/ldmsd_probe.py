@@ -8,3 +8,7 @@ def probe_as_json(comm):
 def lookup_df(host_probe):
     df = pd.DataFrame(host_probe['LOOKUP'])
     return df
+
+def update_df(host_probe):
+    df = pd.DataFrame(host_probe['UPDATE'])
+    return df
