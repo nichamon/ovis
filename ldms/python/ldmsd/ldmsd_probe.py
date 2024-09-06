@@ -12,3 +12,7 @@ def lookup_df(host_probe):
 def update_df(host_probe):
     df = pd.DataFrame(host_probe['UPDATE'])
     return df
+
+def send_df(host_probe):
+    df = pd.DataFrame(host_probe['SEND'])
+    return df
