@@ -1835,7 +1835,10 @@ struct  ldms_op_stat {
 
 		} dir_rep;
 		struct send_op_stat {
-
+			struct timespec app_req_ts;
+			struct timespec send_ts;
+			struct timespec complete_ts;
+			struct timespec deliver_ts;
 		} send;
 		struct recv_op_stat {
 

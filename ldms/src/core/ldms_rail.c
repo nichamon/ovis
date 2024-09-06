@@ -1078,8 +1078,16 @@ static int __rail_send(ldms_t _r, char *msg_buf, size_t msg_len)
 {
 	/* send over ep0 for now */
 	ldms_rail_t r = (ldms_rail_t)_r;
+	struct ldms_op_stat *op_stat;
 	int rc;
 	struct ldms_rail_ep_s *rep; /* an endpoint inside the rail */
+
+	op_stat = calloc(1, sizeof(*op_stat));
+	if (!op_stat)
+		return ENOMEM;
+	op_stat->op_type = LDMS_XPRT_OP_SEND;
+	(void)clock_gettime(CLOCK_REALTIME, &op_stat->send.app_req_ts);
+
 	pthread_mutex_lock(&r->mutex);
 	if (r->eps[0].state != LDMS_RAIL_EP_CONNECTED) {
 		rc = ENOTCONN;
@@ -1094,8 +1102,10 @@ static int __rail_send(ldms_t _r, char *msg_buf, size_t msg_len)
 		__credit_release(&rep->send_credit, msg_len);
 		goto out;
 	}
+	TAILQ_INSERT_TAIL(&(rep->op_stat_lists[LDMS_XPRT_OP_SEND]), op_stat, ent);
 	rc = ldms_xprt_send(rep->ep, msg_buf, msg_len);
 	if (rc) {
+		TAILQ_REMOVE(&(rep->op_stat_lists[LDMS_XPRT_OP_SEND]), op_stat, ent);
 		/* release the acquired credit if send failed */
 		__credit_release(&rep->send_credit, msg_len);
 	}

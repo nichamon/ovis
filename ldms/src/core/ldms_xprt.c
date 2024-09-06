@@ -3174,8 +3174,13 @@ static void ldms_zap_cb(zap_ep_t zep, zap_event_t ev)
 			 * Applications know only the connection is connecting.
 			 */
 		} else {
-			if (x->event_cb && (uint64_t)ev->context == LDMS_CMD_SEND_MSG) {
+			struct ldms_op_stat *op_stat;
+			if (x->event_cb && ev->context) {
+				op_stat = (struct ldms_op_stat *)ev->context;
+				memcpy(&op_stat->send.complete_ts, &thrstat->last_op_start,
+							       sizeof(struct timespec));
 				event.type = LDMS_XPRT_EVENT_SEND_COMPLETE;
+				(void)clock_gettime(CLOCK_REALTIME, &op_stat->send.deliver_ts);
 				x->event_cb(x, &event, x->event_cb_arg);
 			}
 		}
@@ -3580,6 +3585,7 @@ static int __ldms_xprt_send(ldms_t _x, char *msg_buf, size_t msg_len)
 	struct ldms_request *req;
 	size_t len;
 	struct ldms_context *ctxt;
+	struct ldms_op_stat *op_stat;
 	int rc;
 
 	if (!ldms_xprt_connected(x))
@@ -3591,6 +3597,9 @@ static int __ldms_xprt_send(ldms_t _x, char *msg_buf, size_t msg_len)
 	if (LDMS_XPRT_AUTH_GUARD(x))
 		return EPERM;
 
+	op_stat = TAILQ_LAST(__rail_op_stat_list(x, LDMS_XPRT_OP_SEND),
+						    ldms_op_stat_list);
+
 	ldms_xprt_get(x);
 	pthread_mutex_lock(&x->lock);
 	size_t sz = sizeof(struct ldms_request) + sizeof(struct ldms_context) + msg_len;
@@ -3599,6 +3608,7 @@ static int __ldms_xprt_send(ldms_t _x, char *msg_buf, size_t msg_len)
 		rc = ENOMEM;
 		goto err_0;
 	}
+	ctxt->op_stat = op_stat;
 	req = (struct ldms_request *)(ctxt + 1);
 	req->hdr.xid = 0;
 	req->hdr.cmd = htonl(LDMS_CMD_SEND_MSG);
@@ -3608,7 +3618,8 @@ static int __ldms_xprt_send(ldms_t _x, char *msg_buf, size_t msg_len)
 		sizeof(struct ldms_send_cmd_param) + msg_len;
 	req->hdr.len = htonl(len);
 
-	rc = zap_send2(x->zap_ep, req, len, (void*)(uint64_t)LDMS_CMD_SEND_MSG);
+	(void)clock_gettime(CLOCK_REALTIME, &op_stat->send.send_ts);
+	rc = zap_send2(x->zap_ep, req, len, (void*)op_stat);
 #ifdef DEBUG
 	if (rc) {
 		XPRT_LOG(x, OVIS_LDEBUG, "send: error. put ref %p.\n", x->zap_ep);
