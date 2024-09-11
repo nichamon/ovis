@@ -7312,7 +7312,7 @@ static int xprt_probe_handler(ldmsd_req_ctxt_t req)
 
 	rc = __xprt_probe_as_json(&obj);
 	json_as_str = json_dumps(obj, JSON_INDENT(0));
-	str_len = strlen(json_as_str);
+	str_len = strlen(json_as_str) + 1; /* +1 for \0 */
 
 	attr.discrim = 1;
 	attr.attr_id = LDMSD_ATTR_JSON;
