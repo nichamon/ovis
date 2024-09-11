@@ -1056,10 +1056,21 @@ class Communicator(object):
 
     def receive_response(self, recv_len = None):
         """This is called by the LDMSRequest class to receive a reply"""
+
+        def __hdr_size():
+            return 6*getsizeof(int())
+        def __decode_hdr(rsp):
+            return struct.unpack('iiiiii', rsp[:__hdr_size()])
+
         if self.state != self.CONNECTED:
             raise RuntimeError("Transport is not connected.")
         try:
             rsp = self.ldms.recv(timeout=self.recv_timeout)
+            marker, type, flags, msg_no, rsp_err, rec_len = __decode_hdr(rsp)
+            while 0 == flags & 2: # 2 is LDMSD_REQ_EOM_F (End of message)
+                tmp = self.ldms.recv(timeout=self.recv_timeout)
+                marker, type, flags, msg_no, rsp_err, rec_len = __decode_hdr(tmp)
+                rsp += tmp[__hdr_size():]
         except Exception as e:
             self.close()
             raise ConnectionError(str(e))
@@ -2321,6 +2332,8 @@ class Communicator(object):
         - status is an errno from the errno module
         - data is an error message if status != 0 or None
         """
+        if rx_rate is None:
+            rx_rate = -1
         req = LDMSD_Request(command_id = LDMSD_Request.PRDCR_SUBSCRIBE,
                 attrs = [
                     LDMSD_Req_Attr(attr_id=LDMSD_Req_Attr.REGEX, value=regex),
