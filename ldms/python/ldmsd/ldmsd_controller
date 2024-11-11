@@ -1762,7 +1762,8 @@ class LdmsdCmdParser(cmd.Cmd):
         Start a sampler plugin
         Parameters:
         name=     The plugin name
-        interval= The sample interval in microseconds
+        sample_interval=   The sample interval, e.g., 1s
+        (interval=)        Being deprecated. Please use 'sample_interval'
         [offset=] Optional offset (shift) from the sample mark in microseconds.
                   Offset can be positive or negative with magnitude up to 1/2
                   the sample interval. If this offset is specified, including 0,
@@ -1775,12 +1776,21 @@ class LdmsdCmdParser(cmd.Cmd):
                   sampling threads).
         """
         arg = self.handle_args('start', arg)
-        if arg:
-            rc, msg = self.comm.plugn_start(arg['name'], arg['interval'],
-                                            arg['offset'],
-                                            arg.get('exclusive_thread'))
-            if rc:
-                print(f'Error starting {arg["name"]} plugin: {msg}')
+        if not arg:
+            return
+        if all(v is None for v in [arg['interval'], arg['sample_interval']]):
+            print(f"The 'sample_interval' is missing.")
+            return
+
+        if all(v is None for v in [arg['interval'], arg['sample_interval']]):
+            print(f"The 'sample_interval' value -- {arg['sample_interval']} -- will be used.")
+        elif arg['interval'] is not None:
+            print(f"'interval' is deprecated. Please use 'sample_interval' in the future")
+            arg['sample_interval'] = arg['interval']
+
+        rc, msg = self.comm.plugn_start(arg['name'], arg['sample_interval'], arg['offset'], arg.get('exclusive_thread'))
+        if rc:
+            print(f'Error starting {arg["name"]} plugin: {msg}')
 
     def complete_start(self, text, line, begidx, endidx):
         return self.__complete_attr_list('start', text)

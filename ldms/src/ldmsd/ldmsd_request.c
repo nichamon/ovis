@@ -6629,7 +6629,7 @@ static int dump_cfg_handler(ldmsd_req_ctxt_t reqc)
 				samp->cfg.kvl_str ? samp->cfg.kvl_str : "");
 		if (samp->thread_id >= 0) {
 			/* Plugin is running. */
-			fprintf(fp, "start name=%s interval=%ld offset=%ld\n",
+			fprintf(fp, "start name=%s sample_interval=%ld offset=%ld\n",
 				samp->cfg.name,
 				samp->sample_interval_us,
 				samp->sample_offset_us);

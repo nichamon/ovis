@@ -173,12 +173,16 @@ Start a sampler plugin
       |
       | The plugin name.
 
-   **interval** *interval*
+   **sample_interval** *interval*
       |
       | The sample interval, which is a float followed by a unit string.
         If no unit string is given, the default unit is microseconds. A
         unit string is one of the followings: us -- microseconds ms --
         milliseconds s -- seconds m -- minutes h -- hours d -- days
+
+   **[interval** *interval*\ **]**
+      |
+      | It is being deprecated. Please use 'sample_interval'.
 
    **[offset** *offset*\ **]**
       |

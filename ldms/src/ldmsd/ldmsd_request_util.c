@@ -226,6 +226,7 @@ struct req_str_id attr_str_id_table[] = {
 	{  "reset",             LDMSD_ATTR_RESET  },
 	{  "reset_interval",    LDMSD_ATTR_RESET_INTERVAL },
 	{  "rx_rate",           LDMSD_ATTR_RX_RATE  },
+	{  "sample_interval",   LDMSD_ATTR_INTERVAL  },
 	{  "schema",            LDMSD_ATTR_SCHEMA  },
 	{  "size",              LDMSD_ATTR_SIZE  },
 	{  "stream",            LDMSD_ATTR_STREAM  },

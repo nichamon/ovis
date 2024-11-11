@@ -858,6 +858,13 @@ parse:
 						"Please use 'reconnect_interval' in the future.\n");
 				}
 			}
+		} else if (0 == strncmp(line, "start", 5)) {
+			if (!strstr(line, "sample_interval") &&
+				strstr(line, "interval")) {
+				ovis_log(config_log, OVIS_LWARNING,
+					  "'interval' is being depreacated. " \
+					  "Please use 'sample_interval' in the future.\n");
+			}
 		}
 	}
 
