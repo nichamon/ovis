@@ -512,13 +512,17 @@ Add an updater process that will periodically sample producer metric sets
         independent of any attributes specified for the metric sets or
         hosts.
 
-   **interval** *interval*
+   **update_interval** *interval*
       |
       | The update/collect interval, which is a float followed by a unit
         string. If no unit string is given, the default unit is
         microseconds. A unit string is one of the followings: us --
         microseconds ms -- milliseconds s -- seconds m -- minutes h --
         hours d -- days
+
+   **[interval** *interval* **]**
+      |
+      | It is being deprecated. Please use 'update_interval'.
 
    **[offset** *offset*\ **]**
       |
@@ -632,7 +636,7 @@ Start updaters.
       |
       | The update policy name
 
-   **[interval** *interval*\ **]**
+   **[update_interval** *interval*\ **]**
       |
       | The update interval, which is a float followed by a unit string.
         If no unit string is given, the default unit is microseconds. A
@@ -640,6 +644,10 @@ Start updaters.
         milliseconds s -- seconds m -- minutes h -- hours d -- days If
         this is not specified, the previously configured value will be
         used. Optional.
+
+   **[interval** *interval*\ **]**
+      |
+      | It is being deprecated. Please use 'update_interval'.
 
    **[offset** *offset*\ **]**
       |
