@@ -177,6 +177,7 @@ LDMSD_CTRL_CMD_MAP = {'usage': {'req_attr': [], 'opt_attr': ['name']},
                                 ],
                                 'opt_attr': [
                                     'interval',
+                                    'ping_interval',
                                     'peer_name',
                                     'auto_switch',
                                     'timeout_factor',
