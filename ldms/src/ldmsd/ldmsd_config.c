@@ -309,7 +309,8 @@ void ldmsd_store___del(ldmsd_cfgobj_t obj)
 /*
  * Load a plugin
  */
-int ldmsd_load_plugin(char* cfg_name, char *plugin_name, char *errstr, size_t errlen)
+int ldmsd_load_plugin(char* cfg_name, char *plugin_name,
+		      char *errstr, size_t errlen)
 {
 	struct ldmsd_plugin *api;
 	if (!plugin_name || !cfg_name)

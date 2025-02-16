@@ -5166,16 +5166,15 @@ static int plugn_load_handler(ldmsd_req_ctxt_t reqc)
 	attr_name = "name";
 	inst = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_NAME);
 	if (!inst) {
-		ovis_log(config_log, OVIS_LERROR, "load plugin called without name= parameter");
+		ovis_log(config_log, OVIS_LERROR,
+			 "load plugin called without name= parameter");
 		goto einval;
 	}
 
 	attr_name = "plugin";
 	plugn = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_PLUGIN);
-	if (!plugn) {
-		ovis_log(config_log, OVIS_LERROR, "load plugin called without plugin= parameter");
-		goto einval;
-	}
+	if (!plugn)
+		plugn = inst;
 	reqc->errcode = ldmsd_load_plugin(inst, plugn,
 					reqc->line_buf,
 					reqc->line_len);
