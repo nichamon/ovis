@@ -5326,7 +5326,7 @@ static int plugn_config_handler(ldmsd_req_ctxt_t reqc)
 	free(cfg->avl_str);
 	free(cfg->kvl_str);
 	cfg->avl_str = av_to_string(av_list, 0);
-	cfg->kvl_str = (kw_list->count)?av_to_string(kw_list, 0):"";
+	cfg->kvl_str = (kw_list->count)?av_to_string(kw_list, 0):strdup("");
 
 	exclusive_thread = av_value(av_list, "exclusive_thread");
 	if (exclusive_thread && sampler)
