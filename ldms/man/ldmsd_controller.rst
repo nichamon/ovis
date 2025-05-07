@@ -990,7 +990,7 @@ Query the IO thread, worker thread, and sampling thread utilization statistics. 
 
 The report is divided into three section:
 
-* LDMSD Worker Thread Statstics - LDMSD event processing threads
+* LDMSD Worker Thread Statistics - LDMSD event processing threads
 * Exclusive Worker Thread Statistics - Sampling execution threads
 * IO Thread Statistics - Network I/O threads
 
