@@ -221,6 +221,7 @@ struct req_str_id attr_str_id_table[] = {
 	{  "quota",             LDMSD_ATTR_QUOTA  },
 	{  "rail",              LDMSD_ATTR_RAIL  },
 	{  "reconnect",         LDMSD_ATTR_INTERVAL  },
+	{  "reconnect_interval",LDMSD_ATTR_INTERVAL  },
 	{  "regex",             LDMSD_ATTR_REGEX  },
 	{  "reset",             LDMSD_ATTR_RESET  },
 	{  "reset_interval",    LDMSD_ATTR_RESET_INTERVAL },

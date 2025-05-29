@@ -308,7 +308,7 @@ Add a producer to the aggregator
       |
       | The connection type [active, passive]
 
-   **reconnect** *interval*
+   **reconnect_interval** *interval*
       |
       | The connection retry interval, which is a float followed by a
         unit string. If no unit string is given, the default unit is
@@ -316,9 +316,13 @@ Add a producer to the aggregator
         microseconds ms -- milliseconds s -- seconds m -- minutes h --
         hours d -- days
 
-   **interval** *interval*
+   **[reconnect** *interval*\ **]**
       |
-      | It is being deprecated. Please use 'reconnect'.
+      | It is being deprecated. Please use 'reconnect_interval'.
+
+   **[interval** *interval*\ **]**
+      |
+      | It is being deprecated. Please use 'reconnect_interval'.
 
    **[perm** *permission*\ **]**
       |
@@ -379,7 +383,7 @@ Start a producer
       |
       | The producer name
 
-   **[reconnect** *interval*\ **]**
+   **[reconnect_interval** *interval*\ **]**
       |
       | The connection retry interval, which is a float followed by a
         unit string. If no unit string is given, the default unit is
@@ -387,6 +391,10 @@ Start a producer
         microseconds ms -- milliseconds s -- seconds m -- minutes h --
         hours d -- days If unspecified, the previously configured value
         will be used. Optional.
+
+   **[reconnect** *interval*\ **]**
+      |
+      | It is being deprecated. Please use 'reconnect'.
 
    **[interval** *interval*\ **]**
       |
@@ -401,7 +409,7 @@ Start all producers matching a regular expression
       |
       | A regular expression
 
-   **[reconnect** *interval*\ **]**
+   **[reconnect_interval** *interval*\ **]**
       |
       | The connection retry interval, which is a float followed by a
         unit stirng. If no unit string is given, the default unit is
@@ -409,6 +417,10 @@ Start all producers matching a regular expression
         microseconds ms -- milliseconds s -- seconds m -- minutes h --
         hours d -- days If unspecified, the previously configured value
         will be used. Optional.
+
+   **[reconnect** *interval*\ **]**
+      |
+      | It is being deprecated. Please use 'reconnect'.
 
    **[interval** *interval*\ **]**
       |
