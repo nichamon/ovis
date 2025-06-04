@@ -2034,7 +2034,6 @@ int failover_reset_handler(ldmsd_req_ctxt_t req)
 	ldmsd_send_req_response(req, NULL);
 	return 0;
 }
-int ldmsd_prdcr_subscribe(ldmsd_prdcr_t prdcr, const char *stream);
 
 int failover_cfgprdcr_handler(ldmsd_req_ctxt_t req)
 {
@@ -2100,7 +2099,7 @@ int failover_cfgprdcr_handler(ldmsd_req_ctxt_t req)
 			p->conn_intrvl_us = atoi(interval);
 		/* add stream */
 		if (stream)
-			rc = ldmsd_prdcr_subscribe(p, stream);
+			rc = ldmsd_prdcr_subscribe(p, stream, NULL, -1);
 		ldmsd_prdcr_put(p, "find");
 		goto out;
 	}
