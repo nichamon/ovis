@@ -649,6 +649,7 @@ static void __send_advertisement(ldmsd_prdcr_t prdcr)
 								"Error %d\n", rc);
 		goto err;
 	}
+
 	rc = gethostname(my_hostname, HOST_NAME_MAX+1);
 	if (rc) {
 		ovis_log(NULL, OVIS_LERROR, "Failed to construct an advertisement. " \
