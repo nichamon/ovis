@@ -64,6 +64,12 @@ enum ldmsd_tenant_src_type {
 	LDMSD_TENANT_SRC_JOB_SCHEDULER = 1, /* Job scheduler source */
 };
 
+struct tenant_metric_info {
+	const char *name;
+	const char *unit;
+	enum ldms_value_type vtype;
+};
+
 /**
  * \brief Generic source interface
  *
@@ -77,9 +83,9 @@ struct ldmsd_tenant_source {
 
 	/* Interface methods */
 	int (*can_provide)(const char *attr_name);
-	struct ldmsd_tenant_metric *(*create_metric)(ovis_log_t mylog,
-						     const char *attr_name,
-						     ldms_record_t rec_def);
+	/**< Determine the metric info, e.g., value type and unit */
+	int (*get_metric_info)(struct attr_value *av, struct tenant_metric_info *minfo);
+	int (*retrieve_value)(struct ldmsd_tenant_metric *tmet, ldms_mval_t mval);    /**< Runtime value retrieval method */
 	void (*cleanup)(void *src_data);        /**< Cleanup source-specific data */
 };
 
@@ -91,16 +97,17 @@ struct ldmsd_tenant_source {
  * the record definition and accessed via \c rent_id.
  */
 struct ldmsd_tenant_metric {
-	int rent_id;                            /**< Reference to metric in LDMS record definition */
-	void *src_data;                         /**< Source-specific runtime data */
 	struct ldmsd_tenant_source *src;        /**< Source that provides this metric (reference counted) */
-	LIST_ENTRY(tenant_metric) ent;          /**< List linkage */
+	void *src_data;                         /**< Source-specific runtime data */
+	struct ldms_metric_template_s mtempl;   /**< Metric template */
+	int rent_id;                            /**< Reference to metric in LDMS record definition */
+	TAILQ_ENTRY(tenant_metric) ent;         /**< List linkage */
 };
 
 /**
  * \brief List type for tenant metrics
  */
-LIST_HEAD(ldmsd_tenant_metric_list, ldmsd_tenant_metric);
+TAILQ_HEAD(ldmsd_tenant_metric_list, ldmsd_tenant_metric);
 
 /**
  * \brief Tenant definition structure
@@ -108,6 +115,7 @@ LIST_HEAD(ldmsd_tenant_metric_list, ldmsd_tenant_metric);
  * Reprensents the definition of
  */
 struct ldmsd_tenant_def {
+	struct ref_s ref;
 	char *name;                              /**< Name of the tenant type, this is a key to reuse tenant definition. */
 	struct ldmsd_tenant_metric_list mlist;   /**< List of metrics */
 };

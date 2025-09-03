@@ -62,8 +62,9 @@
 #include "ldmsd.h"
 #include "ldmsd_tenant.h"
 
+ovis_log_t config_log;
 
-static struct ldmsd_tenant_source *__detect_source(struct attr_value *attr)
+static struct ldmsd_tenant_source *__get_source(struct attr_value *attr)
 {
 	/*
 	 * TODO: implement this
@@ -71,13 +72,41 @@ static struct ldmsd_tenant_source *__detect_source(struct attr_value *attr)
 	assert(0 == ENOSYS);
 }
 
+int __init_empty_tenant_metric(struct attr_value *av, ldms_record_t rec_def, struct ldmsd_tenant_metric *tmet)
+{
+	tmet->src = tmet->src_data = NULL;
+	tmet->rent_id =
+}
+
 struct ldmsd_tenant_metric *__process_tenant_attr(struct attr_value *av,
 						  ldms_record_t rec_def)
 {
-	int i;
+	int i, rc;
 	struct attr_value *av;
 	struct ldmsd_tenant_source *src;
 	struct ldmsd_tenant_metric *tmet;
 
+	errno = 0;
 	assert(rec_def);
+
+	tmet = calloc(1, sizeof(*tmet));
+	if (!tmet) {
+		ovis_log(config_log, OVIS_LCRIT, "Memory allocation failure\n");
+		errno = ENOMEM;
+		return NULL;
+	}
+
+	src = __get_source(av);
+	if (!src) {
+		ovis_log(config_log, OVIS_LINFO, "Tenant attribute '%s' is unavailable.\n", av->value);
+		goto add_metric;
+	}
+
+	struct ldms_metric_template_s;
+
+	rc = src->get_metric_info(av, );
+
+add_metric:
+	tmet->rent_id = ldms_record_metric_add(rec_def, av->value, "", LDMS_V_CHAR_ARRAY, 1);
+	return tmet;
 }
