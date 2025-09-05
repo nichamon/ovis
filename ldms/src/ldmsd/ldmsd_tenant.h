@@ -60,33 +60,9 @@
 #include "ldmsd.h"
 #include "sampler_base.h"
 
+struct ldmsd_tenant_source_s;
 enum ldmsd_tenant_src_type {
 	LDMSD_TENANT_SRC_JOB_SCHEDULER = 1, /* Job scheduler source */
-};
-
-struct tenant_metric_info {
-	const char *name;
-	const char *unit;
-	enum ldms_value_type vtype;
-};
-
-/**
- * \brief Generic source interface
- *
- * Each source type implements this interface to provide tenant attributes.
- * Source are reference counted to allow sharing between multiple tenant metrics.
- */
-struct ldmsd_tenant_source {
-	ref_t ref;
-	enum ldmsd_tenant_src_type type;        /**< Source type identifier */
-	const char *name;                       /**< Human-readable source name */
-
-	/* Interface methods */
-	int (*can_provide)(const char *attr_name);
-	/**< Determine the metric info, e.g., value type and unit */
-	int (*get_metric_info)(struct attr_value *av, struct tenant_metric_info *minfo);
-	int (*retrieve_value)(struct ldmsd_tenant_metric *tmet, ldms_mval_t mval);    /**< Runtime value retrieval method */
-	void (*cleanup)(void *src_data);        /**< Cleanup source-specific data */
 };
 
 /**
@@ -96,28 +72,53 @@ struct ldmsd_tenant_source {
  * The actual metric metadata (name, type, unit) is stored in
  * the record definition and accessed via \c rent_id.
  */
-struct ldmsd_tenant_metric {
-	struct ldmsd_tenant_source *src;        /**< Source that provides this metric (reference counted) */
+struct ldmsd_tenant_metric_s {
+	/* Fields for tenant source to assign values */
 	void *src_data;                         /**< Source-specific runtime data */
 	struct ldms_metric_template_s mtempl;   /**< Metric template */
-	int rent_id;                            /**< Reference to metric in LDMS record definition */
+
+	/* Fields internal to tenant core logic */
+	int __rent_id;                            /**< Reference to metric in LDMS record definition */
+	struct ldmsd_tenant_source_s *__src;        /**< Source that provides this metric (reference counted) */
 	TAILQ_ENTRY(tenant_metric) ent;         /**< List linkage */
 };
 
 /**
  * \brief List type for tenant metrics
  */
-TAILQ_HEAD(ldmsd_tenant_metric_list, ldmsd_tenant_metric);
+TAILQ_HEAD(ldmsd_tenant_metric_list, ldmsd_tenant_metric_s);
 
 /**
  * \brief Tenant definition structure
  *
  * Reprensents the definition of
  */
-struct ldmsd_tenant_def {
+struct ldmsd_tenant_def_s {
 	struct ref_s ref;
 	char *name;                              /**< Name of the tenant type, this is a key to reuse tenant definition. */
 	struct ldmsd_tenant_metric_list mlist;   /**< List of metrics */
+	ldms_record_t rec_def;                   /**< Definition of the record of the tenant metrics */
+	LIST_ENTRY(ldmsd_tenant_def_s) ent;      /**< Entry in the definition list */
+};
+
+/**
+ * \brief Generic source interface
+ *
+ * Each source type implements this interface to provide tenant attributes.
+ * Source are reference counted to allow sharing between multiple tenant metrics.
+ */
+struct ldmsd_tenant_source_s {
+	ref_t ref;
+	enum ldmsd_tenant_src_type type;        /**< Source type identifier */
+	const char *name;                       /**< Human-readable source name */
+
+	/* Interface methods */
+	int (*can_provide)(const char *attr_name);
+	/**< Assign values to src_data and metric_template, the flag in metric_template can be ignored */
+	int (*init_tenant_metric)(struct attr_value *av, struct ldmsd_tenant_metric_s *tmet);
+	/**< Runtime value retrieval method, assuming that \c mval was allocated with enough memory */
+	int (*retrieve_value)(struct ldmsd_tenant_metric_s *tmet, ldms_mval_t mval);
+	void (*cleanup)(void *src_data);        /**< Cleanup source-specific data */
 };
 
 /**
@@ -127,10 +128,11 @@ struct ldmsd_tenant_def {
  * It processes a list of attribute requests, creates appropriate metrics for each,
  * and build the record definition.
  *
+ * \param name    A tenant definition name
  * \param attrs   User-specified attribute list for a tenant definition
  *
  * \return a handle of tenant metric list. errno is set on failure.
  */
-struct ldmsd_tenant_def *ldmsd_tenant_def_create(struct attr_value_list attr_list);
+struct ldmsd_tenant_def_s *ldmsd_tenant_def_create(const char *name, struct attr_value_list *av_list);
 
 #endif

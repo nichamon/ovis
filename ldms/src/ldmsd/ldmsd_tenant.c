@@ -57,6 +57,7 @@
 #include <string.h>
 
 #include "ovis_util/util.h"
+#include "ovis_ref/ref.h"
 
 #include "ldms.h"
 #include "ldmsd.h"
@@ -64,30 +65,63 @@
 
 ovis_log_t config_log;
 
-static struct ldmsd_tenant_source *__get_source(struct attr_value *attr)
+extern struct ldmsd_tenant_source_s tenant_job_scheduler_source; /* TODO: Implement this */
+
+static struct ldmsd_tenant_source_s *tenant_source_tbl[] = {
+	&tenant_job_scheduler_source,
+	/* Add new sources here */
+	NULL
+};
+
+static struct ldmsd_tenant_source_s *__get_source(struct attr_value *attr)
 {
-	/*
-	 * TODO: implement this
-	 */
-	assert(0 == ENOSYS);
+	int i;
+	for (i = i; tenant_source_tbl[i]; i++) {
+		if (tenant_source_tbl[i]->can_provide &&
+		    tenant_source_tbl[i]->can_provide(attr->value)) {
+			goto out;
+		}
+	}
+	return NULL;
+ out:
+	ref_get(&tenant_source_tbl[i]->ref, "__get_source");
+	return &tenant_source_tbl[i];
 }
 
-int __init_empty_tenant_metric(struct attr_value *av, ldms_record_t rec_def, struct ldmsd_tenant_metric *tmet)
+void __tenant_metric_destroy(struct ldmsd_tenant_metric_s *tmet)
 {
-	tmet->src = tmet->src_data = NULL;
-	tmet->rent_id =
+	/* TODO: Implement this, or let the source cleanup
+	because source is the one who initializes this */
+	struct ldmsd_tenant_source_s *src;
+	src = tmet->__src;
+	ldmsd_tenant_source_put(src);
 }
 
-struct ldmsd_tenant_metric *__process_tenant_attr(struct attr_value *av,
-						  ldms_record_t rec_def)
+int __init_empty_tenant_metric(struct attr_value *av, struct ldmsd_tenant_metric_s *tmet)
+{
+	ldms_metric_template_t mtempl = &(tmet->mtempl);
+
+	tmet->__src = tmet->src_data = NULL;
+	mtempl->name = strdup(av->value);
+	if (!mtempl->name) {
+		ovis_log(config_log, OVIS_LCRIT, "Memory allocation failure.\n");
+		return ENOMEM;
+	}
+	mtempl->flags = LDMS_MDESC_F_META;
+	mtempl->type = LDMS_V_CHAR;
+	mtempl->unit = "";
+	mtempl->len = 1;
+	return 0;
+}
+
+struct ldmsd_tenant_metric_s *__process_tenant_attr(struct attr_value *av)
 {
 	int i, rc;
 	struct attr_value *av;
-	struct ldmsd_tenant_source *src;
-	struct ldmsd_tenant_metric *tmet;
+	struct ldmsd_tenant_source_s *src;
+	struct ldmsd_tenant_metric_s *tmet;
 
 	errno = 0;
-	assert(rec_def);
 
 	tmet = calloc(1, sizeof(*tmet));
 	if (!tmet) {
@@ -99,14 +133,113 @@ struct ldmsd_tenant_metric *__process_tenant_attr(struct attr_value *av,
 	src = __get_source(av);
 	if (!src) {
 		ovis_log(config_log, OVIS_LINFO, "Tenant attribute '%s' is unavailable.\n", av->value);
-		goto add_metric;
+		rc = __init_empty_tenant_metric(av, tmet);
+		if (rc) {
+			goto err;
+		}
+		tmet->mtempl.flags = LDMS_MDESC_F_DATA;
+	} else {
+		rc = src->init_tenant_metric(av, tmet);
+		if (!rc) {
+			ovis_log(config_log, OVIS_LINFO,
+				"Failed to process tenant attribute '%s:%s' with code %d.\n",
+				av->name, av->value, rc);
+			rc = __init_empty_tenant_metric(av, tmet);
+			if (rc)
+				goto err;
+		}
 	}
 
-	struct ldms_metric_template_s;
-
-	rc = src->get_metric_info(av, );
-
-add_metric:
-	tmet->rent_id = ldms_record_metric_add(rec_def, av->value, "", LDMS_V_CHAR_ARRAY, 1);
 	return tmet;
+ err:
+	__tenant_metric_destroy(tmet);
+	errno = rc;
+	return NULL;
+}
+
+void __tenant_def_destroy(void *arg)
+{
+	struct ldmsd_tenant_def_s *tdef = (struct ldmsd_tenant_def_s *)arg;
+	struct ldmsd_tenant_metric_s *tmet;
+
+	while ((tmet = TAILQ_FIRST(&tdef->mlist))) {
+		TAILQ_REMOVE(&tdef->mlist, tmet, ent);
+		__tenant_metric_destroy(tmet);
+	}
+	free(tdef->name);
+
+}
+
+pthread_mutex_t tenant_def_list_lock = PTHREAD_MUTEX_INITIALIZER;
+LIST_HEAD(ldmsd_tenant_def_list, ldmsd_tenant_def_s) tenant_def_list;
+
+/*
+ * Failure in parsing a tenant attribute to an LDMS metric results in a metric of CHAR with an empty string as its value
+ * Failure to create the record definition retults in an error of tenant definition creation.
+ */
+struct ldmsd_tenant_def_s *ldmsd_tenant_def_create(const char *name, struct attr_value_list *av_list)
+{
+	int i, rc;
+	struct attr_value *av;
+	struct ldmsd_tenant_def_s *tdef;
+	struct ldmsd_tenant_metric_s *tmet;
+
+	tdef = malloc(sizeof(*tdef));
+	if (!tdef) {
+		goto enomem;
+	}
+
+	ref_init(&tdef->ref, "creation", __tenant_def_destroy, tdef);
+
+	tdef->name = strdup(name);
+	if (!tdef->name) {
+		ref_put(&tdef->ref, "creation");
+		goto enomem;
+	}
+	TAILQ_INIT(&tdef->mlist);
+
+	for (i = 0; i < av_list->count; i++) {
+		av = &av_list[i];
+		tmet = __process_tenant_attr(av);
+		if (!tmet) {
+			goto err;
+		}
+
+		rc = ldms_record_metric_add_template(tdef->rec_def, &tmet->mtempl, &tmet->__rent_id);
+		if (rc) {
+			ovis_log(config_log, OVIS_LERROR,
+				"Cannot create tenant definition '%s' because " \
+				"ldmsd failed to create the record definition " \
+				"with error %d.\n", name, rc);
+			goto err;
+		}
+	}
+
+	ptherad_mutex_lock(&tenant_def_list_lock);
+	LIST_INSERT_HEAD(&tenant_def_list, tdef, ent);
+	ptherad_mutex_unlock(&tenant_def_list_lock);
+	return tdef;
+
+ enomem:
+	ovis_log(config_log, OVIS_LCRIT, "Memory failure allocation\n");
+	errno = ENOMEM;
+	return NULL;
+ err:
+	ref_put(&tdef->ref, "creation");
+	return NULL;
+}
+
+struct ldmsd_tenant_def_s *ldmsd_tenant_def_find(const char *name)
+{
+	struct ldmsd_tenant_def_s *tdef;
+
+	pthread_mutex_lock(&tenant_def_list_lock);
+	LIST_FOREACH(tdef, &tenant_def_list, ent) {
+		if (0 == strcmp(tdef->name, name)) {
+			pthread_mutex_unlock(&tenant_def_list_lock);
+			return tdef;
+		}
+	}
+	pthread_mutex_unlock(&tenant_def_list_lock);
+	return 	NULL;
 }
