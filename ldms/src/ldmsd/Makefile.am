@@ -55,7 +55,9 @@ ldmsd_SOURCES = ldmsd.c ldmsd_config.c \
 	ldmsd_failover.c ldmsd_group.c ldmsd_auth.c \
 	ldmsd_decomp.c ldmsd_row_cache.c \
 	ldmsd_plug_api.c \
-	ldmsd_plug_api.h
+	ldmsd_plug_api.h \
+	ldmsd_tenant.h ldmsd_tenant.c \
+	ldmsd_tenant_job_scheduler.h ldmsd_tenant_job_scheduler.c
 
 ldmsd_LDADD = ../core/libldms.la libldmsd_request.la libldmsd_stream.la \
 	$(LZAP) $(LMMALLOC) $(LOVIS_UTIL) $(LCOLL) $(LJSON_UTIL) $(LTLIBJANSSON) \
