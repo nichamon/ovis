@@ -83,7 +83,7 @@ struct ldmsd_tenant_metric_s {
 	/* Fields internal to tenant core logic */
 	int __rent_id;                            /**< Reference to metric in LDMS record definition */
 	enum ldmsd_tenant_src_type __src_type;    /**< Source type providing the value */
-	struct ldmsd_tenant_source_s *__src;      /**< Source that provides this metric (reference counted) */
+	// struct ldmsd_tenant_source_s *__src;      /**< Source that provides this metric (reference counted) */
 	TAILQ_ENTRY(ldmsd_tenant_metric_s) ent;         /**< List linkage */
 };
 
@@ -95,10 +95,12 @@ TAILQ_HEAD(ldmsd_tenant_metric_list, ldmsd_tenant_metric_s);
 struct ldmsd_tenant_data_s {
 	struct ldmsd_tenant_source_s *src;
 	size_t total_mem;
-	int rec_first_idx;
 	int mcount;
 	struct ldmsd_tenant_metric_list mlist;
 };
+
+#define LDMSD_TENANT_REC_DEF_NAME "tenant_def"
+#define LDMSD_TENANT_LIST_NAME    "tenants"
 
 /**
  * \brief Tenant definition structure
@@ -109,8 +111,8 @@ struct ldmsd_tenant_def_s {
 	struct ref_s ref;
 	char *name;                              /**< Name of the tenant type, this is a key to reuse tenant definition. */
 	struct ldmsd_tenant_data_s sources[LDMSD_TENANT_SRC_COUNT];   /**< List of metrics by sources, for easy querying */
-	// struct ldmsd_tenant_metric_list mlist;   /**< List of metrics */
 	ldms_record_t rec_def;                   /**< Definition of the record of the tenant metrics */
+	size_t rec_def_heap_sz;                  /**< Heap size of a record instance */
 	LIST_ENTRY(ldmsd_tenant_def_s) ent;      /**< Entry in the definition list */
 };
 
@@ -152,9 +154,45 @@ struct ldmsd_tenant_source_s {
  * \param name    A tenant definition name
  * \param attrs   User-specified attribute list for a tenant definition
  *
- * \return a handle of tenant metric list. errno is set on failure.
+ * \return a handle of tenant definition. errno is set on failure.
  */
 struct ldmsd_tenant_def_s *ldmsd_tenant_def_create(const char *name, struct attr_value_list *av_list);
+
+/**
+ * \brief Call when the tenant definition should not be used anymore
+ *
+ * \param tdef   A tenant definition handle
+ */
+void ldmsd_tenant_def_free(struct ldmsd_tenant_def_s *tdef);
+
+/**
+ * \brief Find a tenant definition
+ *
+ * \param name   A tenant definition name
+ *
+ * \return a handle of a tenant definition. NULL is returned if the name doesn't exist.
+ */
+struct ldmsd_tenant_def_s *ldmsd_tenant_def_find(const char *name);
+
+/**
+ * \brief Return a reference from \c ldmsd_tenant_def_find
+ *
+ * \param tdef   A tenant definition handle
+ */
+void ldmsd_tenant_def_put(struct ldmsd_tenant_def_s *tdef);
+
+/**
+ * \brief Add an LDMS list metric to \c schema
+ *
+ * \param tdef   A tenant definition handle
+ * \param schema An LDMS schema handle
+ * \param _tenant_rec_def_idx   Metric index of the tenant record definition
+ * \param _tenant_list_idx      Metric index of the tenant list
+ * \param _heap_sz              Heap size of the tenant list
+ */
+int ldmsd_tenant_schema_list_add(struct ldmsd_tenant_def_s *tdef, ldms_schema_t schema,
+				 int *_tenant_rec_def_idx, int *_tenants_idx,
+				 size_t *_heap_sz);
 
 /**
  * \brief Update the tenant list of an LDMS set
@@ -166,6 +204,6 @@ struct ldmsd_tenant_def_s *ldmsd_tenant_def_create(const char *name, struct attr
  *
  * \return 0 on success, negative error code on failure (partial updates possible)
  */
-int ldmsd_tenant_tenants_sample(struct ldmsd_tenant_def_s *tdef, ldms_set_t set, int tenants_mid);
+int ldmsd_tenant_values_sample(struct ldmsd_tenant_def_s *tdef, ldms_set_t set, int tenants_mid);
 
 #endif

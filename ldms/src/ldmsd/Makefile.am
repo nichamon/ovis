@@ -57,6 +57,7 @@ ldmsd_SOURCES = ldmsd.c ldmsd_config.c \
 	ldmsd_plug_api.c \
 	ldmsd_plug_api.h \
 	ldmsd_jobmgr.c \
+	ldmsd_jobmgr.h \
 	ldmsd_tenant.h ldmsd_tenant.c \
 	ldmsd_tenant_job_scheduler.h ldmsd_tenant_job_scheduler.c
 
