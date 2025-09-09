@@ -93,16 +93,13 @@ void __tenant_metric_destroy(struct ldmsd_tenant_metric_s *tmet)
 {
 	/* TODO: Implement this, or let the source cleanup
 	because source is the one who initializes this */
-	struct ldmsd_tenant_source_s *src;
-	src = tmet->__src;
-	ref_put(&src->ref, "tenant_creation");
 }
 
 int __init_empty_tenant_metric(const char *attr_value, struct ldmsd_tenant_metric_s *tmet)
 {
 	ldms_metric_template_t mtempl = &(tmet->mtempl);
 
-	tmet->__src = tmet->src_data = NULL;
+	tmet->src_data = NULL;
 	tmet->__src_type = LDMSD_TENANT_SRC_NONE;
 	mtempl->name = strdup(attr_value);
 	if (!mtempl->name) {
@@ -196,11 +193,11 @@ struct ldmsd_tenant_def_s *ldmsd_tenant_def_create(const char *name, struct attr
 		goto enomem;
 	}
 
-	ref_init(&tdef->ref, "creation", __tenant_def_destroy, tdef);
+	ref_init(&tdef->ref, "create", __tenant_def_destroy, tdef);
 
 	tdef->name = strdup(name);
 	if (!tdef->name) {
-		ref_put(&tdef->ref, "creation");
+		ref_put(&tdef->ref, "create");
 		goto enomem;
 	}
 
@@ -208,19 +205,40 @@ struct ldmsd_tenant_def_s *ldmsd_tenant_def_create(const char *name, struct attr
 		TAILQ_INIT(&tdef->sources[src_type].mlist);
 	}
 
-	for (i = 0; i < av_list->count; i++) {
-		attr_value = av_value_at_idx(av_list, i);
-		tmet = __process_tenant_attr(attr_value);
+	tdef->rec_def = ldms_record_create(LDMSD_TENANT_REC_DEF_NAME);
+	if (!tdef->rec_def) {
+		ref_put(&tdef->ref, "create");
+		goto enomem;
+	}
+
+	/* TODO: this is for testing; remove this */
+	char *attr_values[] = { "job_id", "user", "job_name",
+			       "job_uid", "job_gid" };
+
+	for (i = 0; i < 5; i++) {
+		tmet = __process_tenant_attr(attr_values[i]);
 		if (!tmet) {
 			goto err;
 		}
-		TAILQ_INSERT_TAIL(&tdef->sources[tmet->__src->type].mlist, tmet, ent);
+		TAILQ_INSERT_TAIL(&tdef->sources[tmet->__src_type].mlist, tmet, ent);
 	}
 
+	// for (i = 0; i < av_list->count; i++) {
+	// 	attr_value = av_value_at_idx(av_list, i);
+	// 	tmet = __process_tenant_attr(attr_value);
+	// 	if (!tmet) {
+	// 		goto err;
+	// 	}
+	// 	TAILQ_INSERT_TAIL(&tdef->sources[tmet->__src->type].mlist, tmet, ent);
+	// }
+
 	for (src_type = 0; src_type < LDMSD_TENANT_SRC_COUNT; src_type++) {
+		tdef->sources[src_type] = tenant_source_tbl[src_type];
 		TAILQ_FOREACH(tmet, &tdef->sources[src_type].mlist, ent) {
-			rc = ldms_record_metric_add_template(tdef->rec_def, &tmet->mtempl, &tmet->__rent_id);
-			if (rc) {
+			tmet->__rent_id = (tdef->rec_def, tmet->mtempl.name,
+					   tmet->mtempl.unit, tmet->mtempl.type,
+					   tmet->mtempl.len);
+			if (tmet->__rent_id < 0) {
 				ovis_log(config_log, OVIS_LERROR,
 					"Cannot create tenant definition '%s' because " \
 					"ldmsd failed to create the record definition " \
@@ -229,6 +247,7 @@ struct ldmsd_tenant_def_s *ldmsd_tenant_def_create(const char *name, struct attr
 			}
 		}
 	}
+	tdef->rec_def_heap_sz = ldms_record_heap_size_get(tdef->rec_def);
 
 	pthread_mutex_lock(&tenant_def_list_lock);
 	LIST_INSERT_HEAD(&tenant_def_list, tdef, ent);
@@ -244,6 +263,11 @@ struct ldmsd_tenant_def_s *ldmsd_tenant_def_create(const char *name, struct attr
 	return NULL;
 }
 
+void ldmsd_tenant_def_free(struct ldmsd_tenant_def_s *tdef)
+{
+	ref_put(&tdef->ref, "create");
+}
+
 struct ldmsd_tenant_def_s *ldmsd_tenant_def_find(const char *name)
 {
 	struct ldmsd_tenant_def_s *tdef;
@@ -251,15 +275,51 @@ struct ldmsd_tenant_def_s *ldmsd_tenant_def_find(const char *name)
 	pthread_mutex_lock(&tenant_def_list_lock);
 	LIST_FOREACH(tdef, &tenant_def_list, ent) {
 		if (0 == strcmp(tdef->name, name)) {
+			ref_get(&tdef->ref, "find");
 			pthread_mutex_unlock(&tenant_def_list_lock);
 			return tdef;
 		}
 	}
 	pthread_mutex_unlock(&tenant_def_list_lock);
-	return 	NULL;
+	return NULL;
+
 }
 
-int ldmsd_tenant_tenants_sample(struct ldmsd_tenant_def_s *tdef, ldms_set_t set, int tenants_mid)
+void ldmsd_tenant_def_put(struct ldmsd_tenant_def_s *tdef)
+{
+	ref_put(&tdef->ref, "find");
+}
+
+#define NUM_TENANTS 1
+int ldmsd_tenant_schema_list_add(struct ldmsd_tenant_def_s *tdef, ldms_schema_t schema,
+				 int *_tenant_rec_def_idx, int *_tenants_idx,
+				 size_t *_heap_sz)
+{
+	int rc;
+	size_t heap_sz;
+	int rec_def_idx, list_idx;
+
+	heap_sz = NUM_TENANTS * tdef->rec_def_heap_sz;
+	rec_def_idx = ldms_schema_record_add(schema, tdef->rec_def);
+	if (rec_def_idx < 0) {
+		rc = -rec_def_idx;
+		return rc;
+	}
+	list_idx = ldms_schema_metric_list_add(schema, LDMSD_TENANT_LIST_NAME, NULL, heap_sz);
+	if (list_idx < 0) {
+		rc = -list_idx;
+		return rc;
+	}
+
+	*_tenant_rec_def_idx = rec_def_idx;
+	*_tenants_idx = list_idx;
+	*_heap_sz = heap_sz;
+
+	return 0;
+}
+
+
+int ldmsd_tenant_values_sample(struct ldmsd_tenant_def_s *tdef, ldms_set_t set, int tenants_mid)
 {
 	int i, j, rc;
 	ldms_mval_t tenants;
