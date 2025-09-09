@@ -76,7 +76,10 @@ typedef struct base_data_s {
 	uint64_t component_id;
 
 	/* Multi-tenant Support */
-	struct ldmsd_tenant_def_s *tenant_def;
+	struct ldmsd_tenant_def_s *tenant_def; /* A tenant definition handle */
+	int tenant_rec_def_idx;                /* Metric ID of the tenant record definition */
+	int tenants_idx;                       /* Metric ID of the tenant list */
+	size_t tenants_heap_sz;                /* Heap size of the tenant list */
 
 	/* TODO: We should consider removing this job-related info. */
 	int job_id_idx;
@@ -87,6 +90,7 @@ typedef struct base_data_s {
 	int job_start_idx;
 	int job_end_idx;
 	ovis_log_t mylog;
+
 	/*
 	 * TODO: I feel that we shouldn't have \c job_log_lvl anymore with libovis_log
 	 */

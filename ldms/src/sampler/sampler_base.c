@@ -251,6 +251,18 @@ base_data_t base_config(struct attr_value_list *avl,
 	if (rc)
 		goto einval;
 
+	/* Tenant definition name */
+	value = av_value(avl, "tenant");
+	if (value) {
+		base->tenant_def = ldmsd_tenant_def_find(value);
+		if (!base->tenant_def) {
+			ovis_log(mylog, OVIS_LERROR, "Cannot find tenant definition '%s.\n", value);
+			free(value);
+			goto einval;
+		}
+		free(value);
+	}
+
 	value = av_value(avl, "set_array_card");
 	base->set_array_card = (value)?(strtol(value, NULL, 0)):(1);
 	return base;
@@ -291,6 +303,19 @@ ldms_schema_t base_schema_new(base_data_t base)
 		errno = rc;
 		goto err_1;
 	}
+
+	if (base->tenant_def) {
+		rc = ldmsd_tenant_schema_list_add(base->tenant_def, base->schema,
+						&base->tenant_rec_def_idx,
+						&base->tenants_idx,
+						&base->tenants_heap_sz);
+		if (rc) {
+			errno = rc;
+			goto err_1;
+		}
+	}
+
+
 	return base->schema;
  err_1:
 	ldms_schema_delete(base->schema);
@@ -309,7 +334,10 @@ void base_schema_delete(base_data_t base)
 
 ldms_set_t base_set_new(base_data_t base)
 {
-	return base_set_new_heap(base, 0);
+	if (!base->tenant_def)
+		return base_set_new_heap(base, 0);
+	else
+		return base_set_new_heap(base, base->tenants_heap_sz);
 }
 
 ldms_set_t base_set_new_heap(base_data_t base, size_t heap_sz)
@@ -380,6 +408,10 @@ void base_sample_begin(base_data_t base)
 		init_job_data(base);
 
 	ldms_transaction_begin(base->set);
+	if (base->tenant_def) {
+		ldmsd_tenant_values_sample(base->tenant_def, base->set, base->tenants_idx);
+	}
+
 	if (base->job_id_idx < 0)
 		return;
 
