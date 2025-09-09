@@ -1362,8 +1362,12 @@ int ldmsd_ourcfg_start_proc()
 	return 0;
 }
 
+#include "ldmsd_tenant.h"
+
 int process_config_file(const char *path, int *lno, int trust)
 {
+	ldmsd_tenant_def_create("my_tenant", NULL);
+
 	int rc;
 	rc = __process_config_file(path, lno, trust,
 				   __req_filter_failover, &ldmsd_use_failover);
