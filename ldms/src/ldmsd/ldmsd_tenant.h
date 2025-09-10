@@ -110,7 +110,7 @@ struct ldmsd_tenant_data_s {
 struct ldmsd_tenant_def_s {
 	struct ref_s ref;
 	char *name;                              /**< Name of the tenant type, this is a key to reuse tenant definition. */
-	struct ldmsd_tenant_data_s sources[LDMSD_TENANT_SRC_COUNT];   /**< List of metrics by sources, for easy querying */
+	struct ldmsd_tenant_data_s *sources[LDMSD_TENANT_SRC_COUNT];   /**< List of metrics by sources, for easy querying */
 	ldms_record_t rec_def;                   /**< Definition of the record of the tenant metrics */
 	size_t rec_def_heap_sz;                  /**< Heap size of a record instance */
 	LIST_ENTRY(ldmsd_tenant_def_s) ent;      /**< Entry in the definition list */
