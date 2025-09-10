@@ -164,7 +164,7 @@ void __tenant_def_destroy(void *arg)
 	int src_type;
 
 	for (src_type = 0; src_type < LDMSD_TENANT_SRC_COUNT; src_type++) {
-		tsrc = &tdef->sources[src_type];
+		tsrc = tdef->sources[src_type];
 		while ((tmet = TAILQ_FIRST(&tsrc->mlist))) {
 			TAILQ_REMOVE(&tsrc->mlist, tmet, ent);
 			__tenant_metric_destroy(tmet);
@@ -202,7 +202,7 @@ struct ldmsd_tenant_def_s *ldmsd_tenant_def_create(const char *name, struct attr
 	}
 
 	for (src_type = 0; src_type < LDMSD_TENANT_SRC_COUNT; src_type++) {
-		TAILQ_INIT(&tdef->sources[src_type].mlist);
+		TAILQ_INIT(&tdef->sources[src_type]->mlist);
 	}
 
 	tdef->rec_def = ldms_record_create(LDMSD_TENANT_REC_DEF_NAME);
@@ -220,7 +220,7 @@ struct ldmsd_tenant_def_s *ldmsd_tenant_def_create(const char *name, struct attr
 		if (!tmet) {
 			goto err;
 		}
-		TAILQ_INSERT_TAIL(&tdef->sources[tmet->__src_type].mlist, tmet, ent);
+		TAILQ_INSERT_TAIL(&tdef->sources[tmet->__src_type]->mlist, tmet, ent);
 	}
 
 	// for (i = 0; i < av_list->count; i++) {
@@ -234,7 +234,7 @@ struct ldmsd_tenant_def_s *ldmsd_tenant_def_create(const char *name, struct attr
 
 	for (src_type = 0; src_type < LDMSD_TENANT_SRC_COUNT; src_type++) {
 		tdef->sources[src_type] = tenant_source_tbl[src_type];
-		TAILQ_FOREACH(tmet, &tdef->sources[src_type].mlist, ent) {
+		TAILQ_FOREACH(tmet, &tdef->sources[src_type]->mlist, ent) {
 			tmet->__rent_id = (tdef->rec_def, tmet->mtempl.name,
 					   tmet->mtempl.unit, tmet->mtempl.type,
 					   tmet->mtempl.len);
@@ -349,7 +349,7 @@ int ldmsd_tenant_values_sample(struct ldmsd_tenant_def_s *tdef, ldms_set_t set, 
 	 */
 	int total_tenant_cnt = 1;
 	for (src_type = 0; src_type < LDMSD_TENANT_SRC_COUNT; src_type++) {
-		tdata = &tdef->sources[src_type];
+		tdata = tdef->sources[src_type];
 		if (0 == tdata->mcount) {
 			/* No tenant attributes are from this source, skip */
 			continue;
@@ -376,7 +376,7 @@ int ldmsd_tenant_values_sample(struct ldmsd_tenant_def_s *tdef, ldms_set_t set, 
 
 		/* Calculate which index to pick from each source */
 		for (src_type = LDMSD_TENANT_SRC_COUNT - 1; src_type >= 0; src_type--) {
-			if (0 == tdef->sources[src_type].mcount) {
+			if (0 == tdef->sources[src_type]->mcount) {
 				/* No metrics from this source, skip */
 				continue;
 			}
