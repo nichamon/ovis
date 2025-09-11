@@ -75,6 +75,7 @@
 #include "ldmsd.h"
 #include "ldmsd_request.h"
 #include "ldmsd_stream.h"
+#include "ldmsd_jobmgr.h"
 
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -354,6 +355,10 @@ static int smplrp_add_handler(ldmsd_req_ctxt_t reqc);
 static int smplrp_del_handler(ldmsd_req_ctxt_t reqc);
 static int smplrp_start_handler(ldmsd_req_ctxt_t reqc);
 static int smplrp_stop_handler(ldmsd_req_ctxt_t reqc);
+
+/* Job Manager jobmgr */
+static int jobmgr_start_handler(ldmsd_req_ctxt_t reqc);
+static int jobmgr_stop_handler(ldmsd_req_ctxt_t reqc);
 
 /* executable for all */
 #define XALL 0111
@@ -824,6 +829,14 @@ static struct request_handler_entry request_handler[] = {
 	},
 	[LDMSD_SMPLRP_STOP_REQ] = {
 		LDMSD_SMPLRP_STOP_REQ, smplrp_stop_handler, XUG
+	},
+
+	/* Job Manager jobmgr */
+	[LDMSD_JOBMGR_START_REQ] = {
+		LDMSD_JOBMGR_START_REQ, jobmgr_start_handler, XUG
+	},
+	[LDMSD_JOBMGR_STOP_REQ] = {
+		LDMSD_JOBMGR_STOP_REQ, jobmgr_stop_handler, XUG
 	},
 };
 
@@ -2613,12 +2626,12 @@ int __prdcr_status_json_obj(ldmsd_req_ctxt_t reqc, ldmsd_prdcr_t prdcr, int prdc
 		for (prv_set = ldmsd_prdcr_set_first(prdcr); prv_set;
 		prv_set = ldmsd_prdcr_set_next(prv_set)) {
 			if (set_count) {
-				rc = linebuf_printf(reqc, ",\n");
+				rc = ldmsd_linebuf_printf(reqc, ",\n");
 				if (rc)
 					goto out;
 			}
 
-			rc = linebuf_printf(reqc,
+			rc = ldmsd_linebuf_printf(reqc,
 				"{ \"inst_name\":\"%s\","
 				"\"schema_name\":\"%s\","
 				"\"state\":\"%s\"}",
@@ -3676,7 +3689,7 @@ static int strgp_pi_stats_handler(ldmsd_req_ctxt_t reqc)
 		reqc->line_buf[0] = '\0';
 		goto out;
 	}
-	rc = linebuf_printf(reqc, "%s", stats_res);
+	rc = ldmsd_linebuf_printf(reqc, "%s", stats_res);
 	if (rc) {
 		snprintf(reqc->line_buf, reqc->line_len, "ldmsd had memory allocation failure.");
 		reqc->errcode = EINTR;
@@ -5619,8 +5632,12 @@ static int plugn_config_handler(ldmsd_req_ctxt_t reqc)
 	char *attr_copy = NULL;
 	size_t cnt = 0;
 	int multi_config;
-	ldmsd_cfgobj_sampler_t sampler;
-	ldmsd_cfgobj_store_t store;
+	ldmsd_cfgobj_sampler_t sampler = NULL;
+	ldmsd_cfgobj_store_t   store   = NULL;
+	ldmsd_cfgobj_jobmgr_t  jobmgr  = NULL;
+	ldmsd_plugin_t plug;
+	int *configured;
+	const char *ptype;
 
 	reqc->errcode = 0;
 
@@ -5630,39 +5647,49 @@ static int plugn_config_handler(ldmsd_req_ctxt_t reqc)
 		goto einval;
 
 	sampler = ldmsd_sampler_find_get(instance_name);
-	if (!sampler) {
-		store = ldmsd_store_find_get(instance_name);
-		if (!store) {
-			/* See if there is a */
-			reqc->errcode = ENOENT;
-			cnt = Snprintf(&reqc->line_buf, &reqc->line_len,
-					"The specified plugin instance '%s' does not exist.",
-					instance_name);
-			goto send_reply;
-		}
-		multi_config = store->api->base.flags & LDMSD_PLUGIN_MULTI_INSTANCE;
-		if (!multi_config && store->configured) {
-			reqc->errcode = EINVAL;
-			cnt = Snprintf(&reqc->line_buf, &reqc->line_len,
-				       "The store '%s' does not support multiple "
-				       "configurations.\n",
-				       instance_name);
-			goto send_reply;
-		}
-		cfg = &store->cfg;
-		ldmsd_store_find_put(store);
-	} else {
-		multi_config = sampler->api->base.flags & LDMSD_PLUGIN_MULTI_INSTANCE;
-		if (!multi_config && sampler->configured) {
-			reqc->errcode = EINVAL;
-			cnt = Snprintf(&reqc->line_buf, &reqc->line_len,
-				       "The sampler '%s' does not support multiple "
-				       "configurations.\n",
-				       instance_name);
-			goto send_reply;
-		}
+	if (sampler) {
 		cfg = &sampler->cfg;
-		ldmsd_sampler_find_put(sampler);
+		plug = &sampler->api->base;
+		configured = &sampler->configured;
+		ptype = "sampler";
+		goto found;
+	}
+
+	store = ldmsd_store_find_get(instance_name);
+	if (store) {
+		cfg = &store->cfg;
+		plug = &store->api->base;
+		configured = &store->configured;
+		ptype = "store";
+		goto found;
+	}
+
+	jobmgr = ldmsd_jobmgr_find_get(instance_name);
+	if (jobmgr) {
+		cfg = &jobmgr->cfg;
+		plug = &jobmgr->api->base;
+		configured = &jobmgr->configured;
+		ptype = "jobmgr";
+		goto found;
+	}
+
+	/* no plugin found */
+	reqc->errcode = ENOENT;
+	cnt = Snprintf(&reqc->line_buf, &reqc->line_len,
+			"The specified plugin instance '%s' does not exist.",
+			instance_name);
+	goto send_reply;
+
+ found:
+	multi_config = plug->flags & LDMSD_PLUGIN_MULTI_INSTANCE;
+	if (!multi_config && *configured) {
+		reqc->errcode = EINVAL;
+		cnt = Snprintf(&reqc->line_buf, &reqc->line_len,
+			       "The %s '%s' does not support multiple "
+			       "configurations.\n",
+			       ptype, instance_name);
+		ldmsd_cfgobj_find_put(cfg);
+		goto send_reply;
 	}
 
 	config_attr = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_STRING);
@@ -5670,6 +5697,7 @@ static int plugn_config_handler(ldmsd_req_ctxt_t reqc)
 		cnt = Snprintf(&reqc->line_buf, &reqc->line_len,
 				"No config attributes are provided.");
 		reqc->errcode = EINVAL;
+		ldmsd_cfgobj_find_put(cfg);
 		goto send_reply;
 	}
 	attr_copy = strdup(config_attr);
@@ -5696,6 +5724,7 @@ static int plugn_config_handler(ldmsd_req_ctxt_t reqc)
 	if (!av_list || !kw_list || !attr_copy) {
 		cnt = Snprintf(&reqc->line_buf, &reqc->line_len,
 				"Out of memory");
+		ldmsd_cfgobj_find_put(cfg);
 		goto send_reply;
 	}
 
@@ -5706,6 +5735,7 @@ static int plugn_config_handler(ldmsd_req_ctxt_t reqc)
 		cnt = Snprintf(&reqc->line_buf, &reqc->line_len,
 				"Out of memory");
 		reqc->errcode = ENOMEM;
+		ldmsd_cfgobj_find_put(cfg);
 		goto send_reply;
 	}
 
@@ -5744,10 +5774,15 @@ static int plugn_config_handler(ldmsd_req_ctxt_t reqc)
 			sampler->configured = 1;
 			sampler->state = LDMSD_SAMP_STATE_CONFIGURED;
 		}
-	} else {
+	} else if (store) {
 		reqc->errcode = store->api->base.config((ldmsd_plug_handle_t)store, kw_list, av_list);
 		if (!reqc->errcode) {
 			store->configured = 1;
+		}
+	} else {
+		reqc->errcode = jobmgr->api->base.config((ldmsd_plug_handle_t)jobmgr, kw_list, av_list);
+		if (!reqc->errcode) {
+			jobmgr->configured = 1;
 		}
 	}
 	ldmsd_cfgobj_unlock(cfg);
@@ -5756,9 +5791,11 @@ static int plugn_config_handler(ldmsd_req_ctxt_t reqc)
 				"Error %d configuring plugin instance '%s'.",
 				reqc->errcode, instance_name);
 	} else {
+		*configured = 1;
 		__dlog(DLOG_CFGOK, "config name=%s %s\n", instance_name,
 			attr_copy);
 	}
+	ldmsd_cfgobj_find_put(cfg);
 	goto send_reply;
 
 einval:
@@ -5767,6 +5804,7 @@ einval:
 			"The attribute '%s' is required by config.",
 			attr_name);
 	goto send_reply;
+
 send_reply:
 	ldmsd_send_req_response(reqc, reqc->line_buf);
 	free(instance_name);
@@ -5794,7 +5832,7 @@ static int __plugn_usage_string(ldmsd_req_ctxt_t reqc)
 			continue;
 
 		if (samp->api->base.usage) {
-			rc = linebuf_printf(reqc, "%s\n%s",
+			rc = ldmsd_linebuf_printf(reqc, "%s\n%s",
 					    samp->cfg.name, samp->api->base.usage((ldmsd_plug_handle_t)samp));
 		} else {
 			rc = linebuf_printf(reqc, "%s\n", samp->cfg.name);
@@ -5811,7 +5849,7 @@ static int __plugn_usage_string(ldmsd_req_ctxt_t reqc)
 			continue;
 
 		if (store->api->base.usage) {
-			rc = linebuf_printf(reqc, "%s\n%s",
+			rc = ldmsd_linebuf_printf(reqc, "%s\n%s",
 					    store->cfg.name, store->api->base.usage((ldmsd_plug_handle_t)store));
 		} else {
 			rc = linebuf_printf(reqc, "%s\n", store->cfg.name);
@@ -6365,7 +6403,7 @@ static int version_handler(ldmsd_req_ctxt_t reqc)
 
 	ldms_version_get(&ldms_version);
 	ldmsd_plgn_int_version_get(&ldmsd_plugn_version);
-	rc = linebuf_printf(reqc, "{ \"LDMSD Version\":\"%s\"," \
+	rc = ldmsd_linebuf_printf(reqc, "{ \"LDMSD Version\":\"%s\"," \
 				  "  \"LDMS Protocol Version\": \"%hhu.%hhu.%hhu.%hhu\"," \
 				  "  \"LDMSD Plugin Interface Version\": \"%hhu.%hhu.%hhu.%hhu\"," \
 				  "  \"git-SHA\": \"%s\"" \
@@ -10930,10 +10968,10 @@ static int prdcr_listen_status_handler(ldmsd_req_ctxt_t reqc)
 			RBT_FOREACH(rbn, &pl->prdcr_tree) {
 				pref = container_of(rbn, struct ldmsd_prdcr_ref, rbn);
 				if (prdcr_cnt) {
-					if ((rc = linebuf_printf(reqc, ",")))
+					if ((rc = ldmsd_linebuf_printf(reqc, ",")))
 						goto err;
 				}
-				if ((rc = linebuf_printf(reqc, "\"%s\"", pref->prdcr->obj.name)))
+				if ((rc = ldmsd_linebuf_printf(reqc, "\"%s\"", pref->prdcr->obj.name)))
 					goto err;
 				prdcr_cnt++;
 			}
@@ -11836,14 +11874,14 @@ static int smplrp_add_handler(ldmsd_req_ctxt_t reqc)
 	name = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_NAME);
 	if (!name) {
 		rc = errno;
-		linebuf_printf(reqc, "smplrp_add error: Missing 'name' parameter.\n");
+		ldmsd_linebuf_printf(reqc, "smplrp_add error: Missing 'name' parameter.\n");
 		goto out;
 	}
 	path = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_PATH);
 	json = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_JSON);
 	if (!path && !json) {
 		rc = errno;
-		linebuf_printf(reqc, "smplrp_add error: Missing 'path' parameter.\n");
+		ldmsd_linebuf_printf(reqc, "smplrp_add error: Missing 'path' parameter.\n");
 		goto out;
 	}
 
@@ -11859,7 +11897,7 @@ static int smplrp_add_handler(ldmsd_req_ctxt_t reqc)
 	fd = open(path, O_RDONLY);
 	if (fd < 0) {
 		rc = errno;
-		linebuf_printf(reqc, "smplrp_add error %d when open file %s\n", errno, path);
+		ldmsd_linebuf_printf(reqc, "smplrp_add error %d when open file %s\n", errno, path);
 		goto out;
 	}
 
@@ -11867,14 +11905,14 @@ static int smplrp_add_handler(ldmsd_req_ctxt_t reqc)
 	off = lseek(fd, 0, SEEK_SET);
 	if (len < 0 || off < 0) {
 		rc = errno;
-		linebuf_printf(reqc, "smplrp_add: lseek() error: %d\n", errno);
+		ldmsd_linebuf_printf(reqc, "smplrp_add: lseek() error: %d\n", errno);
 		goto out;
 	}
 
 	buf = malloc(len);
 	if (!buf) {
 		rc = ENOMEM;
-		linebuf_printf(reqc, "smplrp_add error: Not enough memory\n");
+		ldmsd_linebuf_printf(reqc, "smplrp_add error: Not enough memory\n");
 		goto out;
 	}
 
@@ -11882,12 +11920,12 @@ static int smplrp_add_handler(ldmsd_req_ctxt_t reqc)
 		rd_len = read(fd, buf + off, len - off);
 		if (rd_len < 0) {
 			rc = errno;
-			linebuf_printf(reqc, "smplrp_add: read() error: %d\n", errno);
+			ldmsd_linebuf_printf(reqc, "smplrp_add: read() error: %d\n", errno);
 			goto out;
 		}
 		if (rd_len == 0) {
 			rc = ENODATA;
-			linebuf_printf(reqc, "smplrp_add: read() ended prematurely\n");
+			ldmsd_linebuf_printf(reqc, "smplrp_add: read() ended prematurely\n");
 			goto out;
 		}
 		off += rd_len;
@@ -11898,7 +11936,7 @@ static int smplrp_add_handler(ldmsd_req_ctxt_t reqc)
 	p = ldmsd_smplrp_new(name, json);
 	if (!p) {
 		rc = errno;
-		linebuf_printf(reqc, "smplrp_add, ldmsd_smplrp_new() error: %d\n", errno);
+		ldmsd_linebuf_printf(reqc, "smplrp_add, ldmsd_smplrp_new() error: %d\n", errno);
 		goto out;
 	}
 	rc = 0;
@@ -11923,7 +11961,7 @@ static int smplrp_del_handler(ldmsd_req_ctxt_t reqc)
 	name = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_NAME);
 	if (!name) {
 		rc = errno;
-		linebuf_printf(reqc, "smplrp_del error: Missing 'name' parameter.\n");
+		ldmsd_linebuf_printf(reqc, "smplrp_del error: Missing 'name' parameter.\n");
 		goto out;
 	}
 
@@ -11931,7 +11969,7 @@ static int smplrp_del_handler(ldmsd_req_ctxt_t reqc)
 
 	rc = ldmsd_smplrp_del(name, &sctxt);
 	if (rc) {
-		linebuf_printf(reqc, "smplrp_del error: %d\n", rc);
+		ldmsd_linebuf_printf(reqc, "smplrp_del error: %d\n", rc);
 	}
 
  out:
@@ -11950,7 +11988,7 @@ static int smplrp_start_handler(ldmsd_req_ctxt_t reqc)
 	name = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_NAME);
 	if (!name) {
 		rc = errno;
-		linebuf_printf(reqc, "smplrp_start error: Missing 'name' parameter.\n");
+		ldmsd_linebuf_printf(reqc, "smplrp_start error: Missing 'name' parameter.\n");
 		goto out;
 	}
 
@@ -11958,7 +11996,7 @@ static int smplrp_start_handler(ldmsd_req_ctxt_t reqc)
 
 	rc = ldmsd_smplrp_start(name, &sctxt);
 	if (rc) {
-		linebuf_printf(reqc, "smplrp_start error: %d\n", rc);
+		ldmsd_linebuf_printf(reqc, "smplrp_start error: %d\n", rc);
 	}
 
  out:
@@ -11977,7 +12015,7 @@ static int smplrp_stop_handler(ldmsd_req_ctxt_t reqc)
 	name = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_NAME);
 	if (!name) {
 		rc = errno;
-		linebuf_printf(reqc, "smplrp_stop error: Missing 'name' parameter.\n");
+		ldmsd_linebuf_printf(reqc, "smplrp_stop error: Missing 'name' parameter.\n");
 		goto out;
 	}
 
@@ -11985,11 +12023,71 @@ static int smplrp_stop_handler(ldmsd_req_ctxt_t reqc)
 
 	rc = ldmsd_smplrp_stop(name, &sctxt);
 	if (rc) {
-		linebuf_printf(reqc, "smplrp_stop error: %d\n", rc);
+		ldmsd_linebuf_printf(reqc, "smplrp_stop error: %d\n", rc);
 	}
 
  out:
 	reqc->errcode = rc;
 	ldmsd_send_req_response(reqc, reqc->line_buf);
 	return rc;
+}
+
+static int jobmgr_op(ldmsd_req_ctxt_t reqc, const char *op_name,
+		     int (*op)(ldmsd_cfgobj_jobmgr_t))
+{
+	char *instance_name;
+	char *config_attr = NULL;
+	char *attr_name;
+	struct attr_value_list *av_list = NULL;
+	struct attr_value_list *kw_list = NULL;
+	ldmsd_cfgobj_jobmgr_t jm;
+	char *attr_copy = NULL;
+	size_t cnt = 0;
+
+	reqc->errcode = 0;
+
+	attr_name = "name";
+	instance_name = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_NAME);
+	if (!instance_name) {
+		reqc->errcode = EINVAL;
+		cnt = Snprintf(&reqc->line_buf, &reqc->line_len,
+				"The attribute '%s' is required by config.",
+				attr_name);
+		goto send_reply;
+	}
+	jm = ldmsd_jobmgr_find_get(instance_name);
+	if (!jm) {
+		reqc->errcode = ENOENT;
+		cnt = Snprintf(&reqc->line_buf, &reqc->line_len,
+			"jobmgr '%s' not found", instance_name);
+		goto send_reply;
+	}
+
+	reqc->errcode = op(jm);
+	ldmsd_jobmgr_find_put(jm);
+	if (reqc->errcode) {
+		cnt = Snprintf(&reqc->line_buf, &reqc->line_len,
+			"jobmgr %s %s error: %d", instance_name,
+			op_name, reqc->errcode);
+		goto send_reply;
+	}
+
+ send_reply:
+	ldmsd_send_req_response(reqc, reqc->line_buf);
+	free(instance_name);
+	free(config_attr);
+	av_free(kw_list);
+	av_free(av_list);
+	free(attr_copy);
+	return 0;
+}
+
+static int jobmgr_start_handler(ldmsd_req_ctxt_t reqc)
+{
+	return jobmgr_op(reqc, "start", ldmsd_jobmgr_start);
+}
+
+static int jobmgr_stop_handler(ldmsd_req_ctxt_t reqc)
+{
+	return jobmgr_op(reqc, "stop", ldmsd_jobmgr_stop);
 }

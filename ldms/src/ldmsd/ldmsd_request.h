@@ -233,6 +233,10 @@ enum ldmsd_request {
 	LDMSD_SMPLRP_DEL_REQ,         /* Del */
 	LDMSD_SMPLRP_START_REQ,       /* Start */
 	LDMSD_SMPLRP_STOP_REQ,        /* Stop */
+
+	/* Job Manager jobmgr */
+	LDMSD_JOBMGR_START_REQ = 0xd00, /* Start jobmgr */
+	LDMSD_JOBMGR_STOP_REQ,          /* Stop jobmgr */
 };
 
 enum ldmsd_request_attr {

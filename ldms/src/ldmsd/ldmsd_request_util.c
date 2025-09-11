@@ -92,6 +92,8 @@ struct req_str_id req_str_id_table[] = {
 	{  "failover_stop",      LDMSD_FAILOVER_STOP_REQ  },
 	{  "greeting",           LDMSD_GREETING_REQ  },
 	{  "include",            LDMSD_INCLUDE_REQ  },
+	{  "jobmgr_start",       LDMSD_JOBMGR_START_REQ  },
+	{  "jobmgr_stop",        LDMSD_JOBMGR_STOP_REQ  },
 	{  "listen",             LDMSD_LISTEN_REQ },
 	{  "load",               LDMSD_PLUGN_LOAD_REQ  },
 	{  "log_file",           LDMSD_LOG_FILE_REQ  },
@@ -450,6 +452,10 @@ const char *ldmsd_req_id2str(enum ldmsd_request req_id)
 	case LDMSD_SMPLRP_DEL_REQ: return "LDMSD_SMPLR_DEL_REQ";
 	case LDMSD_SMPLRP_START_REQ: return "LDMSD_SMPLR_START_REQ";
 	case LDMSD_SMPLRP_STOP_REQ: return "LDMSD_SMPLR_STOP_REQ";
+
+	case LDMSD_TENANT_ADD_REQ: return "LDMSD_TENANT_ADD_REQ";
+	case LDMSD_TENANT_DEL_REQ: return "LDMSD_TENANT_DEL_REQ";
+	case LDMSD_TENANT_STATUS_REQ: return "LDMSD_TENANT_STATUS_REQ";
 	}
 	return "UNKNOWN_REQ";
 }

@@ -168,7 +168,8 @@ typedef enum ldmsd_cfgobj_type {
 	LDMSD_CFGOBJ_SAMPLER,
 	LDMSD_CFGOBJ_STORE,
 	LDMSD_CFGOBJ_SMPLRP,
-	LDMSD_CFGOBJ_LAST = LDMSD_CFGOBJ_SMPLRP,
+	LDMSD_CFGOBJ_JOBMGR,
+	LDMSD_CFGOBJ_LAST = LDMSD_CFGOBJ_JOBMGR,
 } ldmsd_cfgobj_type_t;
 
 struct ldmsd_cfgobj;
@@ -999,6 +1000,7 @@ typedef struct ldmsd_plugin {
 	enum ldmsd_plugin_type {
 		LDMSD_PLUGIN_SAMPLER = 1,
 		LDMSD_PLUGIN_STORE,
+		LDMSD_PLUGIN_JOBMGR,
 	} type;
 	uint64_t flags;
 	int (*config)(ldmsd_plug_handle_t handle,
