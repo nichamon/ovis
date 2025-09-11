@@ -70,7 +70,7 @@
 #include <ovis_json/ovis_json.h>
 #include <assert.h>
 
-static char *stream;
+static char *msg_chan;
 #define SLURM_NOTIFY_TIMEOUT 5
 static time_t io_timeout = SLURM_NOTIFY_TIMEOUT;
 static int user_debug = 0;
@@ -431,8 +431,12 @@ void setup_clients(int argc, char *argv[], struct client_list *cl)
 		if (0 == strncasecmp(argv[rc], "client", 6)) {
 			add_client(cl, get_arg_value(argv[rc]));
 		}
+		if (0 == strncasecmp(argv[rc], "message_channel", 6)) {
+			msg_chan = get_arg_value(argv[rc]);
+			continue;
+		}
 		if (0 == strncasecmp(argv[rc], "stream", 6)) {
-			stream = get_arg_value(argv[rc]);
+			msg_chan = get_arg_value(argv[rc]);
 			continue;
 		}
 		if (0 == strncasecmp(argv[rc], "timeout", 7)) {
@@ -440,8 +444,8 @@ void setup_clients(int argc, char *argv[], struct client_list *cl)
 			continue;
 		}
 	}
-	if (!stream)
-		stream = "slurm";
+	if (!msg_chan)
+		msg_chan = "slurm";
 	if (!timeout)
 		io_timeout = SLURM_NOTIFY_TIMEOUT;
 	else
@@ -546,7 +550,7 @@ static int send_event(int argc, char *argv[], jbuf_t jb)
 	LIST_INIT(&delete_list);
 	LIST_FOREACH(client, &client_list, entry) {
 		DEBUG2("publishing to %s:%s\n", client->host, client->port);
-		rc = ldms_msg_publish(client->ldms, stream, LDMS_MSG_JSON,
+		rc = ldms_msg_publish(client->ldms, msg_chan, LDMS_MSG_JSON,
 				NULL, 0440, jb->buf, jb->cursor+1);
 		if (rc) {
 			DEBUG2("ERROR %d publishing to %s:%s\n",
