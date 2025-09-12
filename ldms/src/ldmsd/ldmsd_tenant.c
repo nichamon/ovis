@@ -454,7 +454,7 @@ int ldmsd_tenant_schema_list_add(struct ldmsd_tenant_def_s *tdef, ldms_schema_t 
 }
 
 
-int ldmsd_tenant_values_sample(struct ldmsd_tenant_def_s *tdef, ldms_set_t set, int tenants_mid)
+int ldmsd_tenant_values_sample(struct ldmsd_tenant_def_s *tdef, ldms_set_t set, int tenant_rec_mid, int tenants_mid)
 {
 	int i, j, rc;
 	ldms_mval_t tenants;
@@ -464,7 +464,6 @@ int ldmsd_tenant_values_sample(struct ldmsd_tenant_def_s *tdef, ldms_set_t set, 
 	struct ldmsd_tenant_metric_s *tmet;
 	int tmp_idx;
 	struct ldmsd_tenant_row_table_s *vtbl;
-	// int rec_idx;
 	const char *set_name = ldms_set_instance_name_get(set);
 
 	tenants = ldms_metric_get(set, tenants_mid);
@@ -501,7 +500,7 @@ int ldmsd_tenant_values_sample(struct ldmsd_tenant_def_s *tdef, ldms_set_t set, 
 		int src_idx[LDMSD_TENANT_SRC_COUNT] = {0};
 		tmp_idx = i;
 
-		tenant = ldms_record_alloc(set, tenants_mid);
+		tenant = ldms_record_alloc(set, tenant_rec_mid);
 		if (!tenant) {
 			/* TODO: resize */
 			assert(0 == ENOMEM);
@@ -531,7 +530,7 @@ int ldmsd_tenant_values_sample(struct ldmsd_tenant_def_s *tdef, ldms_set_t set, 
 			for (j = 0, tmet = TAILQ_FIRST(&tdata->mlist); tmet;
 					j++, tmet = TAILQ_NEXT(tmet, ent)) {
 				ldms_record_metric_set(tenant, tmet->__rent_id,
-					LDMSD_TENANT_ROWTBL_CELL_VAL(vtbl, src_idx[src_type], j));
+					LDMSD_TENANT_ROWTBL_CELL_PTR(vtbl, src_idx[src_type], j));
 			}
 		}
 		rc = ldms_list_append_record(set, tenants, tenant);

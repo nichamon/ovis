@@ -229,11 +229,13 @@ int ldmsd_tenant_row_table_resize(struct ldmsd_tenant_row_table_s *rtbl, int num
  *
  * This function updates the list of tenants to contains the information of all current tenants
  *
- * \param tdef Tenant definition to retrieve values for
- * \param set  An LDMS set to be updated
+ * \param tdef             Tenant definition to retrieve values for
+ * \param set              An LDMS set to be updated
+ * \param tenant_rec_mid   Metric ID of the record definition metric
+ * \param tenants_mid      Metric ID of the tenant list
  *
  * \return 0 on success, negative error code on failure (partial updates possible)
  */
-int ldmsd_tenant_values_sample(struct ldmsd_tenant_def_s *tdef, ldms_set_t set, int tenants_mid);
+int ldmsd_tenant_values_sample(struct ldmsd_tenant_def_s *tdef, ldms_set_t set, int tenant_rec_mid, int tenants_mid);
 
 #endif
