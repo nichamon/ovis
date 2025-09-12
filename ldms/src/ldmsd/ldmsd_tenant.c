@@ -427,7 +427,6 @@ void ldmsd_tenant_def_put(struct ldmsd_tenant_def_s *tdef)
 	ref_put(&tdef->ref, "find");
 }
 
-#define NUM_TENANTS 1
 int ldmsd_tenant_schema_list_add(struct ldmsd_tenant_def_s *tdef, ldms_schema_t schema,
 				 int num_tenants,
 				 int *_tenant_rec_def_idx, int *_tenants_idx)
@@ -436,7 +435,7 @@ int ldmsd_tenant_schema_list_add(struct ldmsd_tenant_def_s *tdef, ldms_schema_t 
 	size_t heap_sz;
 	int rec_def_idx, list_idx;
 
-	heap_sz = NUM_TENANTS * tdef->rec_def_heap_sz;
+	heap_sz = num_tenants * tdef->rec_def_heap_sz;
 	rec_def_idx = ldms_schema_record_add(schema, tdef->rec_def);
 	if (rec_def_idx < 0) {
 		rc = -rec_def_idx;
