@@ -92,11 +92,30 @@ struct ldmsd_tenant_metric_s {
  */
 TAILQ_HEAD(ldmsd_tenant_metric_list, ldmsd_tenant_metric_s);
 
+struct ldmsd_tenant_row_table_s {
+	void **rows;     /**< Array of row pointers to ldms_mval_t */
+	size_t row_size;        /**< Size of each row in bytes */
+	size_t *col_offsets;    /**< Offset of each column within a row */
+	size_t *col_sizes;      /**< Size of each column's ldms_mval_t */
+	int num_cols;           /**< Number of columns */
+	int active_rows;        /**< Currently valid/used rows */
+	int allocated_rows;     /**< Total allocated rows (high water mark) */
+};
+
+#define LDMSD_TENANT_ROWTBL_CELL_PTR(_t_, _rid_, _cid_) \
+    (((_rid_) < (_t_)->allocated_rows && (_cid_) < (_t_)->num_cols) ? \
+     ((ldms_mval_t)((_t_)->rows[_rid_] + (_t_)->col_offsets[_cid_])) : NULL)
+
+#define LDMSD_TENANT_ROWTBL_CELL_VAL(_t_, _rid_, _cid_) \
+    (*(ldms_mval_t *)LDMSD_TENANT_ROWTBL_CELL_PTR(_t_, _rid_, _cid_))
+
 struct ldmsd_tenant_data_s {
 	struct ldmsd_tenant_source_s *src;
 	size_t total_mem;	/* Summation of the memory of each metric ldms_mval_t */
 	int mcount;		/* Number of metrics */
 	struct ldmsd_tenant_metric_list mlist;
+	uint64_t gn;    /* This number is to check if the source needs to update the mval table or not. The source is responsible for genarating this number. */
+	struct ldmsd_tenant_row_table_s vtbl; /**< Metric values table */ /* TODO: We might want to remove this so that we don't need to lock it. */
 };
 
 #define LDMSD_TENANT_REC_DEF_NAME "tenant_def"
@@ -132,7 +151,7 @@ struct ldmsd_tenant_source_s {
 	/**< Assign values to src_data and metric_template, the flag in metric_template can be ignored */
 	int (*init_tenant_metric)(const char *attr_value, struct ldmsd_tenant_metric_s *tmet);
 	/**< Runtime value retrieval method, assuming that \c mval was allocated with enough memory */
-	int (*get_tenant_values)(struct ldmsd_tenant_data_s *mlist, ldms_mval_t *_mval[], int *_count);
+	int (*get_tenant_values)(struct ldmsd_tenant_data_s *tdata, struct ldmsd_tenant_row_table_s *vtbl);
 	void (*cleanup)(void *src_data);        /**< Cleanup source-specific data */
 };
 
@@ -192,6 +211,16 @@ void ldmsd_tenant_def_put(struct ldmsd_tenant_def_s *tdef);
 int ldmsd_tenant_schema_list_add(struct ldmsd_tenant_def_s *tdef, ldms_schema_t schema,
 				 int *_tenant_rec_def_idx, int *_tenants_idx,
 				 size_t *_heap_sz);
+
+/**
+ * \brief Resize the row tables
+ *
+ * If \c num_rows is less than the number of allocated rows, the function does nothing.
+ *
+ * \param rtbl       A handle to the row table to be resized (more rows)
+ * \param num_rows   A new number of rows
+ */
+int ldmsd_tenant_row_table_resize(struct ldmsd_tenant_row_table_s *rtbl, int num_rows);
 
 /**
  * \brief Update the tenant list of an LDMS set
