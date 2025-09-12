@@ -68,11 +68,75 @@ extern ovis_log_t config_log;
 
 extern struct ldmsd_tenant_source_s tenant_job_scheduler_source; /* TODO: Implement this */
 
+int __na_tenant_metric_init(const char *attr_value, struct ldmsd_tenant_metric_s *tmet);
+void __na_tenant_metric_cleanup(void *src_data);
+int __na_tenant_values_get(struct ldmsd_tenant_data_s *tdata,
+			   ldms_mval_t *_mval[], int *_count);
+struct ldmsd_tenant_source_s tenant_na_source = {
+	.type = LDMSD_TENANT_SRC_NONE,
+	.name = "tenant_src_na",
+	.can_provide = NULL,
+	.init_tenant_metric = __na_tenant_metric_init,
+	.cleanup = __na_tenant_metric_cleanup,
+	.get_tenant_values = __na_tenant_values_get,
+};
+
 static struct ldmsd_tenant_source_s *tenant_source_tbl[] = {
+	&tenant_na_source,
 	&tenant_job_scheduler_source,
 	/* Add new sources here */
 	NULL
 };
+
+/* Not applicable tenant metric */
+
+int __na_tenant_metric_init(const char *attr_value, struct ldmsd_tenant_metric_s *tmet)
+{
+	ldms_metric_template_t mtempl = &(tmet->mtempl);
+
+	tmet->src_data = NULL;
+	tmet->__src_type = LDMSD_TENANT_SRC_NONE;
+	mtempl->name = strdup(attr_value);
+	if (!mtempl->name) {
+		ovis_log(config_log, OVIS_LCRIT, "Memory allocation failure.\n");
+		return ENOMEM;
+	}
+	mtempl->flags = LDMS_MDESC_F_META;
+	mtempl->type = LDMS_V_CHAR;
+	mtempl->unit = "";
+	mtempl->len = 1;
+	return 0;
+}
+
+void __na_tenant_metric_cleanup(void *src_data)
+{
+	/* TODO: complete this */
+	assert(0 == ENOSYS);
+}
+
+int __na_tenant_values_get(struct ldmsd_tenant_data_s *tdata,
+			   ldms_mval_t *_mval[], int *_count)
+{
+	int i;
+	struct ldmsd_tenant_metric_s *tmet;
+	ldms_mval_t *vec;
+	vec = malloc(tdata->total_mem);
+	if (!vec) {
+		ovis_log(NULL, OVIS_LCRIT, "Memory allocation failure.\n");
+		return ENOMEM;
+	}
+	i = 0;
+	tmet = TAILQ_FIRST(&tdata->mlist);
+	while (i < tdata->mcount && tmet) {
+		vec[i]->v_char = '\0';
+	}
+
+	*_count = 1;
+	*_mval = vec;
+	return 0;
+}
+
+/* Tenant definition creation */
 
 static struct ldmsd_tenant_source_s *__get_source(const char *attr_value)
 {
@@ -95,27 +159,9 @@ void __tenant_metric_destroy(struct ldmsd_tenant_metric_s *tmet)
 	because source is the one who initializes this */
 }
 
-int __init_empty_tenant_metric(const char *attr_value, struct ldmsd_tenant_metric_s *tmet)
-{
-	ldms_metric_template_t mtempl = &(tmet->mtempl);
-
-	tmet->src_data = NULL;
-	tmet->__src_type = LDMSD_TENANT_SRC_NONE;
-	mtempl->name = strdup(attr_value);
-	if (!mtempl->name) {
-		ovis_log(config_log, OVIS_LCRIT, "Memory allocation failure.\n");
-		return ENOMEM;
-	}
-	mtempl->flags = LDMS_MDESC_F_META;
-	mtempl->type = LDMS_V_CHAR;
-	mtempl->unit = "";
-	mtempl->len = 1;
-	return 0;
-}
-
 struct ldmsd_tenant_metric_s *__process_tenant_attr(const char *value)
 {
-	int i, rc;
+	int rc;
 	struct ldmsd_tenant_source_s *src;
 	struct ldmsd_tenant_metric_s *tmet;
 
@@ -131,7 +177,7 @@ struct ldmsd_tenant_metric_s *__process_tenant_attr(const char *value)
 	src = __get_source(value);
 	if (!src) {
 		ovis_log(config_log, OVIS_LINFO, "Tenant attribute '%s' is unavailable.\n", value);
-		rc = __init_empty_tenant_metric(value, tmet);
+		rc = __na_tenant_metric_init(value, tmet);
 		if (rc) {
 			goto err;
 		}
@@ -142,7 +188,7 @@ struct ldmsd_tenant_metric_s *__process_tenant_attr(const char *value)
 			ovis_log(config_log, OVIS_LINFO,
 				"Failed to process tenant attribute '%s' with code %d.\n",
 				value, rc);
-			rc = __init_empty_tenant_metric(value, tmet);
+			rc = __na_tenant_metric_init(value, tmet);
 			if (rc)
 				goto err;
 		}
@@ -164,7 +210,7 @@ void __tenant_def_destroy(void *arg)
 	int src_type;
 
 	for (src_type = 0; src_type < LDMSD_TENANT_SRC_COUNT; src_type++) {
-		tsrc = tdef->sources[src_type];
+		tsrc = &tdef->sources[src_type];
 		while ((tmet = TAILQ_FIRST(&tsrc->mlist))) {
 			TAILQ_REMOVE(&tsrc->mlist, tmet, ent);
 			__tenant_metric_destroy(tmet);
@@ -188,7 +234,14 @@ struct ldmsd_tenant_def_s *ldmsd_tenant_def_create(const char *name, struct attr
 	struct ldmsd_tenant_metric_s *tmet;
 	enum ldmsd_tenant_src_type src_type;
 
-	tdef = malloc(sizeof(*tdef));
+	tdef = ldmsd_tenant_def_find(name);
+	if (tdef) {
+		ldmsd_tenant_def_put(tdef);
+		errno = EEXIST;
+		return NULL;
+	}
+
+	tdef = calloc(1, sizeof(*tdef));
 	if (!tdef) {
 		goto enomem;
 	}
@@ -201,8 +254,10 @@ struct ldmsd_tenant_def_s *ldmsd_tenant_def_create(const char *name, struct attr
 		goto enomem;
 	}
 
+	/* Init each source */
 	for (src_type = 0; src_type < LDMSD_TENANT_SRC_COUNT; src_type++) {
-		TAILQ_INIT(&tdef->sources[src_type]->mlist);
+		tdef->sources[src_type].src = tenant_source_tbl[src_type];
+		TAILQ_INIT(&tdef->sources[src_type].mlist);
 	}
 
 	tdef->rec_def = ldms_record_create(LDMSD_TENANT_REC_DEF_NAME);
@@ -216,11 +271,14 @@ struct ldmsd_tenant_def_s *ldmsd_tenant_def_create(const char *name, struct attr
 			       "job_uid", "job_gid" };
 
 	for (i = 0; i < 5; i++) {
-		tmet = __process_tenant_attr(attr_values[i]);
+		attr_value = attr_values[i];
+		tmet = __process_tenant_attr(attr_value);
 		if (!tmet) {
 			goto err;
 		}
-		TAILQ_INSERT_TAIL(&tdef->sources[tmet->__src_type]->mlist, tmet, ent);
+		tdef->sources[tmet->__src_type].mcount++;
+		tdef->sources[tmet->__src_type].total_mem += ldms_metric_value_size_get(tmet->mtempl.type, tmet->mtempl.len);
+		TAILQ_INSERT_TAIL(&tdef->sources[tmet->__src_type].mlist, tmet, ent);
 	}
 
 	// for (i = 0; i < av_list->count; i++) {
@@ -229,16 +287,20 @@ struct ldmsd_tenant_def_s *ldmsd_tenant_def_create(const char *name, struct attr
 	// 	if (!tmet) {
 	// 		goto err;
 	// 	}
+	//	tdef->sources[tmet->__src_type].mcount++;
+	//	tdef->sources[tmet->__src_type].total_mem += ldms_metric_value_size_get(tmet->mtempl.type, tmet->mtempl.len);
 	// 	TAILQ_INSERT_TAIL(&tdef->sources[tmet->__src->type].mlist, tmet, ent);
 	// }
 
 	for (src_type = 0; src_type < LDMSD_TENANT_SRC_COUNT; src_type++) {
-		tdef->sources[src_type] = tenant_source_tbl[src_type];
-		TAILQ_FOREACH(tmet, &tdef->sources[src_type]->mlist, ent) {
-			tmet->__rent_id = (tdef->rec_def, tmet->mtempl.name,
-					   tmet->mtempl.unit, tmet->mtempl.type,
-					   tmet->mtempl.len);
+		TAILQ_FOREACH(tmet, &tdef->sources[src_type].mlist, ent) {
+			tmet->__rent_id = ldms_record_metric_add(tdef->rec_def,
+								 tmet->mtempl.name,
+								 tmet->mtempl.unit,
+								 tmet->mtempl.type,
+								 tmet->mtempl.len);
 			if (tmet->__rent_id < 0) {
+				rc = -tmet->__rent_id;
 				ovis_log(config_log, OVIS_LERROR,
 					"Cannot create tenant definition '%s' because " \
 					"ldmsd failed to create the record definition " \
@@ -324,13 +386,13 @@ int ldmsd_tenant_values_sample(struct ldmsd_tenant_def_s *tdef, ldms_set_t set, 
 	int i, j, rc;
 	ldms_mval_t tenants;
 	ldms_mval_t tenant;
-	enum ldmsd_tenant_src_type src_type;
+	int src_type;
 	struct ldmsd_tenant_data_s *tdata;
 	struct ldmsd_tenant_metric_s *tmet;
 	ldms_mval_t *src_mval_list[LDMSD_TENANT_SRC_COUNT];
 	int src_count[LDMSD_TENANT_SRC_COUNT];
 	int tmp_idx;
-	int rec_idx;
+	// int rec_idx;
 	const char *set_name = ldms_set_instance_name_get(set);
 
 	tenants = ldms_metric_get(set, tenants_mid);
@@ -349,7 +411,7 @@ int ldmsd_tenant_values_sample(struct ldmsd_tenant_def_s *tdef, ldms_set_t set, 
 	 */
 	int total_tenant_cnt = 1;
 	for (src_type = 0; src_type < LDMSD_TENANT_SRC_COUNT; src_type++) {
-		tdata = tdef->sources[src_type];
+		tdata = &tdef->sources[src_type];
 		if (0 == tdata->mcount) {
 			/* No tenant attributes are from this source, skip */
 			continue;
@@ -376,7 +438,7 @@ int ldmsd_tenant_values_sample(struct ldmsd_tenant_def_s *tdef, ldms_set_t set, 
 
 		/* Calculate which index to pick from each source */
 		for (src_type = LDMSD_TENANT_SRC_COUNT - 1; src_type >= 0; src_type--) {
-			if (0 == tdef->sources[src_type]->mcount) {
+			if (0 == tdef->sources[src_type].mcount) {
 				/* No metrics from this source, skip */
 				continue;
 			}
@@ -385,7 +447,7 @@ int ldmsd_tenant_values_sample(struct ldmsd_tenant_def_s *tdef, ldms_set_t set, 
 		}
 
 		/* Add a tenant to the tenant list */
-		rec_idx = 0;
+		// rec_idx = 0;
 		ldms_mval_t *src_rec;
 		for (src_type = 0; src_type < LDMSD_TENANT_SRC_COUNT; src_type++) {
 			tdata = &tdef->sources[src_type];
