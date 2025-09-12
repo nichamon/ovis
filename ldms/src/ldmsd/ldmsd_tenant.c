@@ -181,7 +181,7 @@ struct ldmsd_tenant_metric_s *__process_tenant_attr(const char *value)
 		tmet->mtempl.flags = LDMS_MDESC_F_DATA;
 	} else {
 		rc = src->init_tenant_metric(value, tmet);
-		if (!rc) {
+		if (rc) {
 			ovis_log(config_log, OVIS_LINFO,
 				"Failed to process tenant attribute '%s' with code %d.\n",
 				value, rc);
@@ -233,7 +233,7 @@ static int __tenant_data_init(struct ldmsd_tenant_def_s *tdef, struct ldmsd_tena
 	tbl->col_offsets = malloc(tbl->num_cols * sizeof(size_t));
 	tbl->col_sizes = malloc(tbl->num_cols * sizeof(size_t));
 	tbl->rows = malloc(sizeof(ldms_mval_t *));
-	if (!tbl->col_offsets || !tbl->col_sizes || tbl->rows) {
+	if (!tbl->col_offsets || !tbl->col_sizes || !tbl->rows) {
 		goto enomem;
 	}
 
@@ -429,8 +429,8 @@ void ldmsd_tenant_def_put(struct ldmsd_tenant_def_s *tdef)
 
 #define NUM_TENANTS 1
 int ldmsd_tenant_schema_list_add(struct ldmsd_tenant_def_s *tdef, ldms_schema_t schema,
-				 int *_tenant_rec_def_idx, int *_tenants_idx,
-				 size_t *_heap_sz)
+				 int num_tenants,
+				 int *_tenant_rec_def_idx, int *_tenants_idx)
 {
 	int rc;
 	size_t heap_sz;
@@ -447,11 +447,10 @@ int ldmsd_tenant_schema_list_add(struct ldmsd_tenant_def_s *tdef, ldms_schema_t 
 		rc = -list_idx;
 		return rc;
 	}
-
-	*_tenant_rec_def_idx = rec_def_idx;
-	*_tenants_idx = list_idx;
-	*_heap_sz = heap_sz;
-
+	if (_tenant_rec_def_idx)
+		*_tenant_rec_def_idx = rec_def_idx;
+	if (_tenants_idx)
+		*_tenants_idx = list_idx;
 	return 0;
 }
 
@@ -506,6 +505,7 @@ int ldmsd_tenant_values_sample(struct ldmsd_tenant_def_s *tdef, ldms_set_t set, 
 		tenant = ldms_record_alloc(set, tenants_mid);
 		if (!tenant) {
 			/* TODO: resize */
+			assert(0 == ENOMEM);
 		}
 
 		/* Calculate which index to pick from each source */

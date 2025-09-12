@@ -204,13 +204,15 @@ void ldmsd_tenant_def_put(struct ldmsd_tenant_def_s *tdef);
  *
  * \param tdef   A tenant definition handle
  * \param schema An LDMS schema handle
+ * \param num_tenants           Estimated number of tenants
  * \param _tenant_rec_def_idx   Metric index of the tenant record definition
  * \param _tenant_list_idx      Metric index of the tenant list
- * \param _heap_sz              Heap size of the tenant list
+ *
+ * \return 0 on success; otherwise, a non-zero error code is returned
  */
 int ldmsd_tenant_schema_list_add(struct ldmsd_tenant_def_s *tdef, ldms_schema_t schema,
-				 int *_tenant_rec_def_idx, int *_tenants_idx,
-				 size_t *_heap_sz);
+				 int num_tenants,
+				 int *_tenant_rec_def_idx, int *_tenants_idx);
 
 /**
  * \brief Resize the row tables
