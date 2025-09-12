@@ -1363,7 +1363,7 @@ int ldmsd_ourcfg_start_proc()
 }
 
 #include "ldmsd_tenant.h"
-
+#define DEFAULT_NUM_TENANTS 2
 int process_config_file(const char *path, int *lno, int trust)
 {
 	ldmsd_tenant_def_create("my_tenant", NULL);
