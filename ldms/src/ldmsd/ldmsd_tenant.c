@@ -71,7 +71,7 @@ extern struct ldmsd_tenant_source_s tenant_job_scheduler_source; /* TODO: Implem
 int __na_tenant_metric_init(const char *attr_value, struct ldmsd_tenant_metric_s *tmet);
 void __na_tenant_metric_cleanup(void *src_data);
 int __na_tenant_values_get(struct ldmsd_tenant_data_s *tdata,
-			   ldms_mval_t *_mval[], int *_count);
+			   struct ldmsd_tenant_row_table_s *vtbl);
 struct ldmsd_tenant_source_s tenant_na_source = {
 	.type = LDMSD_TENANT_SRC_NONE,
 	.name = "tenant_src_na",
@@ -115,24 +115,21 @@ void __na_tenant_metric_cleanup(void *src_data)
 }
 
 int __na_tenant_values_get(struct ldmsd_tenant_data_s *tdata,
-			   ldms_mval_t *_mval[], int *_count)
+			   struct ldmsd_tenant_row_table_s *vtbl)
 {
 	int i;
-	struct ldmsd_tenant_metric_s *tmet;
-	ldms_mval_t *vec;
-	vec = malloc(tdata->total_mem);
-	if (!vec) {
-		ovis_log(NULL, OVIS_LCRIT, "Memory allocation failure.\n");
-		return ENOMEM;
-	}
-	i = 0;
-	tmet = TAILQ_FIRST(&tdata->mlist);
-	while (i < tdata->mcount && tmet) {
-		vec[i]->v_char = '\0';
-	}
 
-	*_count = 1;
-	*_mval = vec;
+	if (0 < vtbl->active_rows) {
+		/*
+		 * There is always a single row for metrics without source.
+		 * After it has been populated with empty strings, nothing else to do.
+		 */
+		return 0;
+	}
+	for (i = 0; i < vtbl->num_cols; i++) {
+		LDMSD_TENANT_ROWTBL_CELL_PTR(vtbl, 0, i)->v_char = '\0';
+	}
+	vtbl->active_rows = 1;
 	return 0;
 }
 
@@ -222,6 +219,93 @@ void __tenant_def_destroy(void *arg)
 pthread_mutex_t tenant_def_list_lock = PTHREAD_MUTEX_INITIALIZER;
 LIST_HEAD(ldmsd_tenant_def_list, ldmsd_tenant_def_s) tenant_def_list;
 
+/* Assume that tdata->mlist has been populated. */
+static int __tenant_data_init(struct ldmsd_tenant_def_s *tdef, struct ldmsd_tenant_data_s *tdata)
+{
+	int i, rc;
+	size_t offset;
+	struct ldmsd_tenant_metric_s *tmet;
+	struct ldmsd_tenant_row_table_s *tbl = &(tdata->vtbl);
+
+	tdata->gn = 0;
+	tbl->num_cols = tdata->mcount;
+
+	tbl->col_offsets = malloc(tbl->num_cols * sizeof(size_t));
+	tbl->col_sizes = malloc(tbl->num_cols * sizeof(size_t));
+	tbl->rows = malloc(sizeof(ldms_mval_t *));
+	if (!tbl->col_offsets || !tbl->col_sizes || tbl->rows) {
+		goto enomem;
+	}
+
+	offset = 0;
+	i = 0;
+	tmet = TAILQ_FIRST(&tdata->mlist);
+	while (tmet) {
+		tmet->__rent_id = ldms_record_metric_add(tdef->rec_def,
+							 tmet->mtempl.name,
+							 tmet->mtempl.unit,
+							 tmet->mtempl.type,
+							 tmet->mtempl.len);
+		if (tmet->__rent_id < 0) {
+			rc = -tmet->__rent_id;
+			ovis_log(config_log, OVIS_LERROR,
+				"Cannot create tenant definition '%s' because " \
+				"ldmsd failed to create the record definition " \
+				"with error %d.\n", tdef->name, rc);
+			return rc;
+		}
+
+		tbl->col_sizes[i] = ldms_metric_value_size_get(tmet->mtempl.type, tmet->mtempl.len);
+		tbl->col_offsets[i] = offset;
+		offset += tbl->col_sizes[i];
+		i++;
+		tmet = TAILQ_NEXT(tmet, ent);
+	}
+	assert((i == tdata->mcount) && !tmet); /* If i and tmet must be aligned. */
+
+	tbl->row_size = offset;
+
+	/* Allocate memory of the first row */
+	tbl->rows[0] = calloc(1, tbl->row_size);
+	if (!tbl->rows[0]) {
+		free(tbl->rows);
+		free(tbl->col_sizes);
+		free(tbl->col_offsets);
+		goto enomem;
+	}
+	tbl->allocated_rows = 1;
+	tbl->active_rows = 0;
+	return 0;
+ enomem:
+	ovis_log(NULL, OVIS_LCRIT, "Memory allocation failure.\n");
+	return ENOMEM;
+}
+
+int ldmsd_tenant_row_table_resize(struct ldmsd_tenant_row_table_s *rtbl, int num_rows)
+{
+	int i;
+	void **new_rows;
+
+	new_rows = realloc(rtbl->rows, num_rows * sizeof(void *));
+	if (!new_rows) {
+		ovis_log(NULL, OVIS_LCRIT, "Memory allocation failure.\n");
+		return ENOMEM;
+	}
+	rtbl->rows = new_rows;
+	/* TODO: are we leaking the previous rtbl->rows? */
+
+	/* Allocate new rows */
+	for (i = rtbl->allocated_rows; i < num_rows; i++) {
+		rtbl->rows[i] = calloc(1, rtbl->row_size);
+		if (!rtbl->rows[i]) {
+			ovis_log(NULL, OVIS_LCRIT, "Memory allocation failure.\n");
+			return ENOMEM;
+		}
+	}
+	rtbl->allocated_rows = num_rows;
+	return 0;
+}
+
 /*
  * Failure in parsing a tenant attribute to an LDMS metric results in a metric of CHAR with an empty string as its value
  * Failure to create the record definition retults in an error of tenant definition creation.
@@ -266,6 +350,8 @@ struct ldmsd_tenant_def_s *ldmsd_tenant_def_create(const char *name, struct attr
 		goto enomem;
 	}
 
+	/* Initialize the data of each source */
+
 	/* TODO: this is for testing; remove this */
 	char *attr_values[] = { "job_id", "user", "job_name",
 			       "job_uid", "job_gid" };
@@ -277,7 +363,6 @@ struct ldmsd_tenant_def_s *ldmsd_tenant_def_create(const char *name, struct attr
 			goto err;
 		}
 		tdef->sources[tmet->__src_type].mcount++;
-		tdef->sources[tmet->__src_type].total_mem += ldms_metric_value_size_get(tmet->mtempl.type, tmet->mtempl.len);
 		TAILQ_INSERT_TAIL(&tdef->sources[tmet->__src_type].mlist, tmet, ent);
 	}
 
@@ -293,20 +378,10 @@ struct ldmsd_tenant_def_s *ldmsd_tenant_def_create(const char *name, struct attr
 	// }
 
 	for (src_type = 0; src_type < LDMSD_TENANT_SRC_COUNT; src_type++) {
-		TAILQ_FOREACH(tmet, &tdef->sources[src_type].mlist, ent) {
-			tmet->__rent_id = ldms_record_metric_add(tdef->rec_def,
-								 tmet->mtempl.name,
-								 tmet->mtempl.unit,
-								 tmet->mtempl.type,
-								 tmet->mtempl.len);
-			if (tmet->__rent_id < 0) {
-				rc = -tmet->__rent_id;
-				ovis_log(config_log, OVIS_LERROR,
-					"Cannot create tenant definition '%s' because " \
-					"ldmsd failed to create the record definition " \
-					"with error %d.\n", name, rc);
-				goto err;
-			}
+		rc = __tenant_data_init(tdef, &tdef->sources[src_type]);
+		if (rc) {
+			ref_put(&tdef->ref, "create");
+			return NULL;
 		}
 	}
 	tdef->rec_def_heap_sz = ldms_record_heap_size_get(tdef->rec_def);
@@ -389,9 +464,8 @@ int ldmsd_tenant_values_sample(struct ldmsd_tenant_def_s *tdef, ldms_set_t set, 
 	int src_type;
 	struct ldmsd_tenant_data_s *tdata;
 	struct ldmsd_tenant_metric_s *tmet;
-	ldms_mval_t *src_mval_list[LDMSD_TENANT_SRC_COUNT];
-	int src_count[LDMSD_TENANT_SRC_COUNT];
 	int tmp_idx;
+	struct ldmsd_tenant_row_table_s *vtbl;
 	// int rec_idx;
 	const char *set_name = ldms_set_instance_name_get(set);
 
@@ -416,15 +490,13 @@ int ldmsd_tenant_values_sample(struct ldmsd_tenant_def_s *tdef, ldms_set_t set, 
 			/* No tenant attributes are from this source, skip */
 			continue;
 		}
-		src_mval_list[src_type] = malloc(sizeof(ldms_mval_t) * tdata->mcount);
-		if (!src_mval_list[src_type]) {
-			/* TODO: complete this */
-		}
-		rc = tdata->src->get_tenant_values(tdata, &src_mval_list[src_type], &src_count[src_type]);
+		/* TODO: Lock the tdata because multiple threads (multiple sets) can access the table at the same time. */
+		vtbl = &tdata->vtbl;
+		rc = tdata->src->get_tenant_values(tdata, vtbl);
 		if (rc) {
 			/* TODO: complete this */
 		}
-		total_tenant_cnt *= src_count[src_type];
+		total_tenant_cnt *= vtbl->active_rows;
 	}
 
 	for (i = 0; i < total_tenant_cnt; i++) {
@@ -438,31 +510,29 @@ int ldmsd_tenant_values_sample(struct ldmsd_tenant_def_s *tdef, ldms_set_t set, 
 
 		/* Calculate which index to pick from each source */
 		for (src_type = LDMSD_TENANT_SRC_COUNT - 1; src_type >= 0; src_type--) {
-			if (0 == tdef->sources[src_type].mcount) {
+			tdata = &tdef->sources[src_type];
+			if (0 == tdata->mcount) {
 				/* No metrics from this source, skip */
 				continue;
 			}
-			src_idx[src_type] = tmp_idx % src_count[src_type];
-			tmp_idx = tmp_idx / src_count[src_type];
+			vtbl = &tdata->vtbl;
+			src_idx[src_type] = tmp_idx % vtbl->active_rows;
+			tmp_idx = tmp_idx / vtbl->active_rows;
 		}
 
 		/* Add a tenant to the tenant list */
-		// rec_idx = 0;
-		ldms_mval_t *src_rec;
 		for (src_type = 0; src_type < LDMSD_TENANT_SRC_COUNT; src_type++) {
 			tdata = &tdef->sources[src_type];
 			if (0 == tdata->mcount) {
 				/* No metrics from this source, skip */
 				continue;
 			}
-			src_rec = &src_mval_list[src_type][src_idx[src_type]];
-			tmet = TAILQ_FIRST(&tdata->mlist);
-			j = 0;
+			vtbl = &tdata->vtbl;
 			/* The number of metrics in tsrc->mlist must be equal to  */
-			while (tmet) {
-				ldms_record_metric_set(tenant, tmet->__rent_id, src_rec[j]);
-				tmet = TAILQ_NEXT(tmet, ent);
-				j++;
+			for (j = 0, tmet = TAILQ_FIRST(&tdata->mlist); tmet;
+					j++, tmet = TAILQ_NEXT(tmet, ent)) {
+				ldms_record_metric_set(tenant, tmet->__rent_id,
+					LDMSD_TENANT_ROWTBL_CELL_VAL(vtbl, src_idx[src_type], j));
 			}
 		}
 		rc = ldms_list_append_record(set, tenants, tenant);
