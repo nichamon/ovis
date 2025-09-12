@@ -257,10 +257,8 @@ base_data_t base_config(struct attr_value_list *avl,
 		base->tenant_def = ldmsd_tenant_def_find(value);
 		if (!base->tenant_def) {
 			ovis_log(mylog, OVIS_LERROR, "Cannot find tenant definition '%s.\n", value);
-			free(value);
 			goto einval;
 		}
-		free(value);
 	}
 
 	value = av_value(avl, "set_array_card");
@@ -304,11 +302,12 @@ ldms_schema_t base_schema_new(base_data_t base)
 		goto err_1;
 	}
 
+	int DELME_EST_NUM_TENANTS = 2;
 	if (base->tenant_def) {
 		rc = ldmsd_tenant_schema_list_add(base->tenant_def, base->schema,
+						DELME_EST_NUM_TENANTS,
 						&base->tenant_rec_def_idx,
-						&base->tenants_idx,
-						&base->tenants_heap_sz);
+						&base->tenants_idx);
 		if (rc) {
 			errno = rc;
 			goto err_1;
