@@ -333,10 +333,7 @@ void base_schema_delete(base_data_t base)
 
 ldms_set_t base_set_new(base_data_t base)
 {
-	if (!base->tenant_def)
-		return base_set_new_heap(base, 0);
-	else
-		return base_set_new_heap(base, base->tenants_heap_sz);
+	return base_set_new_heap(base, 0);
 }
 
 ldms_set_t base_set_new_heap(base_data_t base, size_t heap_sz)
