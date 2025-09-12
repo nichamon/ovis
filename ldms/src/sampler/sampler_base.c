@@ -405,7 +405,9 @@ void base_sample_begin(base_data_t base)
 
 	ldms_transaction_begin(base->set);
 	if (base->tenant_def) {
-		ldmsd_tenant_values_sample(base->tenant_def, base->set, base->tenants_idx);
+		ldmsd_tenant_values_sample(base->tenant_def, base->set,
+					   base->tenant_rec_def_idx,
+					   base->tenants_idx);
 	}
 
 	if (base->job_id_idx < 0)
