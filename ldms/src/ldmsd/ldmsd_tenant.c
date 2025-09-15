@@ -454,6 +454,57 @@ int ldmsd_tenant_schema_list_add(struct ldmsd_tenant_def_s *tdef, ldms_schema_t 
 }
 
 
+
+static void __mval_copy(ldms_mval_t src, ldms_mval_t dst, enum ldms_value_type t, int len)
+{
+	size_t sz;
+
+	if (!ldms_type_is_array(t))
+		len = 1;
+
+	switch (t) {
+	case LDMS_V_CHAR:
+	case LDMS_V_U8:
+	case LDMS_V_S8:
+	case LDMS_V_CHAR_ARRAY:
+	case LDMS_V_U8_ARRAY:
+	case LDMS_V_S8_ARRAY:
+		sz = sizeof(uint8_t) * len;
+		break;
+	case LDMS_V_U16:
+	case LDMS_V_S16:
+	case LDMS_V_U16_ARRAY:
+	case LDMS_V_S16_ARRAY:
+		sz = sizeof(uint16_t) * len;
+		break;
+	case LDMS_V_U32:
+	case LDMS_V_S32:
+	case LDMS_V_U32_ARRAY:
+	case LDMS_V_S32_ARRAY:
+		sz = sizeof(uint32_t) * len;
+		break;
+	case LDMS_V_U64:
+	case LDMS_V_S64:
+	case LDMS_V_U64_ARRAY:
+	case LDMS_V_S64_ARRAY:
+		sz = sizeof(uint64_t) * len;
+		break;
+	case LDMS_V_F32:
+	case LDMS_V_F32_ARRAY:
+		sz = sizeof(float) * len;
+		break;
+	case LDMS_V_D64:
+	case LDMS_V_D64_ARRAY:
+		sz = sizeof(double) * len;
+		break;
+	default:
+		assert(0 == "Unrecognized LDMS value array type");
+	}
+
+	memcpy(dst, src, sz);
+}
+
+
 int ldmsd_tenant_values_sample(struct ldmsd_tenant_def_s *tdef, ldms_set_t set, int tenant_rec_mid, int tenants_mid)
 {
 	int i, j, rc;
@@ -529,8 +580,10 @@ int ldmsd_tenant_values_sample(struct ldmsd_tenant_def_s *tdef, ldms_set_t set, 
 			/* The number of metrics in tsrc->mlist must be equal to  */
 			for (j = 0, tmet = TAILQ_FIRST(&tdata->mlist); tmet;
 					j++, tmet = TAILQ_NEXT(tmet, ent)) {
-				ldms_record_metric_set(tenant, tmet->__rent_id,
-					LDMSD_TENANT_ROWTBL_CELL_PTR(vtbl, src_idx[src_type], j));
+				ldms_mval_t dst = ldms_record_metric_get(tenant, tmet->__rent_id);
+				ldms_mval_t src = LDMSD_TENANT_ROWTBL_CELL_PTR(vtbl, src_idx[src_type], j);
+
+				__mval_copy(src, dst, tmet->mtempl.type, tmet->mtempl.len);
 			}
 		}
 		rc = ldms_list_append_record(set, tenants, tenant);
