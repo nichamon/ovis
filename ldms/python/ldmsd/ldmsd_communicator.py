@@ -264,6 +264,11 @@ LDMSD_CTRL_CMD_MAP = {'usage': {'req_attr': [], 'opt_attr': ['name']},
                       'smplrp_del':   {'req_attr': ['name'], 'opt_attr': []},
                       'smplrp_start': {'req_attr': ['name'], 'opt_attr': []},
                       'smplrp_stop':  {'req_attr': ['name'], 'opt_attr': []},
+
+                       ##### Tenant ######
+                      'tenant_add' : { 'req_attr' : ['name', 'attributes'],
+                                           'opt_attr' : ['key', 'producer'] },
+                      'tenant_del' : { 'req_attr' : ['name'], 'opt_attr' : [] }
                       }
 
 def get_cmd_attr_list(cmd_verb):
@@ -710,6 +715,9 @@ class LDMSD_Request(object):
     SMPLRP_START = SMPLRP_ADD + 2
     SMPLRP_STOP  = SMPLRP_ADD + 3
 
+    TENANT_ADD = 0xe00
+    TENANT_DEL = TENANT_ADD + 1
+
     LDMSD_REQ_ID_MAP = {
             'example': {'id': EXAMPLE},
             'greeting': {'id': GREETING},
@@ -830,6 +838,9 @@ class LDMSD_Request(object):
             'smplrp_del'   : { 'id' : SMPLRP_DEL   },
             'smplrp_start' : { 'id' : SMPLRP_START },
             'smplrp_stop'  : { 'id' : SMPLRP_STOP  },
+
+            'tenant_add'    : {'id' : TENANT_ADD    },
+            'tenant_del'    : {'id' : TENANT_DEL    }
     }
 
     TYPE_CONFIG_CMD = 1
@@ -2234,6 +2245,43 @@ class Communicator(object):
             attr_list = []
         req = LDMSD_Request(command_id = LDMSD_Request.STATS_RESET, attrs = attr_list)
 
+        try:
+            req.send(self)
+            resp = req.receive(self)
+            return resp['errcode'], resp['msg']
+        except Exception as e:
+            self.close()
+            return errno.ENOTCONN, str(e)
+
+    def tenant_add(self, name, metrics, key):
+        """
+        Add a tenant definition
+
+        Parameters:
+           name      Tenant definition name
+           metrics   A comma-separated list of job metrics or task record memtrics
+        """
+        attr_list = [LDMSD_Req_Attr(attr_id=LDMSD_Req_Attr.NAME, value=name),
+                     LDMSD_Req_Attr(attr_id=LDMSD_Req_Attr.METRIC, value = metrics),
+                     LDMSD_Req_Attr(attr_id=LDMSD_Req_Attr.PATH, value=key)]
+        req = LDMSD_Request(command_id=LDMSD_Request.TENANT_ADD, attrs = attr_list)
+        try:
+            req.send(self)
+            resp = req.receive(self)
+            return resp['errcode'], resp['msg']
+        except Exception as e:
+            self.close()
+            return errno.ENOTCONN, str(e)
+
+    def tenant_del(self, name):
+        """
+        Add a tenant definition
+
+        Parameters:
+           name      Tenant definition name
+        """
+        attr_list = [LDMSD_Req_Attr(attr_id=LDMSD_Req_Attr.NAME, value=name)]
+        req = LDMSD_Request(command_id=LDMSD_Request.TENANT_DEL, attrs = attr_list)
         try:
             req.send(self)
             resp = req.receive(self)

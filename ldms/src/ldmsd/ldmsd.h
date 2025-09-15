@@ -125,6 +125,8 @@ typedef struct ldmsd_plugin_set_list {
 #define LDMSD_SET_INFO_INTERVAL_KEY "interval_us"
 #define LDMSD_SET_INFO_OFFSET_KEY "offset_us"
 
+extern ovis_log_t tenant_log;
+
 /** Request that the task stop */
 #define LDMSD_TASK_F_STOP		0x01
 /** Use 'synchronous' scheduling. This is set when offset_us is !0 */
@@ -169,7 +171,8 @@ typedef enum ldmsd_cfgobj_type {
 	LDMSD_CFGOBJ_STORE,
 	LDMSD_CFGOBJ_SMPLRP,
 	LDMSD_CFGOBJ_JOBMGR,
-	LDMSD_CFGOBJ_LAST = LDMSD_CFGOBJ_JOBMGR,
+	LDMSD_CFGOBJ_TENANT,
+	LDMSD_CFGOBJ_LAST = LDMSD_CFGOBJ_TENANT,
 } ldmsd_cfgobj_type_t;
 
 struct ldmsd_cfgobj;
@@ -1796,7 +1799,7 @@ size_t Snprintf(char **dst, size_t *len, char *fmt, ...);
 
 /* \return 0 or errno value when there is a problem */
 __attribute__((format(printf, 2, 3)))
-int linebuf_printf(struct ldmsd_req_ctxt *reqc, char *fmt, ...);
+int ldmsd_linebuf_printf(struct ldmsd_req_ctxt *reqc, char *fmt, ...);
 
 /* All duration statistics are in micro-seconds */
 void ldmsd_stat_update(struct ldmsd_stat *stat, struct timespec *start, struct timespec *end);

@@ -2932,6 +2932,44 @@ class LdmsdCmdParser(Cmd.Cmd):
     def complete_msg_enable(self, text, line, begidx, endidx):
         return self.__complete_attr_list('msg_enable', text)
 
+    def do_tenant_add(self, arg):
+        """
+        Add a tenant definition
+
+        Parameters:
+            name=         Tenant definition name
+            attributes=   A comma-separated list of attribute names
+            [producer=]   Producer name. This is the same as producer name provided at `config`.
+                          Default is <daemon name>. See -n cmd-line option or daemon_name command
+            [key=]        An attribute to be used as key to identify a tenant. Default is job_id
+        """
+        arg = self.handle_args('tenant_add', arg)
+        if not arg:
+            return
+        rc, msg = self.comm.tenant_add(arg['name'], arg['metrics'], arg['key'])
+        if rc:
+            print(f'Error adding tenant definition {arg["name"]}: {msg}')
+
+    def complete_tenant_add(self, text, line, begidx, endidx):
+        return self.__complete_attr_list('tenant_add', text)
+
+    def do_tenant_del(self, arg):
+        """
+        Delete a tenant definition
+
+        Parameter:
+           name=   Tenant definition name
+        """
+        arg = self.handle_args('tenant_del', arg)
+        if not arg:
+            return
+        rc, msg = self.comm.tenant_del(arg['name'])
+        if rc:
+            print(f"Error deleting tenant definition {arg['name']}: {msg}")
+
+    def complete_tenant_del(self, text, line, begidx, endidx):
+        return self.__complete_attr_list('tenant_del', text)
+
     def do_listen(self, arg):
         """
         Add a listen endpoint

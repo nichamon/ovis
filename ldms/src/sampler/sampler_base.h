@@ -73,6 +73,7 @@ typedef struct base_data_s {
 	struct base_auth auth;
 	int set_array_card;
 	uint64_t component_id;
+
 	int job_id_idx;
 	int job_slot_list_idx;
 	int job_slot_list_tail_idx;
@@ -80,7 +81,9 @@ typedef struct base_data_s {
 	int app_id_idx;
 	int job_start_idx;
 	int job_end_idx;
+
 	ovis_log_t mylog;
+
 	/*
 	 * TODO: I feel that we shouldn't have \c job_log_lvl anymore with libovis_log
 	 */
