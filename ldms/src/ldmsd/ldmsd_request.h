@@ -226,6 +226,10 @@ enum ldmsd_request {
 	/* Job Manager jobmgr */
 	LDMSD_JOBMGR_START_REQ = 0xd00, /* Start jobmgr */
 	LDMSD_JOBMGR_STOP_REQ,          /* Stop jobmgr */
+	/* Tenant */
+	LDMSD_TENANT_ADD_REQ = 0xe00,  /* Add a new tenant definition */
+	LDMSD_TENANT_DEL_REQ,          /* Delete a tenant definition */
+	LDMSD_TENANT_STATUS_REQ,       /* List all tenant definitions */
 };
 
 enum ldmsd_request_attr {
@@ -741,6 +745,20 @@ int ldmsd_msg_buf_send(struct ldmsd_msg_buf *buf,
  *         Otherwise, there is an error.
  */
 int ldmsd_msg_gather(struct ldmsd_msg_buf *buf, ldmsd_req_hdr_t req);
+
+/**
+ * \brief Print to buffer inside a request context
+ *
+ * It updates the offset of the buffer. If the buffer is too small,
+ * the function expands the buffer and updates the length of the buffer.
+ *
+ * \param reqc   A request context
+ * \param fmt    String format
+ *
+ * \reeturn 0 on success.
+ *          Otherwise, and ENOMEM is returned if it fails to reallocate the memory.
+ */
+int ldmsd_linebuf_printf(struct ldmsd_req_ctxt *reqc, char *fmt, ...);
 
 
 #endif /* LDMS_SRC_LDMSD_LDMSD_REQUEST_H_ */

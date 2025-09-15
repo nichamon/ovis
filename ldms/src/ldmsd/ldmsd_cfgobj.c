@@ -96,6 +96,9 @@ static pthread_mutex_t listen_prdcr_tree_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct rbt jobmgr_tree = RBT_INITIALIZER(cfgobj_cmp);
 static pthread_mutex_t jobmgr_tree_lock = PTHREAD_MUTEX_INITIALIZER;
 
+static struct rbt tenant_tree = RBT_INITIALIZER(cfgobj_cmp);
+static pthread_mutex_t tenant_tree_lock = PTHREAD_MUTEX_INITIALIZER;
+
 static pthread_mutex_t *cfgobj_locks[] = {
 	[LDMSD_CFGOBJ_PRDCR] = &prdcr_tree_lock,
 	[LDMSD_CFGOBJ_UPDTR] = &updtr_tree_lock,
@@ -106,6 +109,7 @@ static pthread_mutex_t *cfgobj_locks[] = {
 	[LDMSD_CFGOBJ_AUTH]   = &auth_tree_lock,
 	[LDMSD_CFGOBJ_PRDCR_LISTEN] = &listen_prdcr_tree_lock,
 	[LDMSD_CFGOBJ_JOBMGR]   = &jobmgr_tree_lock,
+	[LDMSD_CFGOBJ_TENANT] = &tenant_tree_lock,
 };
 
 struct rbt *cfgobj_trees[] = {
@@ -118,10 +122,13 @@ struct rbt *cfgobj_trees[] = {
 	[LDMSD_CFGOBJ_AUTH]   = &auth_tree,
 	[LDMSD_CFGOBJ_PRDCR_LISTEN] = &listen_prdcr_tree,
 	[LDMSD_CFGOBJ_JOBMGR]   = &jobmgr_tree,
+	[LDMSD_CFGOBJ_TENANT] = &tenant_tree,
 };
 
 void ldmsd_cfgobj___del(ldmsd_cfgobj_t obj)
 {
+	free(obj->avl_str);
+	free(obj->kvl_str);
 	free(obj->name);
 	free(obj);
 }
@@ -308,14 +315,6 @@ void ldmsd_cfgobj_put(ldmsd_cfgobj_t obj, const char *ref_name)
 void ldmsd_cfgobj_del(ldmsd_cfgobj_t obj)
 {
 	pthread_mutex_lock(cfgobj_locks[obj->type]);
-	if (obj->avl_str) {
-		free(obj->avl_str);
-		obj->avl_str = NULL;
-	}
-	if (obj->kvl_str) {
-		free(obj->kvl_str);
-		obj->kvl_str = NULL;
-	}
 	rbt_del(cfgobj_trees[obj->type], &obj->rbn);
 	ldmsd_cfgobj_put(obj, "cfgobj_tree");
 	pthread_mutex_unlock(cfgobj_locks[obj->type]);
