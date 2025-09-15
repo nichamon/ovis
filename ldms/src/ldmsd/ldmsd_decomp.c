@@ -81,7 +81,7 @@ enum ldmsd_decomp_type_e {
 		ovis_log(store_log, OVIS_LERROR, "decomposer: " fmt, ##__VA_ARGS__); \
 		if (reqc) { \
 			(reqc)->errcode = rc; \
-			linebuf_printf(reqc, "decomposer: " fmt, ##__VA_ARGS__); \
+			ldmsd_linebuf_printf(reqc, "decomposer: " fmt, ##__VA_ARGS__); \
 		} \
 	} while (0)
 

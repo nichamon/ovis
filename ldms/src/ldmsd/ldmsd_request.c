@@ -77,6 +77,9 @@
 #include "ldmsd_stream.h"
 #include "ldmsd_jobmgr.h"
 
+#include "ldmsd_tenant.h"
+
+
 #pragma GCC diagnostic ignored "-Wunused-but-set-variable"
 /*
  * This file implements an LDMSD control protocol. The protocol is
@@ -344,6 +347,10 @@ static int qgroup_info_handler(ldmsd_req_ctxt_t reqc);
 /* Job Manager jobmgr */
 static int jobmgr_start_handler(ldmsd_req_ctxt_t reqc);
 static int jobmgr_stop_handler(ldmsd_req_ctxt_t reqc);
+/* Tenant */
+static int tenant_def_add_handler(ldmsd_req_ctxt_t reqc);
+static int tenant_def_del_handler(ldmsd_req_ctxt_t reqc);
+static int tenant_def_status_handler(ldmsd_req_ctxt_t reqc);
 
 /* executable for all */
 #define XALL 0111
@@ -793,6 +800,16 @@ static struct request_handler_entry request_handler[] = {
 	[LDMSD_JOBMGR_STOP_REQ] = {
 		LDMSD_JOBMGR_STOP_REQ, jobmgr_stop_handler, XUG
 	},
+	/* Tenant */
+	[LDMSD_TENANT_ADD_REQ] = {
+		LDMSD_TENANT_ADD_REQ, tenant_def_add_handler, XUG
+	},
+	[LDMSD_TENANT_DEL_REQ] = {
+		LDMSD_TENANT_DEL_REQ, tenant_def_del_handler, XUG
+	},
+	[LDMSD_TENANT_STATUS_REQ] = {
+		LDMSD_TENANT_STATUS_REQ, tenant_def_status_handler, XALL
+	}
 };
 
 int is_req_id_priority(enum ldmsd_request req_id)
@@ -1190,7 +1207,7 @@ size_t Snprintf(char **dst, size_t *len, char *fmt, ...)
 }
 
 __attribute__((format(printf, 2, 3)))
-int linebuf_printf(struct ldmsd_req_ctxt *reqc, char *fmt, ...)
+int ldmsd_linebuf_printf(struct ldmsd_req_ctxt *reqc, char *fmt, ...)
 {
 	va_list ap;
 	va_list ap_copy;
@@ -1631,16 +1648,16 @@ int __example_json_obj(ldmsd_req_ctxt_t reqc)
 	int rc, count = 0;
 	ldmsd_req_attr_t attr = ldmsd_first_attr((ldmsd_req_hdr_t)reqc->req_buf);
 	reqc->errcode = 0;
-	rc = linebuf_printf(reqc, "[");
+	rc = ldmsd_linebuf_printf(reqc, "[");
 	if (rc)
 		return rc;
 	while (attr->discrim) {
 		if (count) {
-			rc = linebuf_printf(reqc, ",\n");
+			rc = ldmsd_linebuf_printf(reqc, ",\n");
 			if (rc)
 				return rc;
 		}
-		rc = linebuf_printf(reqc,
+		rc = ldmsd_linebuf_printf(reqc,
 			       "{ \"attr_len\":%d,"
 			       "\"attr_id\":%d,"
 			       "\"attr_value\": \"%s\" }",
@@ -1652,7 +1669,7 @@ int __example_json_obj(ldmsd_req_ctxt_t reqc)
 		count++;
 		attr = ldmsd_next_attr(attr);
 	}
-	rc = linebuf_printf(reqc, "]");
+	rc = ldmsd_linebuf_printf(reqc, "]");
 	return rc;
 }
 
@@ -2538,13 +2555,13 @@ int __prdcr_status_json_obj(ldmsd_req_ctxt_t reqc, ldmsd_prdcr_t prdcr, int prdc
 
 	/* Append the string to line_buf */
 	if (prdcr_cnt) {
-		rc = linebuf_printf(reqc, ",\n");
+		rc = ldmsd_linebuf_printf(reqc, ",\n");
 		if (rc)
 			return rc;
 	}
 
 	ldmsd_prdcr_lock(prdcr);
-	rc = linebuf_printf(reqc,
+	rc = ldmsd_linebuf_printf(reqc,
 			"{ \"name\":\"%s\","
 			"\"type\":\"%s\","
 			"\"host\":\"%s\","
@@ -2572,12 +2589,12 @@ int __prdcr_status_json_obj(ldmsd_req_ctxt_t reqc, ldmsd_prdcr_t prdcr, int prdc
 	for (prv_set = ldmsd_prdcr_set_first(prdcr); prv_set;
 	     prv_set = ldmsd_prdcr_set_next(prv_set)) {
 		if (set_count) {
-			rc = linebuf_printf(reqc, ",\n");
+			rc = ldmsd_linebuf_printf(reqc, ",\n");
 			if (rc)
 				goto out;
 		}
 
-		rc = linebuf_printf(reqc,
+		rc = ldmsd_linebuf_printf(reqc,
 			"{ \"inst_name\":\"%s\","
 			"\"schema_name\":\"%s\","
 			"\"state\":\"%s\"}",
@@ -2588,7 +2605,7 @@ int __prdcr_status_json_obj(ldmsd_req_ctxt_t reqc, ldmsd_prdcr_t prdcr, int prdc
 			goto out;
 		set_count++;
 	}
-	rc = linebuf_printf(reqc, "]}");
+	rc = ldmsd_linebuf_printf(reqc, "]}");
 out:
 	ldmsd_prdcr_unlock(prdcr);
 	return rc;
@@ -2681,7 +2698,7 @@ size_t __prdcr_set_status(ldmsd_req_ctxt_t reqc, ldmsd_prdcr_set_t prd_set)
 		dur = ldms_transaction_duration_get(prd_set->set);
 		producer_name = ldms_set_producer_name_get(prd_set->set);
 	}
-	return linebuf_printf(reqc,
+	return ldmsd_linebuf_printf(reqc,
 		"{ "
 		"\"inst_name\":\"%s\","
 		"\"schema_name\":\"%s\","
@@ -2716,7 +2733,7 @@ int __prdcr_set_status_handler(ldmsd_req_ctxt_t reqc, ldmsd_prdcr_t prdcr,
 		if (schema && (0 != strcmp(prd_set->schema_name, schema)))
 			return 0;
 		if (*count) {
-			rc = linebuf_printf(reqc, ",\n");
+			rc = ldmsd_linebuf_printf(reqc, ",\n");
 			if (rc)
 				return rc;
 		}
@@ -2731,7 +2748,7 @@ int __prdcr_set_status_handler(ldmsd_req_ctxt_t reqc, ldmsd_prdcr_t prdcr,
 				continue;
 
 			if (*count) {
-				rc = linebuf_printf(reqc, ",\n");
+				rc = ldmsd_linebuf_printf(reqc, ",\n");
 				if (rc)
 					return rc;
 			}
@@ -2756,7 +2773,7 @@ int __prdcr_set_status_json_obj(ldmsd_req_ctxt_t reqc)
 	setname = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_INSTANCE);
 	schema = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_SCHEMA);
 
-	rc = linebuf_printf(reqc, "[");
+	rc = ldmsd_linebuf_printf(reqc, "[");
 	if (rc)
 		goto out;
 	if (prdcr_name) {
@@ -2788,7 +2805,7 @@ int __prdcr_set_status_json_obj(ldmsd_req_ctxt_t reqc)
 		ldmsd_cfg_unlock(LDMSD_CFGOBJ_PRDCR);
 	}
 close_str:
-	rc = linebuf_printf(reqc, "]");
+	rc = ldmsd_linebuf_printf(reqc, "]");
 out:
 	free(prdcr_name);
 	free(setname);
@@ -3422,13 +3439,13 @@ int __strgp_status_json_obj(ldmsd_req_ctxt_t reqc, ldmsd_strgp_t strgp,
 	ldmsd_strgp_metric_t metric;
 
 	if (strgp_cnt) {
-		rc = linebuf_printf(reqc, ",\n");
+		rc = ldmsd_linebuf_printf(reqc, ",\n");
 		if (rc)
 			goto out;
 	}
 
 	ldmsd_strgp_lock(strgp);
-	rc = linebuf_printf(reqc,
+	rc = ldmsd_linebuf_printf(reqc,
 		       "{\"name\":\"%s\","
 		       "\"container\":\"%s\","
 		       "\"schema\":\"%s\","
@@ -3454,16 +3471,16 @@ int __strgp_status_json_obj(ldmsd_req_ctxt_t reqc, ldmsd_strgp_t strgp,
 	for (match = ldmsd_strgp_prdcr_first(strgp); match;
 	     match = ldmsd_strgp_prdcr_next(match)) {
 		if (match_count) {
-			rc = linebuf_printf(reqc, ",");
+			rc = ldmsd_linebuf_printf(reqc, ",");
 			if (rc)
 				goto out;
 		}
 		match_count++;
-		rc = linebuf_printf(reqc, "\"%s\"", match->regex_str);
+		rc = ldmsd_linebuf_printf(reqc, "\"%s\"", match->regex_str);
 		if (rc)
 			goto out;
 	}
-	rc = linebuf_printf(reqc, "],\"metrics\":[");
+	rc = ldmsd_linebuf_printf(reqc, "],\"metrics\":[");
 	if (rc)
 		goto out;
 
@@ -3471,16 +3488,16 @@ int __strgp_status_json_obj(ldmsd_req_ctxt_t reqc, ldmsd_strgp_t strgp,
 	for (metric = ldmsd_strgp_metric_first(strgp); metric;
 	     metric = ldmsd_strgp_metric_next(metric)) {
 		if (metric_count) {
-			rc = linebuf_printf(reqc, ",");
+			rc = ldmsd_linebuf_printf(reqc, ",");
 			if (rc)
 				goto out;
 		}
 		metric_count++;
-		rc = linebuf_printf(reqc, "\"%s\"", metric->name);
+		rc = ldmsd_linebuf_printf(reqc, "\"%s\"", metric->name);
 		if (rc)
 			goto out;
 	}
-	rc = linebuf_printf(reqc, "]}");
+	rc = ldmsd_linebuf_printf(reqc, "]}");
 out:
 	ldmsd_strgp_unlock(strgp);
 	return rc;
@@ -4088,7 +4105,7 @@ int __updtr_match_list_json_obj(ldmsd_req_ctxt_t reqc, ldmsd_updtr_t updtr,
 	long default_offset = 0;
 
 	if (updtr_cnt) {
-		rc = linebuf_printf(reqc, ",\n");
+		rc = ldmsd_linebuf_printf(reqc, ",\n");
 		if (rc)
 			return rc;
 	}
@@ -4096,7 +4113,7 @@ int __updtr_match_list_json_obj(ldmsd_req_ctxt_t reqc, ldmsd_updtr_t updtr,
 	ldmsd_updtr_lock(updtr);
 	if (updtr->default_task.sched.offset_us != LDMSD_UPDT_HINT_OFFSET_NONE)
 		default_offset = updtr->default_task.sched.offset_us;
-	rc = linebuf_printf(reqc,
+	rc = ldmsd_linebuf_printf(reqc,
 		"{\"name\":\"%s\","
 		"\"match\":[",
 		updtr->obj.name);
@@ -4107,19 +4124,19 @@ int __updtr_match_list_json_obj(ldmsd_req_ctxt_t reqc, ldmsd_updtr_t updtr,
 	for (cur_set = ldmsd_updtr_match_first(updtr); cur_set;
 		cur_set = ldmsd_updtr_match_next(cur_set)) {
 		if (set_count) {
-			rc = linebuf_printf(reqc, ",\n");
+			rc = ldmsd_linebuf_printf(reqc, ",\n");
 			if (rc)
 				goto out;
 		}
 		set_count++;
-		rc = linebuf_printf(reqc, "{\"regex\":\"%s\","
+		rc = ldmsd_linebuf_printf(reqc, "{\"regex\":\"%s\","
 					  "\"selector\":\"%s\"}",
 					  cur_set->regex_str,
 					  (cur_set->selector == LDMSD_NAME_MATCH_INST_NAME)?"inst":"schema");
 		if (rc)
 			goto out;
 	}
-	rc = linebuf_printf(reqc, "]}");
+	rc = ldmsd_linebuf_printf(reqc, "]}");
 out:
 	ldmsd_updtr_unlock(updtr);
 	return rc;
@@ -4389,7 +4406,7 @@ int __updtr_status_json_obj(ldmsd_req_ctxt_t reqc, ldmsd_updtr_t updtr,
 	long default_offset = 0;
 
 	if (updtr_cnt) {
-		rc = linebuf_printf(reqc, ",\n");
+		rc = ldmsd_linebuf_printf(reqc, ",\n");
 		if (rc)
 			return rc;
 	}
@@ -4397,7 +4414,7 @@ int __updtr_status_json_obj(ldmsd_req_ctxt_t reqc, ldmsd_updtr_t updtr,
 	ldmsd_updtr_lock(updtr);
 	if (updtr->default_task.sched.offset_us != LDMSD_UPDT_HINT_OFFSET_NONE)
 		default_offset = updtr->default_task.sched.offset_us;
-	rc = linebuf_printf(reqc,
+	rc = ldmsd_linebuf_printf(reqc,
 		"{\"name\":\"%s\","
 		"\"interval\":\"%ld\","
 		"\"offset\":\"%ld\","
@@ -4420,13 +4437,13 @@ int __updtr_status_json_obj(ldmsd_req_ctxt_t reqc, ldmsd_updtr_t updtr,
 	for (ref = ldmsd_updtr_prdcr_first(updtr); ref;
 	     ref = ldmsd_updtr_prdcr_next(ref)) {
 		if (prdcr_count) {
-			rc = linebuf_printf(reqc, ",\n");
+			rc = ldmsd_linebuf_printf(reqc, ",\n");
 			if (rc)
 				goto out;
 		}
 		prdcr_count++;
 		prdcr = ref->prdcr;
-		rc = linebuf_printf(reqc,
+		rc = ldmsd_linebuf_printf(reqc,
 			       "{\"name\":\"%s\","
 			       "\"host\":\"%s\","
 			       "\"port\":%hu,"
@@ -4440,7 +4457,7 @@ int __updtr_status_json_obj(ldmsd_req_ctxt_t reqc, ldmsd_updtr_t updtr,
 		if (rc)
 			goto out;
 	}
-	rc = linebuf_printf(reqc, "]}");
+	rc = ldmsd_linebuf_printf(reqc, "]}");
 out:
 	ldmsd_updtr_unlock(updtr);
 	return rc;
@@ -4536,19 +4553,19 @@ out:
 static int __updtr_task_json_obj(ldmsd_req_ctxt_t reqc, ldmsd_updtr_task_t task)
 {
 	int rc;
-	rc = linebuf_printf(reqc,
+	rc = ldmsd_linebuf_printf(reqc,
 			"{\"interval_us\":\"%ld\",", task->sched.intrvl_us);
 	if (rc)
 		return rc;
 	if (task->sched.offset_us == LDMSD_UPDT_HINT_OFFSET_NONE) {
-		rc = linebuf_printf(reqc, "\"offset_us\":\"None\",");
+		rc = ldmsd_linebuf_printf(reqc, "\"offset_us\":\"None\",");
 	} else {
-		rc = linebuf_printf(reqc,
+		rc = ldmsd_linebuf_printf(reqc,
 			"\"offset_us\":\"%ld\",", task->sched.offset_us);
 	}
 	if (rc)
 		return rc;
-	rc = linebuf_printf(reqc, "\"default_task\":\"%s\"}",
+	rc = ldmsd_linebuf_printf(reqc, "\"default_task\":\"%s\"}",
 			(task->is_default)?"true":"false");
 	return rc;
 }
@@ -4562,7 +4579,7 @@ int __updtr_task_tree_json_obj(ldmsd_req_ctxt_t reqc,
 	rc = 0;
 
 	ldmsd_updtr_lock(updtr);
-	rc = linebuf_printf(reqc,
+	rc = ldmsd_linebuf_printf(reqc,
 			"{\"name\":\"%s\","
 			"\"tasks\":[", updtr->obj.name);
 	if (rc)
@@ -4575,7 +4592,7 @@ int __updtr_task_tree_json_obj(ldmsd_req_ctxt_t reqc,
 
 	rbn = rbt_min(&updtr->task_tree);
 	while (rbn) {
-		rc = linebuf_printf(reqc, ",");
+		rc = ldmsd_linebuf_printf(reqc, ",");
 		if (rc)
 			goto out;
 		task = container_of(rbn, struct ldmsd_updtr_task, rbn);
@@ -4584,7 +4601,7 @@ int __updtr_task_tree_json_obj(ldmsd_req_ctxt_t reqc,
 			goto out;
 		rbn = rbn_succ(rbn);
 	}
-	rc = linebuf_printf(reqc, "]}");
+	rc = ldmsd_linebuf_printf(reqc, "]}");
 out:
 	ldmsd_updtr_unlock(updtr);
 	return rc;
@@ -4618,7 +4635,7 @@ static int updtr_task_status_handler(ldmsd_req_ctxt_t reqc)
 		ldmsd_cfg_lock(LDMSD_CFGOBJ_UPDTR);
 		for (updtr = ldmsd_updtr_first(); updtr; updtr = ldmsd_updtr_next(updtr)) {
 			if (updtr_count) {
-				rc = linebuf_printf(reqc, ",\n");
+				rc = ldmsd_linebuf_printf(reqc, ",\n");
 				if (rc) {
 					ldmsd_cfg_unlock(LDMSD_CFGOBJ_UPDTR);
 					goto err;
@@ -4679,30 +4696,30 @@ int __prdcr_hint_set_list_json_obj(ldmsd_req_ctxt_t reqc,
 		return 0;
 	set = LIST_FIRST(&list->list);
 	pthread_mutex_lock(&set->lock);
-	rc = linebuf_printf(reqc,
+	rc = ldmsd_linebuf_printf(reqc,
 				"{\"interval_us\":\"%ld\",",
 				set->updt_hint.intrvl_us);
 	if (rc)
 		goto err;
 	if (set->updt_hint.offset_us == LDMSD_UPDT_HINT_OFFSET_NONE) {
-		rc = linebuf_printf(reqc, "\"offset_us\":\"None\",");
+		rc = ldmsd_linebuf_printf(reqc, "\"offset_us\":\"None\",");
 	} else {
-		rc = linebuf_printf(reqc,
+		rc = ldmsd_linebuf_printf(reqc,
 				"\"offset_us\":\"%ld\",",
 				set->updt_hint.offset_us);
 	}
 	if (rc)
 		goto err;
-	rc = linebuf_printf(reqc, "\"sets\":[");
+	rc = ldmsd_linebuf_printf(reqc, "\"sets\":[");
 	if (rc)
 		goto err;
 	while (set) {
 		if (set_count) {
-			rc = linebuf_printf(reqc, ",");
+			rc = ldmsd_linebuf_printf(reqc, ",");
 			if (rc)
 				goto err;
 		}
-		rc = linebuf_printf(reqc, "\"%s\"", set->inst_name);
+		rc = ldmsd_linebuf_printf(reqc, "\"%s\"", set->inst_name);
 		if (rc)
 			goto err;
 		set_count++;
@@ -4712,7 +4729,7 @@ int __prdcr_hint_set_list_json_obj(ldmsd_req_ctxt_t reqc,
 			break;
 		pthread_mutex_lock(&set->lock);
 	}
-	rc = linebuf_printf(reqc, "]}");
+	rc = ldmsd_linebuf_printf(reqc, "]}");
 	return rc;
 err:
 	pthread_mutex_unlock(&set->lock);
@@ -4726,7 +4743,7 @@ int __prdcr_hint_set_tree_json_obj(ldmsd_req_ctxt_t reqc, ldmsd_prdcr_t prdcr)
 	struct rbn *rbn;
 	ldmsd_updt_hint_set_list_t list;
 
-	rc = linebuf_printf(reqc,
+	rc = ldmsd_linebuf_printf(reqc,
 			"{\"name\":\"%s\","
 			"\"hints\":[", prdcr->obj.name);
 	if (rc)
@@ -4735,7 +4752,7 @@ int __prdcr_hint_set_tree_json_obj(ldmsd_req_ctxt_t reqc, ldmsd_prdcr_t prdcr)
 	rbn = rbt_min(&prdcr->hint_set_tree);
 	while (rbn) {
 		if (0 < count) {
-			rc = linebuf_printf(reqc, ",");
+			rc = ldmsd_linebuf_printf(reqc, ",");
 			if (rc)
 				return rc;
 		}
@@ -4746,7 +4763,7 @@ int __prdcr_hint_set_tree_json_obj(ldmsd_req_ctxt_t reqc, ldmsd_prdcr_t prdcr)
 		count++;
 		rbn = rbn_succ(rbn);
 	}
-	rc = linebuf_printf(reqc, "]}");
+	rc = ldmsd_linebuf_printf(reqc, "]}");
 	return rc;
 }
 
@@ -4782,7 +4799,7 @@ static int prdcr_hint_tree_status_handler(ldmsd_req_ctxt_t reqc)
 		for (prdcr = ldmsd_prdcr_first(); prdcr;
 				prdcr = ldmsd_prdcr_next(prdcr)) {
 			if (prdcr_count) {
-				rc = linebuf_printf(reqc, ",\n");
+				rc = ldmsd_linebuf_printf(reqc, ",\n");
 				if (rc) {
 					ldmsd_cfg_unlock(LDMSD_CFGOBJ_PRDCR);
 					goto intr_err;
@@ -5306,21 +5323,21 @@ int __plugn_status_json_obj(ldmsd_req_ctxt_t reqc)
 	ldmsd_cfgobj_store_t store;
 	reqc->errcode = 0;
 
-	rc = linebuf_printf(reqc, "[");
+	rc = ldmsd_linebuf_printf(reqc, "[");
 	if (rc)
 		return rc;
 	count = 0;
 	ldmsd_cfg_lock(LDMSD_CFGOBJ_SAMPLER);
 	for (samp = ldmsd_sampler_first(); samp; samp = ldmsd_sampler_next(samp)) {
 		if (count) {
-			rc = linebuf_printf(reqc, ",\n");
+			rc = ldmsd_linebuf_printf(reqc, ",\n");
 			if (rc) {
 				ldmsd_cfg_unlock(LDMSD_CFGOBJ_SAMPLER);
 				goto err;
 			}
 		}
 		count++;
-		rc = linebuf_printf(reqc,
+		rc = ldmsd_linebuf_printf(reqc,
 			"{\"name\":\"%s\",\"plugin\":\"%s\",\"type\":\"%s[%s]\","
 			"\"libpath\":\"%s\"}",
 			samp->cfg.name,
@@ -5337,14 +5354,14 @@ int __plugn_status_json_obj(ldmsd_req_ctxt_t reqc)
 	ldmsd_cfg_lock(LDMSD_CFGOBJ_STORE);
 	for (store = ldmsd_store_first(); store; store = ldmsd_store_next(store)) {
 		if (count) {
-			rc = linebuf_printf(reqc, ",\n");
+			rc = ldmsd_linebuf_printf(reqc, ",\n");
 			if (rc) {
 				ldmsd_cfg_unlock(LDMSD_CFGOBJ_STORE);
 				goto err;
 			}
 		}
 		count++;
-		rc = linebuf_printf(reqc,
+		rc = ldmsd_linebuf_printf(reqc,
 				"{\"name\":\"%s\",\"plugin\":\"%s\",\"type\":\"%s[%s]\","
 				"\"libpath\":\"%s\"}",
 				store->cfg.name,
@@ -5358,7 +5375,7 @@ int __plugn_status_json_obj(ldmsd_req_ctxt_t reqc)
 		}
 	}
 	ldmsd_cfg_unlock(LDMSD_CFGOBJ_STORE);
-	return linebuf_printf(reqc, "]");
+	return ldmsd_linebuf_printf(reqc, "]");
 err:
 	return rc;
 }
@@ -5650,10 +5667,10 @@ static int __plugn_usage_string(ldmsd_req_ctxt_t reqc)
 			continue;
 
 		if (samp->api->base.usage) {
-			rc = linebuf_printf(reqc, "%s\n%s",
+			rc = ldmsd_linebuf_printf(reqc, "%s\n%s",
 					    samp->cfg.name, samp->api->base.usage(&samp->cfg));
 		} else {
-			rc = linebuf_printf(reqc, "%s\n", samp->cfg.name);
+			rc = ldmsd_linebuf_printf(reqc, "%s\n", samp->cfg.name);
 		}
 		if (rc)
 			goto out;
@@ -5667,10 +5684,10 @@ static int __plugn_usage_string(ldmsd_req_ctxt_t reqc)
 			continue;
 
 		if (store->api->base.usage) {
-			rc = linebuf_printf(reqc, "%s\n%s",
+			rc = ldmsd_linebuf_printf(reqc, "%s\n%s",
 					store->cfg.name, store->api->base.usage(&store->cfg));
 		} else {
-			rc = linebuf_printf(reqc, "%s\n", store->cfg.name);
+			rc = ldmsd_linebuf_printf(reqc, "%s\n", store->cfg.name);
 		}
 		if (rc)
 			goto out;
@@ -5717,7 +5734,7 @@ static int sampler_sets_json_obj(ldmsd_req_ctxt_t reqc, ldmsd_cfgobj_sampler_t s
 {
 	ldmsd_sampler_set_t set;
 	int rc, set_count;
-	rc = linebuf_printf(reqc,
+	rc = ldmsd_linebuf_printf(reqc,
 			"{"
 			"\"plugin\":\"%s\","
 			"\"sets\":[",
@@ -5727,17 +5744,17 @@ static int sampler_sets_json_obj(ldmsd_req_ctxt_t reqc, ldmsd_cfgobj_sampler_t s
 	set_count = 0;
 	LIST_FOREACH(set, &samp->set_list, entry) {
 		if (set_count) {
-			rc = linebuf_printf(reqc, ",");
+			rc = ldmsd_linebuf_printf(reqc, ",");
 			if (rc)
 				return rc;
 		}
-		rc = linebuf_printf(reqc, "\"%s\"",
+		rc = ldmsd_linebuf_printf(reqc, "\"%s\"",
 			ldms_set_instance_name_get(set->set));
 		if (rc)
 			return rc;
 		set_count++;
 	}
-	rc = linebuf_printf(reqc, "]}");
+	rc = ldmsd_linebuf_printf(reqc, "]}");
 	return rc;
 }
 
@@ -5758,7 +5775,7 @@ static int plugn_sets_handler(ldmsd_req_ctxt_t reqc)
 	free(cfg_name);
 	while (samp) {
 		if (comma) {
-			rc = linebuf_printf(reqc, ",");
+			rc = ldmsd_linebuf_printf(reqc, ",");
 			if (rc)
 				goto err;
 		}
@@ -6166,23 +6183,23 @@ int __daemon_status_json_obj(ldmsd_req_ctxt_t reqc)
 	char *json_s;
 	size_t json_sz;
 
-	rc = linebuf_printf(reqc, "{\"state\":\"ready\"");
+	rc = ldmsd_linebuf_printf(reqc, "{\"state\":\"ready\"");
 	if (rc)
 		return rc;
 	thread_stats = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_STRING);
 	if (!thread_stats) {
-		rc = linebuf_printf(reqc, "}");
+		rc = ldmsd_linebuf_printf(reqc, "}");
 		return rc;
 	}
 	free(thread_stats);
 	json_s = __thread_stats_as_json(&json_sz);
 	if (!json_s)
 		return ENOMEM;
-	rc = linebuf_printf(reqc, ",\n\"thread_stats\":%s\n", json_s);
+	rc = ldmsd_linebuf_printf(reqc, ",\n\"thread_stats\":%s\n", json_s);
 	free(json_s);
 	if (rc)
 		return rc;
-	rc = linebuf_printf(reqc, "}");
+	rc = ldmsd_linebuf_printf(reqc, "}");
 	return rc;
 }
 
@@ -6433,7 +6450,7 @@ static int __greeting_path_req_handler(ldmsd_req_ctxt_t reqc)
 	if (!myself || (myself[0] == '\0'))
 		myself = "ldmsd";
 	if (!prdcr) {
-		linebuf_printf(reqc, "%s", myself);
+		ldmsd_linebuf_printf(reqc, "%s", myself);
 		attr.discrim = 1;
 		attr.attr_id = LDMSD_ATTR_STRING;
 		attr.attr_len = reqc->line_off + 1;
@@ -9252,11 +9269,11 @@ __prdset_upd_time_stats_json_obj(ldmsd_req_ctxt_t reqc, ldmsd_updtr_t updtr,
 		goto unlock;
 	}
 	if (prd_cnt) {
-		rc = linebuf_printf(reqc, ",");
+		rc = ldmsd_linebuf_printf(reqc, ",");
 		if (rc)
 			goto unlock;
 	}
-	rc = linebuf_printf(reqc, "\"%s\":{", prdcr->obj.name);
+	rc = ldmsd_linebuf_printf(reqc, "\"%s\":{", prdcr->obj.name);
 	if (rc)
 		goto unlock;
 	prdset = ldmsd_prdcr_set_first(prdcr);
@@ -9271,7 +9288,7 @@ __prdset_upd_time_stats_json_obj(ldmsd_req_ctxt_t reqc, ldmsd_updtr_t updtr,
 				goto next_prdset;
 		}
 		pthread_mutex_lock(&prdset->lock);
-		rc = linebuf_printf(reqc, "%s\"%s\":{"
+		rc = ldmsd_linebuf_printf(reqc, "%s\"%s\":{"
 				"\"min\":%lf,"
 				"\"max\":%lf,"
 				"\"avg\":%lf,"
@@ -9297,7 +9314,7 @@ next_prdset:
 		prdset = ldmsd_prdcr_set_next(prdset);
 	}
 
-	rc = linebuf_printf(reqc, "}");
+	rc = ldmsd_linebuf_printf(reqc, "}");
 unlock:
 	ldmsd_prdcr_unlock(prdcr);
 	return rc;
@@ -9313,7 +9330,7 @@ __upd_time_stats_json_obj(ldmsd_req_ctxt_t reqc, ldmsd_updtr_t updtr,
 	ldmsd_name_match_t match;
 	int cnt = 0;
 
-	rc = linebuf_printf(reqc, "\"%s\":{", updtr->obj.name);
+	rc = ldmsd_linebuf_printf(reqc, "\"%s\":{", updtr->obj.name);
 	if (rc)
 		return rc;
 
@@ -9342,7 +9359,7 @@ __upd_time_stats_json_obj(ldmsd_req_ctxt_t reqc, ldmsd_updtr_t updtr,
 				cnt++;
 		}
 	}
-	rc = linebuf_printf(reqc, "}");
+	rc = ldmsd_linebuf_printf(reqc, "}");
 out:
 	return rc;
 }
@@ -9366,7 +9383,7 @@ static int update_time_stats_handler(ldmsd_req_ctxt_t reqc)
 	}
 
 
-	rc = linebuf_printf(reqc, "{");
+	rc = ldmsd_linebuf_printf(reqc, "{");
 	if (rc)
 		goto err;
 
@@ -9387,7 +9404,7 @@ static int update_time_stats_handler(ldmsd_req_ctxt_t reqc)
 		for (updtr = ldmsd_updtr_first(); updtr;
 				updtr = ldmsd_updtr_next(updtr)) {
 			if (cnt) {
-				rc = linebuf_printf(reqc, ",");
+				rc = ldmsd_linebuf_printf(reqc, ",");
 				if (rc) {
 					ldmsd_cfg_unlock(LDMSD_CFGOBJ_UPDTR);
 					goto err;
@@ -9402,7 +9419,7 @@ static int update_time_stats_handler(ldmsd_req_ctxt_t reqc)
 		}
 		ldmsd_cfg_unlock(LDMSD_CFGOBJ_UPDTR);
 	}
-	rc = linebuf_printf(reqc, "}");
+	rc = ldmsd_linebuf_printf(reqc, "}");
 	if (rc)
 		goto err;
 	ldmsd_send_req_response(reqc, reqc->line_buf);
@@ -10475,10 +10492,10 @@ static int prdcr_listen_status_handler(ldmsd_req_ctxt_t reqc)
 	for (pl = (ldmsd_prdcr_listen_t)ldmsd_cfgobj_first(LDMSD_CFGOBJ_PRDCR_LISTEN); pl;
 			pl = (ldmsd_prdcr_listen_t)ldmsd_cfgobj_next(&pl->obj)) {
 		if (cnt) {
-			if ((rc = linebuf_printf(reqc, ",")))
+			if ((rc = ldmsd_linebuf_printf(reqc, ",")))
 				goto err;
 		}
-		rc = linebuf_printf(reqc,
+		rc = ldmsd_linebuf_printf(reqc,
 				"{\"name\":\"%s\","
 				 "\"state\":\"%s\","
 				 "\"regex\":\"%s\","
@@ -10494,13 +10511,13 @@ static int prdcr_listen_status_handler(ldmsd_req_ctxt_t reqc)
 		if (rc)
 			goto err;
 		if (pl->prdcr_type == LDMSD_PRDCR_TYPE_ADVERTISED_PASSIVE) {
-			rc = linebuf_printf(reqc, "\"type\":\"passive\",");
+			rc = ldmsd_linebuf_printf(reqc, "\"type\":\"passive\",");
 			if (rc)
 				goto err;
 		} else {
 			char reconnect_str[16];
 			ovis_time_us2str(pl->reconnect, reconnect_str, sizeof(reconnect_str));
-			rc = linebuf_printf(reqc,
+			rc = ldmsd_linebuf_printf(reqc,
 				"\"type\":\"active\","
 				"\"xprt\":\"%s\","
 				"\"port\":\"%d\","
@@ -10516,21 +10533,21 @@ static int prdcr_listen_status_handler(ldmsd_req_ctxt_t reqc)
 				goto err;
 
 		}
-		rc = linebuf_printf(reqc, "\"producers\":[");
+		rc = ldmsd_linebuf_printf(reqc, "\"producers\":[");
 		if (rc)
 			goto err;
 		prdcr_cnt = 0;
 		RBT_FOREACH(rbn, &pl->prdcr_tree) {
 			pref = container_of(rbn, struct ldmsd_prdcr_ref, rbn);
 			if (prdcr_cnt) {
-				if ((rc = linebuf_printf(reqc, ",")))
+				if ((rc = ldmsd_linebuf_printf(reqc, ",")))
 					goto err;
 			}
-			if ((rc = linebuf_printf(reqc, "\"%s\"", pref->prdcr->obj.name)))
+			if ((rc = ldmsd_linebuf_printf(reqc, "\"%s\"", pref->prdcr->obj.name)))
 				goto err;
 			prdcr_cnt++;
 		}
-		if ((rc = linebuf_printf(reqc, "]}")))
+		if ((rc = ldmsd_linebuf_printf(reqc, "]}")))
 			goto err;
 		cnt++;
 	}
@@ -11129,7 +11146,7 @@ static int qgroup_config_handler(ldmsd_req_ctxt_t reqc)
 		u64 = ovis_get_mem_size(quota);
 		rc = ldms_qgroup_cfg_quota_set(u64);
 		if (rc) {
-			linebuf_printf(reqc,
+			ldmsd_linebuf_printf(reqc,
 				"qgroup quota set failed, "
 				"set value: \"%s\", rc: %d", quota, rc);
 			goto out;
@@ -11139,14 +11156,14 @@ static int qgroup_config_handler(ldmsd_req_ctxt_t reqc)
 	if (reset_interval) {
 		rc = ovis_time_str2us(reset_interval, &s64);
 		if (rc) {
-			linebuf_printf(reqc,
+			ldmsd_linebuf_printf(reqc,
 				"Bad time format, set value: \"%s\", rc: %d",
 				reset_interval, rc);
 			goto out;
 		}
 		rc = ldms_qgroup_cfg_reset_usec_set(s64);
 		if (rc) {
-			linebuf_printf(reqc,
+			ldmsd_linebuf_printf(reqc,
 				"qgroup reset_interval set failed, "
 				"set value: \"%s\", rc: %d",
 				reset_interval, rc);
@@ -11157,14 +11174,14 @@ static int qgroup_config_handler(ldmsd_req_ctxt_t reqc)
 	if (ask_interval) {
 		rc = ovis_time_str2us(ask_interval, &s64);
 		if (rc) {
-			linebuf_printf(reqc,
+			ldmsd_linebuf_printf(reqc,
 				"Bad time format, set value: \"%s\", rc: %d",
 				ask_interval, rc);
 			goto out;
 		}
 		rc = ldms_qgroup_cfg_ask_usec_set(s64);
 		if (rc) {
-			linebuf_printf(reqc,
+			ldmsd_linebuf_printf(reqc,
 				"qgroup ask_interval set failed, "
 				"set value: \"%s\", rc: %d",
 				ask_interval, rc);
@@ -11176,7 +11193,7 @@ static int qgroup_config_handler(ldmsd_req_ctxt_t reqc)
 		s64 = ovis_get_mem_size(ask_amount);
 		rc = ldms_qgroup_cfg_ask_amount_set(s64);
 		if (rc) {
-			linebuf_printf(reqc,
+			ldmsd_linebuf_printf(reqc,
 				"qgroup ask_amount set failed, "
 				"set value: \"%s\", rc: %d",
 				ask_amount, rc);
@@ -11188,7 +11205,7 @@ static int qgroup_config_handler(ldmsd_req_ctxt_t reqc)
 		s64 = ovis_get_mem_size(ask_mark);
 		rc = ldms_qgroup_cfg_ask_mark_set(s64);
 		if (rc) {
-			linebuf_printf(reqc,
+			ldmsd_linebuf_printf(reqc,
 				"qgroup ask_mark set failed, "
 				"set value: \"%s\", rc: %d",
 				ask_mark, rc);
@@ -11224,7 +11241,7 @@ static int qgroup_member_add_handler(ldmsd_req_ctxt_t reqc)
 	/* host */
 	if (!a_host) {
 		rc = EINVAL;
-		linebuf_printf(reqc, "Missing 'host' attribute.");
+		ldmsd_linebuf_printf(reqc, "Missing 'host' attribute.");
 		goto out;
 	}
 
@@ -11233,7 +11250,7 @@ static int qgroup_member_add_handler(ldmsd_req_ctxt_t reqc)
 	/* xprt */
 	if (!a_xprt) {
 		rc = EINVAL;
-		linebuf_printf(reqc, "Missing 'xprt' attribute.");
+		ldmsd_linebuf_printf(reqc, "Missing 'xprt' attribute.");
 		goto out;
 	}
 
@@ -11242,7 +11259,7 @@ static int qgroup_member_add_handler(ldmsd_req_ctxt_t reqc)
 		auth = ldmsd_auth_find(a_auth);
 		if (!auth) {
 			rc = ENOENT;
-			linebuf_printf(reqc,
+			ldmsd_linebuf_printf(reqc,
 				"Authentication domain '%s' not found, check"
 				" the auth_add configuration.", a_auth);
 			goto out;
@@ -11260,11 +11277,11 @@ static int qgroup_member_add_handler(ldmsd_req_ctxt_t reqc)
 		/* no-op */
 		break;
 	case EEXIST:
-		linebuf_printf(reqc, "qgroup member '%s:%s' already existed",
+		ldmsd_linebuf_printf(reqc, "qgroup member '%s:%s' already existed",
 				a_host, a_port?a_port:"411");
 		goto out;
 	default:
-		linebuf_printf(reqc, "qgroup member add error: %d", rc);
+		ldmsd_linebuf_printf(reqc, "qgroup member add error: %d", rc);
 		goto out;
 	}
 
@@ -11289,14 +11306,14 @@ static int qgroup_member_del_handler(ldmsd_req_ctxt_t reqc)
 	/* host */
 	if (!a_host) {
 		rc = EINVAL;
-		linebuf_printf(reqc, "Missing 'host' attribute.");
+		ldmsd_linebuf_printf(reqc, "Missing 'host' attribute.");
 		goto out;
 	}
 
 	/* port is optional */
 	rc = ldms_qgroup_member_del(a_host, a_port);
 	if (rc == ENOENT) {
-		linebuf_printf(reqc, "qgroup member '%s:%s' not found",
+		ldmsd_linebuf_printf(reqc, "qgroup member '%s:%s' not found",
 				a_host, a_port?a_port:"411");
 		goto out;
 	}
@@ -11315,7 +11332,7 @@ static int qgroup_start_handler(ldmsd_req_ctxt_t reqc)
 	int rc;
 	rc = ldms_qgroup_start();
 	if (rc) {
-		linebuf_printf(reqc, "qgroup start error: %s(%d)",
+		ldmsd_linebuf_printf(reqc, "qgroup start error: %s(%d)",
 				     ovis_errno_abbvr(rc), rc);
 	}
 	reqc->errcode = rc;
@@ -11329,7 +11346,7 @@ static int qgroup_stop_handler(ldmsd_req_ctxt_t reqc)
 	int rc;
 	rc = ldms_qgroup_stop();
 	if (rc) {
-		linebuf_printf(reqc, "qgroup stop error: %s(%d)",
+		ldmsd_linebuf_printf(reqc, "qgroup stop error: %s(%d)",
 				     ovis_errno_abbvr(rc), rc);
 	}
 	reqc->errcode = rc;
@@ -11339,7 +11356,7 @@ static int qgroup_stop_handler(ldmsd_req_ctxt_t reqc)
 
 
 #define __LB_PRINTF_RC_OUT( FMT, ... ) do { \
-		rc = linebuf_printf(reqc, FMT, ## __VA_ARGS__); \
+		rc = ldmsd_linebuf_printf(reqc, FMT, ## __VA_ARGS__); \
 		if (rc) { \
 			snprintf(ebuf, sizeof(ebuf), \
 				"linebuf_printf() error: %d", rc); \
@@ -11473,3 +11490,168 @@ static int jobmgr_stop_handler(ldmsd_req_ctxt_t reqc)
 {
 	return jobmgr_op(reqc, "stop", ldmsd_jobmgr_stop);
 }
+
+static int tenant_def_add_handler(ldmsd_req_ctxt_t reqc)
+{
+	char *name, *metrics, *key_s, *perm_s, *producer;
+	struct ldmsd_tenant_def_s *tdef;
+	struct ldmsd_str_list attr_list;
+	struct ldmsd_str_ent *str;
+	const char *delim = ",";
+	char *s, *endptr;
+	uid_t uid;
+	gid_t gid;
+	int perm;
+	struct ldmsd_sec_ctxt sctxt;
+
+	TAILQ_INIT(&attr_list);
+
+	name = metrics = perm_s = NULL;
+
+	name = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_NAME);
+	if (!name) {
+		reqc->errcode = EINVAL;
+		reqc->line_off = snprintf(reqc->line_buf, reqc->line_len,
+					  "The attribute 'name' is required.");
+		goto send_reply;
+	}
+	metrics = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_METRIC);
+	if (!metrics) {
+		reqc->errcode = EINVAL;
+		reqc->line_off = snprintf(reqc->line_buf, reqc->line_len,
+					  "The attribute 'metrics' is required.");
+		goto send_reply;
+	}
+
+	producer = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_PRODUCER);
+	if (!producer) {
+		producer = strdup(ldmsd_myname_get());
+	}
+
+	key_s = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_PATH);
+	if (!key_s) {
+		key_s = strdup("job_id");
+	}
+	s = strtok_r(metrics, delim, &endptr);
+	while (s) {
+		str = malloc(sizeof(*str));
+		if (!str) {
+			goto enomem;
+		}
+		str->str = s;
+		TAILQ_INSERT_TAIL(&attr_list, str, entry);
+		s = strtok_r(NULL, delim, &endptr);
+	}
+
+	ldmsd_req_ctxt_sec_get(reqc, &sctxt);
+	uid = sctxt.crd.uid;
+	gid = sctxt.crd.gid;
+
+	perm = 0770;
+	perm_s = ldmsd_req_attr_str_value_get_by_name(reqc, "perm");
+	if (perm_s)
+		perm = strtoul(perm_s, NULL, 0);
+
+	tdef = ldmsd_tenant_def_new(name, producer, &attr_list, key_s, uid, gid, perm);
+	if (!tdef) {
+		if (errno == EEXIST) {
+			reqc->line_off = snprintf(reqc->line_buf, reqc->line_len,
+						 "The tenant definition name '%s' " \
+						 "already exists.", name);
+		}
+	}
+
+ send_reply:
+	ldmsd_send_req_response(reqc, reqc->line_buf);
+	free(name);
+	free(metrics);
+	return 0;
+ enomem:
+	ovis_log(config_log, OVIS_LCRIT, "Memory allocation failure.\n");
+	free(name);
+	free(metrics);
+	return ENOMEM;
+}
+
+static int tenant_def_del_handler(ldmsd_req_ctxt_t reqc)
+{
+	int rc;
+	char *name;
+	ldmsd_tenant_def_t tdef;
+	struct ldmsd_sec_ctxt sctxt;
+
+	ldmsd_req_ctxt_sec_get(reqc, &sctxt);
+
+	name = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_NAME);
+	if (!name) {
+		reqc->errcode = EINVAL;
+		reqc->line_off = snprintf(reqc->line_buf, reqc->line_len,
+					  "The attribute 'name' is required.");
+		goto send_reply;
+	}
+	tdef = ldmsd_tenant_def_find(name);
+	if (!tdef) {
+		reqc->errcode = ENOENT;
+		reqc->line_off = snprintf(reqc->line_buf, reqc->line_len,
+					  "Tenant '%s' doesn't exist.", name);
+		goto send_reply;
+	}
+
+	ldmsd_tenant_def_lock(tdef);
+	rc = ldmsd_cfgobj_access_check(&tdef->obj, 0222, &sctxt);
+	if (rc) {
+		ldmsd_tenant_def_unlock(tdef);
+		reqc->errcode = rc;
+		reqc->line_off = snprintf(reqc->line_buf, reqc->line_len,
+						"Tenant '%s': Permission denied.", name);
+		goto send_reply;
+	}
+	ldmsd_tenant_def_unlock(tdef);
+	ldmsd_tenant_def_find_put(tdef); /* Put find reference */
+
+	ldmsd_tenant_def_del(tdef);
+
+ send_reply:
+	ldmsd_send_req_response(reqc, reqc->line_buf);
+	free(name);
+	return 0;
+ }
+
+ static int tenant_def_status_handler(ldmsd_req_ctxt_t reqc)
+ {
+	int rc;
+	int cnt;
+	ldmsd_tenant_def_t tdef;
+
+	cnt = 0;
+	rc = ldmsd_linebuf_printf(reqc, "[");
+	if (rc)
+		goto enomem;
+	ldmsd_cfg_lock(LDMSD_CFGOBJ_TENANT);
+	for (tdef = (ldmsd_tenant_def_t)ldmsd_cfgobj_first(LDMSD_CFGOBJ_TENANT); tdef;
+			tdef = (ldmsd_tenant_def_t)ldmsd_cfgobj_next(&tdef->obj)) {
+		if (cnt) {
+			rc = ldmsd_linebuf_printf(reqc, ",");
+			if (rc) {
+				ldmsd_cfg_unlock(LDMSD_CFGOBJ_TENANT);
+				goto enomem;
+			}
+		}
+		rc = ldmsd_tenant_def_str(tdef, 0, reqc);
+		if (rc) {
+			ldmsd_cfg_unlock(LDMSD_CFGOBJ_TENANT);
+			goto enomem;
+		}
+	}
+	ldmsd_cfg_unlock(LDMSD_CFGOBJ_TENANT);
+	rc = ldmsd_linebuf_printf(reqc, "]");
+	if (rc)
+		goto enomem;
+	ldmsd_send_req_response(reqc, reqc->line_buf);
+	return 0;
+enomem:
+	ovis_log(config_log, OVIS_LCRIT, "Memory allocation failure.\n");
+	reqc->errcode = ENOMEM;
+	snprintf(reqc->line_buf, reqc->line_len, "ldmsd: memory allocation failure");
+	return ENOMEM;
+ }
