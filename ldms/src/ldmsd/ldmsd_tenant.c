@@ -232,7 +232,7 @@ static int __tenant_data_init(struct ldmsd_tenant_def_s *tdef, struct ldmsd_tena
 
 	tbl->col_offsets = malloc(tbl->num_cols * sizeof(size_t));
 	tbl->col_sizes = malloc(tbl->num_cols * sizeof(size_t));
-	tbl->rows = malloc(sizeof(ldms_mval_t *));
+	tbl->rows = malloc(sizeof(void *));
 	if (!tbl->col_offsets || !tbl->col_sizes || !tbl->rows) {
 		goto enomem;
 	}
