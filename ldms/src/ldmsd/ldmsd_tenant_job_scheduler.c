@@ -89,7 +89,8 @@ static int job_scheduler_get_tenant_values(struct ldmsd_tenant_data_s *tdata,
 	struct ldmsd_tenant_metric_s *tmet;
 
 	/* TODO: delme for testing only*/
-	static int idx = 0;
+	static int idx = -1;
+	idx++;
 
 
 	/* Determine the number of combinations */
@@ -106,7 +107,7 @@ static int job_scheduler_get_tenant_values(struct ldmsd_tenant_data_s *tdata,
 		TAILQ_FOREACH(tmet, &tdata->mlist, ent) {
 			v = LDMSD_TENANT_ROWTBL_CELL_PTR(vtbl, i, j);
 			if (tmet->mtempl.type == LDMS_V_CHAR_ARRAY) {
-				for (k = 0; k < tmet->mtempl.len; k++) {
+				for (k = 0; k < 2; k++) {
 					v->a_char[k] = 'a' + idx + i;
 				}
 			} else if (tmet->mtempl.type == LDMS_V_U32) {
