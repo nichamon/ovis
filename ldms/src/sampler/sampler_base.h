@@ -61,6 +61,25 @@ struct base_auth {
 	bool perm_is_set;
 };
 
+/* TODO: define this */
+struct tenant_src_job_scheduler {
+	const struct ldms_metric_template_s *job_met; /* Point directly to the defined available metrics */
+};
+
+enum tenant_attr_type {
+	LDMSD_TENANT_T_NA = 0, /* No source found */
+	LDMSD_TENANT_T_JOB_SCHEDULER = 1 /* Value from job schedulers */
+};
+
+struct tenant_metric {
+	const char *name;
+	int rent_id;
+	enum tenant_attr_type type;
+	void *src;
+	LIST_ENTRY(tenant_metric) ent;
+};
+LIST_HEAD(tenant_metric_list, tenant_metric);
+
 typedef struct base_data_s {
 	char *cfg_name;
 	char *instance_name;
@@ -73,6 +92,12 @@ typedef struct base_data_s {
 	struct base_auth auth;
 	int set_array_card;
 	uint64_t component_id;
+
+	/* Multi-tenant Support */
+	struct ldmsd_str_list tenant_keys;
+	struct tenant_metric_list tenant_metrics;
+
+	/* TODO: We should consider removing this job-related info. */
 	int job_id_idx;
 	int job_slot_list_idx;
 	int job_slot_list_tail_idx;

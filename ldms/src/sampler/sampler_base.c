@@ -60,6 +60,8 @@
 #include "ldmsd.h"
 #include "sampler_base.h"
 
+#include "ldmsd_jobmgr.h"
+
 void base_del(base_data_t base)
 {
 	if (!base)
@@ -184,6 +186,110 @@ err:
 	base->job_id_idx = -1;
 }
 
+void __tenant_metrics_cleanup(struct tenant_metric_list *metrics)
+{
+	struct tenant_metric *met;
+	while ((met =LIST_FIRST(metrics))) {
+		LIST_REMOVE(met, ent);
+		free(met->name);
+		/* TODO: free met->src */
+	}
+}
+
+struct tenant_metric *__process_tenant_attr(base_data_t base, struct ldmsd_str_ent *attr, ldms_record_t rec_def)
+{
+	int i;
+	struct tenant_metric *tmet;
+	void *src;
+
+	/*
+	 * Always create a metric for each specified tenant attribute.
+	 * If there is no source to query the attribute value, the following will occur:
+	 *  - an emptry string will be set as the value,
+	 *  - an INFO log message will be reported that the attribute isn't matched any source
+	 */
+	tmet = calloc(1, sizeof(*tmet));
+	if (!tmet) {
+		ovis_log(base->mylog, OVIS_LCRIT, "Memory allocation failure\n");
+		return NULL;
+	}
+	tmet->name = strdup(attr->str);
+	if (!tmet->name) {
+		ovis_log(base->mylog, OVIS_LCRIT, "Memory allocation failure\n");
+		free(tmet);
+		return NULL;
+	}
+
+	/*
+	 * TODO: process tenant attribute to link with the appropriate source.
+	 * Here will contain the logic to figure out where the source of the attribute is.
+	 * For example, job_schduler, environment variable, a metric set
+	 */
+
+	/* ----------------- Job scheduler ------------------- */
+	struct ldms_metric_template_s *job_met;
+	/* Available metrics for jobs */
+	job_met = common_jobset_metrics; /* Assuming that common_jobset_metrics is NULL terminated. */
+	while (job_met->name) {
+		if (0 == strcmp(attr->str, job_met->name)) {
+			goto job_scheduler;
+		}
+		job_met++;
+	}
+	/* Available metrics for tasks */
+	job_met = common_task_rec_metrics; /* Assuming that common_task_rec_metrics is NULL terminated. */
+	while (job_met->name) {
+		if (0 == strcmp(attr->str, job_met->name)) {
+			goto job_scheduler;
+		}
+		job_met++;
+	}
+
+	/* The attribute name isn't match any metrics created by job_schedulers. */
+	return NULL;
+
+ job_scheduler:
+	tmet->type = LDMSD_TENANT_T_JOB_SCHEDULER;
+	src = calloc(1, sizeof(struct tenant_src_job_scheduler));
+	if (!src) {
+		ovis_log(base->mylog, OVIS_LCRIT, "Memory allocation failure\n");
+		free(tmet->name);
+		free(tmet);
+		return NULL;
+	}
+	((struct tenant_src_job_scheduler *)src)->job_met = job_met;
+	tmet->rent_id = ldms_record_metric_add(rec_def, tmet->name, job_met->unit, job_met->type, job_met->len);
+	return tmet;
+}
+
+int __tenant_def_create(base_data_t base, struct ldmsd_str_list *tenant_attrs)
+{
+	ldms_record_t rec_def;
+	struct tenant_metric *tmet;
+	struct ldmsd_str_ent *tenant_attr;
+
+	rec_def = ldms_record_create("tenant");
+	if (!rec_def) {
+		ovis_log(base->mylog, OVIS_LCRIT, "Memory allocation failure\n");
+		return ENOMEM;
+	}
+
+	TAILQ_FOREACH(tenant_attr, tenant_attrs, entry) {
+		tmet = __process_tenant_attr(base, tenant_attr, rec_def);
+		if (!tmet) {
+			goto cleanup_tenant_metrics;
+		}
+		LIST_INSERT_HEAD(&base->tenant_metrics, tmet, ent);
+	}
+	return 0;
+
+ cleanup_tenant_metrics:
+	__tenant_metrics_cleanup(&base->tenant_metrics);
+ free_rec_def:
+	ldms_record_delete(rec_def);
+	return 1; /* TODO: Improve this */
+}
+
 base_data_t base_config(struct attr_value_list *avl,
 			const char *name, const char *def_schema,
 			ovis_log_t mylog)
@@ -199,6 +305,7 @@ base_data_t base_config(struct attr_value_list *avl,
 		return NULL;
 	}
 
+	LIST_INIT(&base->tenant_metrics);
 	base->job_log_lvl = OVIS_LINFO;
 
 	base->cfg_name = strdup(name);
