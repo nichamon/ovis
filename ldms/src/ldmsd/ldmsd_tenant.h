@@ -92,6 +92,7 @@ struct ldmsd_tenant_metric_s {
  */
 TAILQ_HEAD(ldmsd_tenant_metric_list, ldmsd_tenant_metric_s);
 
+/* TODO: Remove this */
 struct ldmsd_tenant_row_table_s {
 	void **rows;     /**< Array of row pointers to ldms_mval_t */
 	size_t row_size;        /**< Size of each row in bytes */
@@ -108,6 +109,44 @@ struct ldmsd_tenant_row_table_s {
 
 #define LDMSD_TENANT_ROWTBL_CELL_VAL(_t_, _rid_, _cid_) \
     (*(ldms_mval_t *)LDMSD_TENANT_ROWTBL_CELL_PTR(_t_, _rid_, _cid_))
+
+/* TODO: END -- Remove this */
+
+struct ldmsd_tenant_col_cfg_s {
+	int mid;            /* LDMS metric ID */
+	int rec_mid;        /* Record member ID (-1 if N/A) */
+};
+
+enum ldmsd_tenant_iter_type_e {
+	LDMSD_TENANT_ITER_T_SCALAR,
+	LDMSD_TENANT_ITER_T_LIST,
+	LDMSD_TENANT_ITER_T_REC_ARRAY,
+	LDMSD_TENANT_ITER_T_MISSING,
+};
+
+struct ldmsd_tenant_col_iter_s {
+	enum ldmsd_tenant_iter_type_e type;
+	uint8_t exhausted;
+	union {
+		struct { /* single scalar value*/ } scalar;
+		struct {
+			ldms_mval_t cu
+		}
+	}
+};
+
+struct ldmsd_tenant_row_s {
+	int num_cols;
+	struct ldmsd_tenant_col_s {
+		void *mem;
+		size_t row_size;
+		size_t *col_offsets;
+		size_t *col_sizes;
+	} cols;
+	TAILQ_ENTRY(ldmsd_tenant_row_s) ent;
+};
+
+TAILQ_HEAD(ldmsd_tenant_row_list_s, ldmsd_tenant_row_s);
 
 struct ldmsd_tenant_data_s {
 	struct ldmsd_tenant_source_s *src;
