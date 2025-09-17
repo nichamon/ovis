@@ -42,7 +42,13 @@
 
 
 struct tenant_job_scheduler_s {
-	uint8_t is_task;          /* 1 if it's a task metric */
+	const char *schema; /* Job schema */
+	struct ldmsd_tenant_col_cfg_s *cols_cfg; /* Array of col_cfg_s */
+};
+
+struct tenant_job_scheduler_metric_s {
+	int src_mid;
+	int src_rec_mid;
 };
 
 static ldms_metric_template_t __find_job_metric(const char *s)
@@ -148,47 +154,84 @@ static int __num_rows_get(struct ldmsd_tenant_data_s *tsrc)
 	return 2;
 }
 
+// /* TODO: Update this when receive the updated job_scehduler APIs from Narate */
+// static int job_scheduler_get_tenant_values(struct ldmsd_tenant_data_s *tdata,
+// 					   struct ldmsd_tenant_row_table_s *vtbl)
+// {
+// 	int i, j, k, rc;
+// 	int num_rows;
+// 	ldms_mval_t v;
+// 	struct ldmsd_tenant_metric_s *tmet;
+
+// 	/* TODO: delme for testing only*/
+// 	static int idx = -1;
+// 	idx++;
+
+// 	/* Determine the number of combinations */
+// 	// num_rows = __num_rows_get(tdata);
+
+
+
+// 	if (num_rows > vtbl->allocated_rows) {
+// 		rc = ldmsd_tenant_row_table_resize(vtbl, num_rows);
+// 		if (rc)
+// 			return rc;
+// 	}
+
+// 	for (i = 0; i < num_rows; i++) {
+// 		j = 0;
+// 		TAILQ_FOREACH(tmet, &tdata->mlist, ent) {
+// 			v = LDMSD_TENANT_ROWTBL_CELL_PTR(vtbl, i, j);
+// 			if (tmet->mtempl.type == LDMS_V_CHAR_ARRAY) {
+// 				for (k = 0; k < 2; k++) {
+// 					v->a_char[k] = 'a' + idx + i;
+// 				}
+// 			} else if (tmet->mtempl.type == LDMS_V_U32) {
+// 				v->v_u32 = (uint32_t)(idx + i);
+// 			} else {
+// 				assert("Unexpected metric value type");
+// 			}
+// 			j++;
+// 		}
+// 	}
+// 	vtbl->active_rows = num_rows;
+// 	return 0;
+// }
+
+static int __resolve_column_src(struct ldmsd_tenant_data_s *tsrc, ldms_set_t set, struct ldmsd_tenant_col_cfg_s *cols_cfg, int num_cols)
+{
+	int i;
+	struct ldmsd_tenant_col_cfg_s *col_cfg;
+	struct ldmsd_tenant_metric_list *mlist = &tsrc->mlist;
+
+	for (i = 0; i < num_cols; i++) {
+		col_cfg = &cols_cfg[i];
+		col_cfg->mid =
+	}
+
+	return 0;
+}
+
+static void __resolve_col_src_idx(ldms_set_t job_set, struct ldmsd_tenant_metric_list_s *mlist)
+{
+
+}
+
 /* TODO: Update this when receive the updated job_scehduler APIs from Narate */
 static int job_scheduler_get_tenant_values(struct ldmsd_tenant_data_s *tdata,
-					   struct ldmsd_tenant_row_table_s *vtbl)
+					   struct ldmsd_tenant_row_list_s *rlist)
 {
 	int i, j, k, rc;
 	int num_rows;
 	ldms_mval_t v;
 	struct ldmsd_tenant_metric_s *tmet;
 
-	/* TODO: delme for testing only*/
-	static int idx = -1;
-	idx++;
+	ldms_set_t job_set;
 
-	/* Determine the number of combinations */
-	// num_rows = __num_rows_get(tdata);
+	for (job_set = ldmsd_jobset_first(); job_set; job_set = ldmsd_jobset_next(job_set)) {
 
-
-
-	if (num_rows > vtbl->allocated_rows) {
-		rc = ldmsd_tenant_row_table_resize(vtbl, num_rows);
-		if (rc)
-			return rc;
 	}
 
-	for (i = 0; i < num_rows; i++) {
-		j = 0;
-		TAILQ_FOREACH(tmet, &tdata->mlist, ent) {
-			v = LDMSD_TENANT_ROWTBL_CELL_PTR(vtbl, i, j);
-			if (tmet->mtempl.type == LDMS_V_CHAR_ARRAY) {
-				for (k = 0; k < 2; k++) {
-					v->a_char[k] = 'a' + idx + i;
-				}
-			} else if (tmet->mtempl.type == LDMS_V_U32) {
-				v->v_u32 = (uint32_t)(idx + i);
-			} else {
-				assert("Unexpected metric value type");
-			}
-			j++;
-		}
-	}
-	vtbl->active_rows = num_rows;
 	return 0;
 }
 
