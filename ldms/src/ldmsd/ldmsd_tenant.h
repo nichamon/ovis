@@ -113,40 +113,57 @@ struct ldmsd_tenant_row_table_s {
 /* TODO: END -- Remove this */
 
 struct ldmsd_tenant_col_cfg_s {
-	int mid;            /* LDMS metric ID */
-	int rec_mid;        /* Record member ID (-1 if N/A) */
+	int mid;            /* LDMS metric ID in the source set */
+	int rec_mid;        /* Record member ID (-1 if N/A) in the source set */
 };
 
 enum ldmsd_tenant_iter_type_e {
 	LDMSD_TENANT_ITER_T_SCALAR,
 	LDMSD_TENANT_ITER_T_LIST,
+	LDMSD_TENANT_ITER_T_REC,
 	LDMSD_TENANT_ITER_T_REC_ARRAY,
 	LDMSD_TENANT_ITER_T_MISSING,
 };
 
 struct ldmsd_tenant_col_iter_s {
 	enum ldmsd_tenant_iter_type_e type;
-	uint8_t exhausted;
+	struct ldmsd_tenant_col_cfg_s *cfg;
+	ldms_set_t set;
+	uint8_t exhausted;   /* 1 when no more data available */
 	union {
-		struct { /* single scalar value*/ } scalar;
+		struct { /* single scalar value, no state needed */ } scalar;
 		struct {
-			ldms_mval_t cu
-		}
-	}
+			ldms_mval_t curr; /* Current element*/
+			enum ldms_value_type type; /* element type */
+			size_t len; /* element length */
+		} list;
+		struct {
+			ldms_mval_t rec;
+			ldms_mval_t curr;
+		} rec_inst;
+		struct {
+			int curr_idx;
+			int max_len;
+			ldms_mval_t array;
+			ldms_mval_t curr_rec;
+		} rec_array;
+	} state;
 };
 
 struct ldmsd_tenant_row_s {
-	int num_cols;
-	struct ldmsd_tenant_col_s {
-		void *mem;
-		size_t row_size;
-		size_t *col_offsets;
-		size_t *col_sizes;
-	} cols;
+	void *data;        /* Raw row data (array of *ldms_mval_t )*/
 	TAILQ_ENTRY(ldmsd_tenant_row_s) ent;
 };
 
-TAILQ_HEAD(ldmsd_tenant_row_list_s, ldmsd_tenant_row_s);
+struct ldmsd_tenant_row_list_s {
+	int num_cols;
+	size_t row_size;
+	size_t *col_offsets;
+	size_t *col_sizes;
+	int active_rows;        /* Number of rows containing valid values */
+	int allocated_rows;     /* Number of allocated rows, which >= num_active */
+	TAILQ_HEAD(, ldmsd_tenant_row_s) rows;
+};
 
 struct ldmsd_tenant_data_s {
 	struct ldmsd_tenant_source_s *src;
@@ -155,6 +172,7 @@ struct ldmsd_tenant_data_s {
 	struct ldmsd_tenant_metric_list mlist;
 	uint64_t gn;    /* This number is to check if the source needs to update the mval table or not. The source is responsible for genarating this number. */
 	struct ldmsd_tenant_row_table_s vtbl; /**< Metric values table */ /* TODO: We might want to remove this so that we don't need to lock it. */
+	struct ldmsd_tenant_row_list_s row_list; /**< List of rows */
 };
 
 #define LDMSD_TENANT_REC_DEF_NAME "tenant_def"

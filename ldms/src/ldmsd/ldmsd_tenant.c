@@ -225,9 +225,13 @@ static int __tenant_data_init(struct ldmsd_tenant_def_s *tdef, struct ldmsd_tena
 	int i, rc;
 	size_t offset;
 	struct ldmsd_tenant_metric_s *tmet;
-	struct ldmsd_tenant_row_table_s *tbl = &(tdata->vtbl);
 
 	tdata->gn = 0;
+
+	/* TODO: start row table */
+	struct ldmsd_tenant_row_table_s *tbl = &(tdata->vtbl);
+
+
 	tbl->num_cols = tdata->mcount;
 
 	tbl->col_offsets = malloc(tbl->num_cols * sizeof(size_t));
@@ -275,6 +279,57 @@ static int __tenant_data_init(struct ldmsd_tenant_def_s *tdef, struct ldmsd_tena
 	}
 	tbl->allocated_rows = 1;
 	tbl->active_rows = 0;
+
+	/* TODO: END row table */
+
+	struct ldmsd_tenant_row_s *row;
+	struct ldmsd_tenant_row_list_s *rlist = &(tdata->row_list);
+	TAILQ_INIT(&rlist->rows);
+	rlist->num_cols = tdata->mcount;
+	rlist->col_offsets = malloc(rlist->num_cols * sizeof(size_t));
+	rlist->col_sizes = malloc(rlist->num_cols * sizeof(size_t));
+	if (!rlist->col_offsets || !rlist->col_sizes) {
+		goto enomem;
+	}
+
+	offset = 0;
+	i = 0;
+	tmet = TAILQ_FIRST(&tdata->mlist);
+	while (tmet) {
+		tmet->__rent_id = ldms_record_metric_add(tdef->rec_def,
+							 tmet->mtempl.name,
+							 tmet->mtempl.unit,
+							 tmet->mtempl.type,
+							 tmet->mtempl.len);
+		if (tmet->__rent_id < 0) {
+			rc = -tmet->__rent_id;
+			ovis_log(config_log, OVIS_LERROR,
+				"Cannot create tenant definition '%s' because " \
+				"ldmsd failed to create the record definition " \
+				"with error %d.\n", tdef->name, rc);
+			return rc;
+		}
+
+		rlist->col_sizes[i] = ldms_metric_value_size_get(tmet->mtempl.type, tmet->mtempl.len);
+		rlist->col_offsets[i] = offset;
+		offset += rlist->col_sizes[i];
+		i++;
+		tmet = TAILQ_NEXT(tmet, ent);
+	}
+	assert((i == tdata->mcount) && !tmet); /* If i and tmet must be aligned. */
+
+	rlist->row_size = offset;
+
+	/* Allocate memory of the first row */
+	row = calloc(1, rlist->row_size);
+	if (!row) {
+		free(rlist->col_sizes);
+		free(rlist->col_offsets);
+		goto enomem;
+	}
+	rlist->allocated_rows = 1;
+	rlist->active_rows = 0;
+
 	return 0;
  enomem:
 	ovis_log(NULL, OVIS_LCRIT, "Memory allocation failure.\n");
@@ -349,6 +404,8 @@ struct ldmsd_tenant_def_s *ldmsd_tenant_def_create(const char *name, struct attr
 		ref_put(&tdef->ref, "create");
 		goto enomem;
 	}
+
+
 
 	/* Initialize the data of each source */
 
@@ -515,6 +572,7 @@ int ldmsd_tenant_values_sample(struct ldmsd_tenant_def_s *tdef, ldms_set_t set, 
 	struct ldmsd_tenant_metric_s *tmet;
 	int tmp_idx;
 	struct ldmsd_tenant_row_table_s *vtbl;
+	struct ldmsd_tenant_row_list_s *rlist;
 	const char *set_name = ldms_set_instance_name_get(set);
 
 	tenants = ldms_metric_get(set, tenants_mid);
@@ -539,8 +597,12 @@ int ldmsd_tenant_values_sample(struct ldmsd_tenant_def_s *tdef, ldms_set_t set, 
 			continue;
 		}
 		/* TODO: Lock the tdata because multiple threads (multiple sets) can access the table at the same time. */
-		vtbl = &tdata->vtbl;
-		rc = tdata->src->get_tenant_values(tdata, vtbl);
+		// vtbl = &tdata->vtbl;
+		// rc = tdata->src->get_tenant_values(tdata, vtbl);
+
+		rlist = &tdata->row_list;
+		rc = tdata->src->get_tenant_values(tdata, rlist);
+
 		if (rc) {
 			/* TODO: complete this */
 		}
