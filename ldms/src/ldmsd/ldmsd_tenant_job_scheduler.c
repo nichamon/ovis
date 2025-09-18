@@ -321,10 +321,33 @@ static int __init_col_iter(ldmsd_tenant_col_iter_t iter, ldmsd_tenant_col_map_t 
 		}
 	default:
 		if (ldms_type_is_array(col_map->type)) {
-
+			iter->type = LDMSD_TENANT_ITER_T_ARRAY;
+			iter->state.array.curr_idx = 0;
+			iter->state.array.max_len = ldms_metric_array_get_len(set, col_map->mid);
+		} else {
+			iter->type = LDMSD_TENANT_ITER_T_SCALAR;
 		}
 	}
 
+}
+
+static int __advance_col_iter(ldmsd_tenant_col_iter_t iter, ldmsd_tenant_col_map_t col_map, ldms_set_t set)
+{
+	ldms_mval_t mval;
+	enum ldms_value_type next_type;
+
+	mval = ldms_metric_get(set, col_map->mid);
+	switch (col_map->type) {
+	case LDMS_V_LIST:
+		iter->state.list.curr = ldms_list_next(set, mval, &next_type, &iter->state.list.len);
+		if (next_type != iter->state.list.type) {
+			assert(0); /* TODO: Handle this */
+		}
+		break;
+
+	default:
+		break;
+	}
 }
 
 static int __jobset_rows(ldms_set_t set, struct ldmsd_tenant_data_s *tdata,
