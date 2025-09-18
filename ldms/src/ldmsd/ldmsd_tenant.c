@@ -602,7 +602,6 @@ int ldmsd_tenant_values_sample(struct ldmsd_tenant_def_s *tdef, ldms_set_t set, 
 
 		rlist = &tdata->row_list;
 		rc = tdata->src->get_tenant_values(tdata, rlist);
-
 		if (rc) {
 			/* TODO: complete this */
 		}

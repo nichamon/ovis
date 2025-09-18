@@ -54,11 +54,12 @@
 #ifndef __LDMSD_TENANT_H__
 #define __LDMSD_TENANT_H__
 
+#include <pthread.h>
+
 #include "ovis_ref/ref.h"
 #include "ovis_log/ovis_log.h"
 
 #include "ldmsd.h"
-#include "sampler_base.h"
 
 struct ldmsd_tenant_source_s;
 enum ldmsd_tenant_src_type {
@@ -112,10 +113,13 @@ struct ldmsd_tenant_row_table_s {
 
 /* TODO: END -- Remove this */
 
-struct ldmsd_tenant_col_cfg_s {
+typedef struct ldmsd_tenant_col_map_s {
 	int mid;            /* LDMS metric ID in the source set */
+	enum ldms_value_type type;   /* Value type */
 	int rec_mid;        /* Record member ID (-1 if N/A) in the source set */
-};
+	enum ldms_value_type ele_type; /* Element's value type */
+
+} *ldmsd_tenant_col_map_t;
 
 enum ldmsd_tenant_iter_type_e {
 	LDMSD_TENANT_ITER_T_SCALAR,
@@ -125,9 +129,9 @@ enum ldmsd_tenant_iter_type_e {
 	LDMSD_TENANT_ITER_T_MISSING,
 };
 
-struct ldmsd_tenant_col_iter_s {
+typedef struct ldmsd_tenant_col_iter_s {
 	enum ldmsd_tenant_iter_type_e type;
-	struct ldmsd_tenant_col_cfg_s *cfg;
+	ldmsd_tenant_col_map_t *map;
 	ldms_set_t set;
 	uint8_t exhausted;   /* 1 when no more data available */
 	union {
@@ -148,7 +152,7 @@ struct ldmsd_tenant_col_iter_s {
 			ldms_mval_t curr_rec;
 		} rec_array;
 	} state;
-};
+} *ldmsd_tenant_col_iter_t;
 
 struct ldmsd_tenant_row_s {
 	void *data;        /* Raw row data (array of *ldms_mval_t )*/
@@ -209,6 +213,7 @@ struct ldmsd_tenant_source_s {
 	/**< Assign values to src_data and metric_template, the flag in metric_template can be ignored */
 	int (*init_tenant_metric)(const char *attr_value, struct ldmsd_tenant_metric_s *tmet);
 	/**< Runtime value retrieval method, assuming that \c mval was allocated with enough memory */
+	int (*init_source_ctxt)(struct ldmsd_tenant_data_s *tdata); /* This will be called after the metric list is populated and initialized */
 	int (*get_tenant_values)(struct ldmsd_tenant_data_s *tdata, struct ldmsd_tenant_row_table_s *vtbl);
 	void (*cleanup)(void *src_data);        /**< Cleanup source-specific data */
 };
