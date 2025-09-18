@@ -137,6 +137,10 @@ typedef struct ldmsd_tenant_col_iter_s {
 	union {
 		struct { /* single scalar value, no state needed */ } scalar;
 		struct {
+			int curr_idx;
+			int max_len;
+		} array;
+		struct {
 			ldms_mval_t curr; /* Current element*/
 			enum ldms_value_type type; /* element type */
 			size_t len; /* element length */
