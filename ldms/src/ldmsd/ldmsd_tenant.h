@@ -173,6 +173,7 @@ struct ldmsd_tenant_data_s {
 	uint64_t gn;    /* This number is to check if the source needs to update the mval table or not. The source is responsible for genarating this number. */
 	struct ldmsd_tenant_row_table_s vtbl; /**< Metric values table */ /* TODO: We might want to remove this so that we don't need to lock it. */
 	struct ldmsd_tenant_row_list_s row_list; /**< List of rows */
+	void *src_ctxt;        /* Sources-specific context */
 };
 
 #define LDMSD_TENANT_REC_DEF_NAME "tenant_def"
