@@ -269,7 +269,7 @@ static int __resolve_column_src(struct ldmsd_tenant_data_s *tsrc, ldms_set_t set
 				col->mid = -1;
 				continue;
 			}
-			col->type = LDMS_V_RECORD_INST;
+			col->type = LDMS_V_LIST;
 			col->ele_type = tmet->mtempl.type;
 		} else {
 			col->type = tmet->mtempl.type;
@@ -305,8 +305,24 @@ static int __init_col_iter(ldmsd_tenant_col_iter_t iter, ldmsd_tenant_col_map_t 
 			iter->exhausted = 1;
 		}
 		break;
-	default:
+	case LDMS_V_CHAR_ARRAY:
+		/* TODO: handle this */
 		break;
+	case LDMS_V_RECORD_ARRAY:
+		iter->type = LDMSD_TENANT_ITER_T_REC_ARRAY;
+		iter->state.rec_array.array = mval;
+		iter->state.rec_array.max_len = ldms_record_array_len(mval);
+		iter->state.rec_array.curr_idx = 0;
+
+		if (iter->state.rec_array.max_len > 0) {
+			iter->state.rec_array.curr_rec = ldms_record_array_get_inst(mval, 0);
+		} else {
+			iter->exhausted = 1;
+		}
+	default:
+		if (ldms_type_is_array(col_map->type)) {
+
+		}
 	}
 
 }
