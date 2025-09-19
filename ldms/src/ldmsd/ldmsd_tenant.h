@@ -114,15 +114,17 @@ struct ldmsd_tenant_row_table_s {
 /* TODO: END -- Remove this */
 
 typedef struct ldmsd_tenant_col_map_s {
-	int mid;            /* LDMS metric ID in the source set */
-	enum ldms_value_type type;   /* Value type */
-	int rec_mid;        /* Record member ID (-1 if N/A) in the source set */
-	enum ldms_value_type ele_type; /* Element's value type */
+	int mid;                         /* LDMS metric ID in the source set */
+	enum ldms_value_type type;       /* Value type */
+	size_t len;                      /* List length if mid is a list, array len if mid is an array */
+	int rec_mid;                     /* Record member ID (-1 if N/A) in the source set */
+	enum ldms_value_type ele_type;   /* Element's value type */
 
 } *ldmsd_tenant_col_map_t;
 
 enum ldmsd_tenant_iter_type_e {
 	LDMSD_TENANT_ITER_T_SCALAR,
+	LDMSD_TENANT_ITER_T_STRING,
 	LDMSD_TENANT_ITER_T_LIST,
 	LDMSD_TENANT_ITER_T_REC,
 	LDMSD_TENANT_ITER_T_REC_ARRAY,
@@ -136,15 +138,18 @@ typedef struct ldmsd_tenant_col_iter_s {
 	ldms_set_t set;
 	uint8_t exhausted;   /* 1 when no more data available */
 	union {
-		struct { /* single scalar value, no state needed */ } scalar;
+		struct {
+			ldms_mval_t mval;
+		} scalar;
 		struct {
 			int curr_idx;
 			int max_len;
 		} array;
 		struct {
-			ldms_mval_t curr; /* Current element*/
+			ldms_mval_t curr;          /* Current element*/
+			int curr_idx;              /* The index of the current element */
 			enum ldms_value_type type; /* element type */
-			size_t len; /* element length */
+			size_t len;                /* element length */
 		} list;
 		struct {
 			ldms_mval_t rec;
@@ -156,13 +161,18 @@ typedef struct ldmsd_tenant_col_iter_s {
 			ldms_mval_t array;
 			ldms_mval_t curr_rec;
 		} rec_array;
+		struct {
+			ldms_mval_t mval;
+			int len;
+		} string;
 	} state;
+	int card;
 } *ldmsd_tenant_col_iter_t;
 
-struct ldmsd_tenant_row_s {
+typedef struct ldmsd_tenant_row_s {
 	void *data;        /* Raw row data (array of *ldms_mval_t )*/
 	TAILQ_ENTRY(ldmsd_tenant_row_s) ent;
-};
+} *ldmsd_tenant_row_t;
 
 struct ldmsd_tenant_row_list_s {
 	int num_cols;
@@ -173,6 +183,13 @@ struct ldmsd_tenant_row_list_s {
 	int allocated_rows;     /* Number of allocated rows, which >= num_active */
 	TAILQ_HEAD(, ldmsd_tenant_row_s) rows;
 };
+
+#define LDMSD_TENANT_ROW_PTR(_rlist_, _row_, _col_id_) \
+	(((_col_id_) < (_rlist_)->num_cols) ? \
+	((ldms_mval_t)((void *)(_row_)->data + (_rlist_)->col_offsets[_col_id_])) : NULL)
+
+#define LDMSD_TENANT_ROW_PTR_BY_OFFSET(_row_, _offset_) \
+	((ldms_mval_t)((void *)(_row_)->data + col_offset))
 
 struct ldmsd_tenant_data_s {
 	struct ldmsd_tenant_source_s *src;
@@ -219,7 +236,7 @@ struct ldmsd_tenant_source_s {
 	int (*init_tenant_metric)(const char *attr_value, struct ldmsd_tenant_metric_s *tmet);
 	/**< Runtime value retrieval method, assuming that \c mval was allocated with enough memory */
 	int (*init_source_ctxt)(struct ldmsd_tenant_data_s *tdata); /* This will be called after the metric list is populated and initialized */
-	int (*get_tenant_values)(struct ldmsd_tenant_data_s *tdata, struct ldmsd_tenant_row_table_s *vtbl);
+	int (*get_tenant_values)(struct ldmsd_tenant_data_s *tdata, struct ldmsd_tenant_row_list_s *rlist);
 	void (*cleanup)(void *src_data);        /**< Cleanup source-specific data */
 };
 

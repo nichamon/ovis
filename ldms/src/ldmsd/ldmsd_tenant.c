@@ -71,7 +71,7 @@ extern struct ldmsd_tenant_source_s tenant_job_scheduler_source; /* TODO: Implem
 int __na_tenant_metric_init(const char *attr_value, struct ldmsd_tenant_metric_s *tmet);
 void __na_tenant_metric_cleanup(void *src_data);
 int __na_tenant_values_get(struct ldmsd_tenant_data_s *tdata,
-			   struct ldmsd_tenant_row_table_s *vtbl);
+			   struct ldmsd_tenant_row_list_s *rlist);
 struct ldmsd_tenant_source_s tenant_na_source = {
 	.type = LDMSD_TENANT_SRC_NONE,
 	.name = "tenant_src_na",
@@ -115,21 +115,22 @@ void __na_tenant_metric_cleanup(void *src_data)
 }
 
 int __na_tenant_values_get(struct ldmsd_tenant_data_s *tdata,
-			   struct ldmsd_tenant_row_table_s *vtbl)
+			   struct ldmsd_tenant_row_list_s *rlist)
 {
 	int i;
-
-	if (0 < vtbl->active_rows) {
+	struct ldmsd_tenant_row_s *row;
+	if (0 < rlist->active_rows) {
 		/*
 		 * There is always a single row for metrics without source.
 		 * After it has been populated with empty strings, nothing else to do.
 		 */
 		return 0;
 	}
-	for (i = 0; i < vtbl->num_cols; i++) {
-		LDMSD_TENANT_ROWTBL_CELL_PTR(vtbl, 0, i)->v_char = '\0';
+	row = TAILQ_FIRST(&rlist->rows);
+	for (i = 0; i < rlist->num_cols; i++) {
+		LDMSD_TENANT_ROW_PTR(rlist, row, i)->v_char = '\0';
 	}
-	vtbl->active_rows = 1;
+	rlist->active_rows = 1;
 	return 0;
 }
 
@@ -605,7 +606,7 @@ int ldmsd_tenant_values_sample(struct ldmsd_tenant_def_s *tdef, ldms_set_t set, 
 		if (rc) {
 			/* TODO: complete this */
 		}
-		total_tenant_cnt *= vtbl->active_rows;
+		total_tenant_cnt *= rlist->active_rows;
 	}
 
 	for (i = 0; i < total_tenant_cnt; i++) {

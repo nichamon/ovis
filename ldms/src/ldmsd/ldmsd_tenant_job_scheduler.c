@@ -55,6 +55,7 @@ static ldms_metric_template_t __find_job_metric(const char *s)
 		}
 		job_metric++;
 	}
+	return NULL;
 }
 
 static ldms_metric_template_t __find_job_task_metric(const char *s)
@@ -110,7 +111,7 @@ static int job_scheduler_init_tenant_metric(const char *value,
 	tmet->mtempl.unit = strdup((job_met->unit?job_met->unit:""));
 	if (!tmet->mtempl.unit) {
 		ovis_log(NULL, OVIS_LCRIT, "Memory allocation failure.\n");
-		free(tmet->mtempl.name);
+		free((char*)tmet->mtempl.name);
 		return ENOMEM;
 	}
 	return 0;
@@ -122,61 +123,10 @@ static int job_scheduler_init_tenant_metric(const char *value,
 	return ENOENT;
 }
 
-static int init_source_ctxt(struct ldmsd_tenant_data_s *tdata)
-{
-	int i;
-	struct ldmsd_tenant_metric_s *tmet;
-	struct tenant_job_scheduler_s *ctxt;
-
-	ctxt = malloc(sizeof(*ctxt));
-	if (!ctxt) {
-		goto enomem;
-	}
-	/*
-	 * TODO: It would be great if we can access all available jobmgr schema here so we can initialize cols_cfg for each schema
-	 */
-	ctxt->schema = "jobmgr_slurm";
-	ctxt->col_maps = malloc(sizeof(*ctxt->col_maps) * tdata->mcount);
-	if (!ctxt->col_maps) {
-		free(ctxt);
-		goto enomem;
-	}
-
-	for (i = 0, tmet = TAILQ_FIRST(&tdata->mlist); (i < tdata->mcount) && tmet;
-		i++, tmet = TAILQ_NEXT(tmet, ent)) {
-
-		}
-
-
-
-
-	return 0;
- enomem:
-	ovis_log(NULL, OVIS_LCRIT, "Memory allocation failure.\n");
-	return ENOMEM;
-}
-
 static void job_scheduler_cleanup(void *src_data)
 {
 	/* TODO: implement this */
 	assert(0 == ENOSYS);
-}
-
-static int __num_rows_get(struct ldmsd_tenant_data_s *tsrc)
-{
-	/* Calculate the number of records */
-	/* TODO: complete this */
-
-	ldms_set_t jset;
-	int num_rows = 0;
-	struct ldmsd_tenant_metric_s *tmet;
-	struct tenant_job_scheduler_s *ctxt;
-
-	TAILQ_FOREACH(tmet, &tsrc->mlist, ent) {
-
-	}
-
-	return 2;
 }
 
 // /* TODO: Update this when receive the updated job_scehduler APIs from Narate */
@@ -223,16 +173,15 @@ static int __num_rows_get(struct ldmsd_tenant_data_s *tsrc)
 // 	return 0;
 // }
 
-static int __resolve_column_src(struct ldmsd_tenant_data_s *tsrc, ldms_set_t set)
+static int __resolve_column_src(struct ldmsd_tenant_data_s *tdata, ldms_set_t set)
 {
 	int i;
 	struct tenant_job_scheduler_s *ctxt;
-	struct ldmsd_tenant_metric_list *mlist = &tsrc->mlist;
 	struct ldmsd_tenant_metric_s *tmet;
 	ldmsd_tenant_col_map_t col;
-	ldms_mval_t rec;
+	ldms_mval_t mval, rec;
 
-	if (tsrc->src_ctxt) {
+	if (tdata->src_ctxt) {
 		/* The column maps have been resolved. Nothing to do. */
 		return 0;
 	}
@@ -247,15 +196,15 @@ static int __resolve_column_src(struct ldmsd_tenant_data_s *tsrc, ldms_set_t set
 		goto enomem;
 	}
 
-	ctxt->col_maps = malloc(sizeof(*ctxt->col_maps) * tsrc->mcount);
+	ctxt->col_maps = malloc(sizeof(*ctxt->col_maps) * tdata->mcount);
 	if (!ctxt->col_maps) {
-		free(ctxt->schema);
+		free((char *)ctxt->schema);
 		free(ctxt);
 		goto enomem;
 	}
 
-	for (i = 0, tmet = TAILQ_FIRST(&tsrc->mlist); (i < tsrc->mcount) && tmet;
-				i < tsrc->mcount, tmet = TAILQ_NEXT(tmet, ent)) {
+	for (i = 0, tmet = TAILQ_FIRST(&tdata->mlist); (i < tdata->mcount) && tmet;
+				i++, tmet = TAILQ_NEXT(tmet, ent)) {
 		col = &ctxt->col_maps[i];
 		col->rec_mid = -1;
 		col->mid = ldms_metric_by_name(set, tmet->mtempl.name);
@@ -272,105 +221,204 @@ static int __resolve_column_src(struct ldmsd_tenant_data_s *tsrc, ldms_set_t set
 			col->type = LDMS_V_LIST;
 			col->ele_type = tmet->mtempl.type;
 		} else {
+			mval = ldms_metric_get(set, col->mid);
 			col->type = tmet->mtempl.type;
+			if (LDMS_V_LIST == col->type) {
+				col->len = ldms_list_len(set, mval);
+			} else if (ldms_type_is_array(col->type)) {
+				col->len = ldms_metric_array_get_len(set, col->mid);
+			}
 		}
 	}
-	tsrc->src_ctxt = ctxt;
+	tdata->src_ctxt = ctxt;
 	return 0;
  enomem:
 	ovis_log(NULL, OVIS_LCRIT, "Memory allocation failure.\n");
 	return ENOMEM;
 }
 
-static int __init_col_iter(ldmsd_tenant_col_iter_t iter, ldmsd_tenant_col_map_t col_map, ldms_set_t set)
+static int __init_col_iters(ldms_set_t set, ldmsd_tenant_col_map_t cols,
+			  ldmsd_tenant_col_iter_t iters, int num_cols)
 {
+	int i;
+	ldmsd_tenant_col_map_t col;
+	ldmsd_tenant_col_iter_t iter;
+	enum ldms_value_type type;
 	ldms_mval_t mval;
 
-	iter->map = col_map;
-	iter->set = set;
-	iter->exhausted = 0;
+	for (i = 0; i < num_cols; i++) {
+		col = &cols[i];
+		iter = &iters[i];
 
-	if (col_map->mid < 0) {
-		iter->type = LDMSD_TENANT_ITER_T_MISSING;
-		return 0;
-	}
-
-	mval = ldms_metric_get(set, col_map->mid);
-
-	switch (col_map->type) {
-	case LDMS_V_LIST:
-		iter->type = LDMSD_TENANT_ITER_T_LIST;
-		iter->state.list.curr = ldms_list_first(set, mval, &iter->state.list.type, &iter->state.list.len);
-		if (!iter->state.list.curr) {
-			iter->exhausted = 1;
+		if (col->mid < 0) {
+			iter->type = LDMSD_TENANT_ITER_T_MISSING;
+			iter->card = 1;
 		}
-		break;
-	case LDMS_V_CHAR_ARRAY:
-		/* TODO: handle this */
-		break;
-	case LDMS_V_RECORD_ARRAY:
-		iter->type = LDMSD_TENANT_ITER_T_REC_ARRAY;
-		iter->state.rec_array.array = mval;
-		iter->state.rec_array.max_len = ldms_record_array_len(mval);
-		iter->state.rec_array.curr_idx = 0;
 
-		if (iter->state.rec_array.max_len > 0) {
-			iter->state.rec_array.curr_rec = ldms_record_array_get_inst(mval, 0);
-		} else {
-			iter->exhausted = 1;
-		}
-	default:
-		if (ldms_type_is_array(col_map->type)) {
-			iter->type = LDMSD_TENANT_ITER_T_ARRAY;
-			iter->state.array.curr_idx = 0;
-			iter->state.array.max_len = ldms_metric_array_get_len(set, col_map->mid);
-		} else {
+		type = ldms_metric_type_get(set, col->mid);
+		mval = ldms_metric_get(set, col->mid);
+		switch (type) {
+		case LDMS_V_LIST:
+			iter->state.list.curr = ldms_list_first(set, mval, &iter->state.list.type, &iter->state.list.len);
+			if (LDMS_V_RECORD_INST != iter->state.list.type) {
+				ovis_log(NULL, OVIS_LERROR,
+					"List '%s' contains non-record elements of type '%s'\n",
+					ldms_metric_name_get(set, col->mid),
+					ldms_metric_type_to_str(iter->state.list.type));
+				/* TODO: cleanup necessary things and return error */
+				return ENOTSUP;
+			}
+			iter->state.list.curr_idx = 0;
+			iter->card = ldms_list_len(set, mval);
+			if (0 == iter->card) {
+				iter->type = LDMSD_TENANT_ITER_T_MISSING;
+				iter->card = 1;
+				break;
+			}
+			break;
+		case LDMS_V_CHAR:
+		case LDMS_V_S8:
+		case LDMS_V_U8:
+		case LDMS_V_S16:
+		case LDMS_V_U16:
+		case LDMS_V_S32:
+		case LDMS_V_U32:
+		case LDMS_V_S64:
+		case LDMS_V_U64:
 			iter->type = LDMSD_TENANT_ITER_T_SCALAR;
+			iter->card = 1;
+			break;
+		case LDMS_V_CHAR_ARRAY:
+			iter->type = LDMSD_TENANT_ITER_T_STRING;
+			iter->card = 1;
+			iter->state.string.len = ldms_metric_array_get_len(set, col->mid);
+			break;
+		case LDMS_V_S8_ARRAY:
+		case LDMS_V_U8_ARRAY:
+		case LDMS_V_S16_ARRAY:
+		case LDMS_V_U16_ARRAY:
+		case LDMS_V_S32_ARRAY:
+		case LDMS_V_U32_ARRAY:
+		case LDMS_V_S64_ARRAY:
+		case LDMS_V_U64_ARRAY:
+			iter->type = LDMSD_TENANT_ITER_T_ARRAY;
+			iter->card = ldms_metric_array_get_len(set, col->mid);
+			iter->state.array.curr_idx = 0;
+		default:
+			break;
 		}
 	}
-
+	return 0;
 }
 
-static int __advance_col_iter(ldmsd_tenant_col_iter_t iter, ldmsd_tenant_col_map_t col_map, ldms_set_t set)
+static int __get_value_at_index(ldms_set_t set, ldmsd_tenant_col_map_t col_map,
+				ldmsd_tenant_col_iter_t iter, int index,
+				ldmsd_tenant_row_t row, size_t col_offset)
 {
-	ldms_mval_t mval;
-	enum ldms_value_type next_type;
+	int i;
+	ldms_mval_t output_mval = LDMSD_TENANT_ROW_PTR_BY_OFFSET(row, col_offset);
 
-	mval = ldms_metric_get(set, col_map->mid);
-	switch (col_map->type) {
-	case LDMS_V_LIST:
-		iter->state.list.curr = ldms_list_next(set, mval, &next_type, &iter->state.list.len);
-		if (next_type != iter->state.list.type) {
-			assert(0); /* TODO: Handle this */
-		}
+	switch (iter->type) {
+	case LDMSD_TENANT_ITER_T_SCALAR:
+		memcpy(output_mval, iter->state.scalar.mval,
+			ldms_metric_value_size_get(col_map->type, col_map->len));
 		break;
-
+	case LDMSD_TENANT_ITER_T_STRING:
+		memcpy(output_mval, iter->state.string.mval,
+			ldms_metric_value_size_get(LDMS_V_CHAR, iter->state.string.len));
+		break;
+	case LDMSD_TENANT_ITER_T_LIST:
+		ldms_mval_t le = ldms_metric_get(set, col_map->mid);
+		enum ldms_value_type le_type;
+		size_t le_len;
+		if (index > iter->state.list.curr_idx) {
+			for (i = iter->state.list.curr_idx; i <= index; i++) {
+				iter->state.list.curr = ldms_list_next(set, le, &le_type, &le_len);
+			}
+			iter->state.list.curr_idx = i;
+		} else if (index < iter->state.list.curr_idx) {
+			iter->state.list.curr = ldms_list_first(set, le, &le_type, &le_len);
+			i = 0;
+			while (i < index) {
+				i++;
+				iter->state.list.curr = ldms_list_next(set, le, &le_type, &le_len);
+			}
+		}
+		iter->state.list.type = le_type;
+		iter->state.list.len = le_len;
+		memcpy(output_mval, iter->state.list.curr, iter->state.list.len);
+		break;
+	case LDMSD_TENANT_ITER_T_ARRAY:
+		assert(ENOTSUP);
+		break;
 	default:
+		assert(ENOTSUP);
 		break;
 	}
+	return 0;
 }
 
 static int __jobset_rows(ldms_set_t set, struct ldmsd_tenant_data_s *tdata,
 					 struct tenant_job_scheduler_s *ctxt,
 					 struct ldmsd_tenant_row_list_s *rlist)
 {
-	int i;
-	struct ldmsd_tenant_col_iter_s iter[tdata->mcount];
-	for (i = 0; i < tdata->mcount; i++) {
+	int i, j;
+	int total_rows = 1;
+	int row_idx;
+	struct ldmsd_tenant_col_iter_s iters[tdata->mcount];
+	struct ldmsd_tenant_row_s *row;
+	int temp, idx;
 
+	/* Get cardinality of each column */
+	__init_col_iters(set, ctxt->col_maps, iters, tdata->mcount);
+
+	for (i = 0; i < tdata->mcount; i++) {
+		total_rows *= iters[i].card;
 	}
 
+	assert(total_rows); /* There must be at least 1 row. */
+
+	/* Generate all Cartesian products */
+	row_idx = 0;
+	row = TAILQ_FIRST(&rlist->rows);
+	while (row_idx < total_rows) {
+		if (!row) {
+			/* Allocate one more row */
+			row = calloc(1, rlist->row_size);
+			if (!row) {
+				goto enomem;
+			}
+			row->data = malloc(rlist->row_size);
+			if (!row->data) {
+				free(row);
+				goto enomem;
+			}
+			TAILQ_INSERT_TAIL(&rlist->rows, row, ent);
+			rlist->allocated_rows++;
+		}
+
+		temp = row_idx;
+		for (j = tdata->mcount - 1; j >= 0; j--) {
+			idx = temp % iters[j].card;
+			temp = temp / iters[j].card;
+			/* Extract value at this index */
+			__get_value_at_index(set, &ctxt->col_maps[j], &iters[j],
+					     idx, row,
+					     tdata->row_list.col_offsets[j]);
+		}
+		rlist->active_rows++;
+		row = TAILQ_NEXT(row, ent);
+	}
 	return 0;
+ enomem:
+	ovis_log(NULL, OVIS_LCRIT, "Memory allocation failure.\n");
+	return ENOMEM;
 }
 
 /* TODO: Update this when receive the updated job_scehduler APIs from Narate */
 static int job_scheduler_get_tenant_values(struct ldmsd_tenant_data_s *tdata,
 					   struct ldmsd_tenant_row_list_s *rlist)
 {
-	int i, j, k, rc;
-	int num_rows;
-	ldms_mval_t v;
-	struct ldmsd_tenant_metric_s *tmet;
 	struct tenant_job_scheduler_s *ctxt = tdata->src_ctxt;
 	ldms_set_t job_set = ldmsd_jobset_first();
 
@@ -380,14 +428,20 @@ static int job_scheduler_get_tenant_values(struct ldmsd_tenant_data_s *tdata,
 		return 0;
 	}
 
-	assert(ctxt); /* ctxt was initialized at the init time. */
+	if (!ctxt) {
+		__resolve_column_src(tdata, job_set);
+	}
+
 	if (0 == strcmp(ctxt->schema, ldms_set_schema_name_get(job_set))) {
 		assert(0 == ENOSYS); /* TODO: Extend this to support multiple jobmgr existence */
 	}
 
+	rlist->active_rows = 0; /* Reset the number of valid rows */
 
-
-
+	while (job_set) {
+		__jobset_rows(job_set, tdata, ctxt, &tdata->row_list);
+		job_set = ldmsd_jobset_next(job_set);
+	}
 
 	return 0;
 }
