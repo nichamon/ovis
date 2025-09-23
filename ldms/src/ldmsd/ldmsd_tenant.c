@@ -128,7 +128,7 @@ int __na_tenant_values_get(struct ldmsd_tenant_data_s *tdata,
 	}
 	row = TAILQ_FIRST(&rlist->rows);
 	for (i = 0; i < rlist->num_cols; i++) {
-		LDMSD_TENANT_ROW_PTR(rlist, row, i)->v_char = '\0';
+		LDMSD_TENANT_ROW_CELL_PTR(rlist, row, i)->v_char = '\0';
 	}
 	rlist->active_rows = 1;
 	return 0;
@@ -330,6 +330,15 @@ static int __tenant_data_init(struct ldmsd_tenant_def_s *tdef, struct ldmsd_tena
 	}
 	rlist->allocated_rows = 1;
 	rlist->active_rows = 0;
+	rlist->row_array = malloc(rlist->allocated_rows * sizeof(ldmsd_tenant_row_t));
+	if (!rlist->row_array) {
+		free(rlist->col_sizes);
+		free(rlist->col_offsets);
+		free(row);
+		goto enomem;
+	}
+	TAILQ_INSERT_TAIL(&rlist->rows, row, ent);
+	rlist->row_array[0] = row;
 
 	return 0;
  enomem:
@@ -563,6 +572,9 @@ static void __mval_copy(ldms_mval_t src, ldms_mval_t dst, enum ldms_value_type t
 }
 
 
+/*
+ * **************** !!!!!!!! tdata->mcount MUST be determined before calling this function
+ */
 int ldmsd_tenant_values_sample(struct ldmsd_tenant_def_s *tdef, ldms_set_t set, int tenant_rec_mid, int tenants_mid)
 {
 	int i, j, rc;
@@ -572,7 +584,7 @@ int ldmsd_tenant_values_sample(struct ldmsd_tenant_def_s *tdef, ldms_set_t set, 
 	struct ldmsd_tenant_data_s *tdata;
 	struct ldmsd_tenant_metric_s *tmet;
 	int tmp_idx;
-	struct ldmsd_tenant_row_table_s *vtbl;
+	// struct ldmsd_tenant_row_table_s *vtbl;
 	struct ldmsd_tenant_row_list_s *rlist;
 	const char *set_name = ldms_set_instance_name_get(set);
 
@@ -626,9 +638,9 @@ int ldmsd_tenant_values_sample(struct ldmsd_tenant_def_s *tdef, ldms_set_t set, 
 				/* No metrics from this source, skip */
 				continue;
 			}
-			vtbl = &tdata->vtbl;
-			src_idx[src_type] = tmp_idx % vtbl->active_rows;
-			tmp_idx = tmp_idx / vtbl->active_rows;
+			rlist = &tdata->row_list;
+			src_idx[src_type] = tmp_idx % rlist->active_rows;
+			tmp_idx = tmp_idx / rlist->active_rows;
 		}
 
 		/* Add a tenant to the tenant list */
@@ -638,12 +650,13 @@ int ldmsd_tenant_values_sample(struct ldmsd_tenant_def_s *tdef, ldms_set_t set, 
 				/* No metrics from this source, skip */
 				continue;
 			}
-			vtbl = &tdata->vtbl;
+			rlist = &tdata->row_list;
 			/* The number of metrics in tsrc->mlist must be equal to  */
 			for (j = 0, tmet = TAILQ_FIRST(&tdata->mlist); tmet;
 					j++, tmet = TAILQ_NEXT(tmet, ent)) {
 				ldms_mval_t dst = ldms_record_metric_get(tenant, tmet->__rent_id);
-				ldms_mval_t src = LDMSD_TENANT_ROWTBL_CELL_PTR(vtbl, src_idx[src_type], j);
+				ldms_mval_t src = LDMSD_TENANT_ROWLIST_CELL_PTR(rlist, src_idx[src_type], j);
+				// ldms_mval_t src = LDMSD_TENANT_ROWTBL_CELL_PTR(vtbl, src_idx[src_type], j);
 
 				__mval_copy(src, dst, tmet->mtempl.type, tmet->mtempl.len);
 			}

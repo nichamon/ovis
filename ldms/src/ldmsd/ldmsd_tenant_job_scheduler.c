@@ -318,7 +318,7 @@ static int __get_value_at_index(ldms_set_t set, ldmsd_tenant_col_map_t col_map,
 				ldmsd_tenant_row_t row, size_t col_offset)
 {
 	int i;
-	ldms_mval_t output_mval = LDMSD_TENANT_ROW_PTR_BY_OFFSET(row, col_offset);
+	ldms_mval_t output_mval = LDMSD_TENANT_ROW_CELL_PTR_AT_OFFSET(row, col_offset);
 
 	switch (iter->type) {
 	case LDMSD_TENANT_ITER_T_SCALAR:
@@ -395,6 +395,15 @@ static int __jobset_rows(ldms_set_t set, struct ldmsd_tenant_data_s *tdata,
 				free(row);
 				goto enomem;
 			}
+			ldmsd_tenant_row_t *new_array = realloc(rlist->row_array,
+								(rlist->allocated_rows+1) * sizeof(ldmsd_tenant_row_t));
+			if (!new_array) {
+				free(row->data);
+				free(row);
+				goto enomem;
+			}
+			rlist->row_array = new_array;
+			rlist->row_array[rlist->allocated_rows] = row;
 			TAILQ_INSERT_TAIL(&rlist->rows, row, ent);
 			rlist->allocated_rows++;
 		}
@@ -436,7 +445,7 @@ static int job_scheduler_get_tenant_values(struct ldmsd_tenant_data_s *tdata,
 		ctxt = tdata->src_ctxt;
 	}
 
-	if (0 == strcmp(ctxt->schema, ldms_set_schema_name_get(job_set))) {
+	if (0 != strcmp(ctxt->schema, ldms_set_schema_name_get(job_set))) {
 		assert(0 == ENOSYS); /* TODO: Extend this to support multiple jobmgr existence */
 	}
 

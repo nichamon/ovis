@@ -182,13 +182,18 @@ struct ldmsd_tenant_row_list_s {
 	int active_rows;        /* Number of rows containing valid values */
 	int allocated_rows;     /* Number of allocated rows, which >= num_active */
 	TAILQ_HEAD(, ldmsd_tenant_row_s) rows;
+	ldmsd_tenant_row_t *row_array;   /*  Array of row pointers for O(1) access */
 };
 
-#define LDMSD_TENANT_ROW_PTR(_rlist_, _row_, _col_id_) \
+#define LDMSD_TENANT_ROWLIST_CELL_PTR(_rlist_, _row_idx_, _col_id_) \
+    (((_row_idx_) < (_rlist_)->active_rows && (_col_id_) < (_rlist_)->num_cols) ? \
+     ((ldms_mval_t)((void *)(_rlist_)->row_array[_row_idx_]->data + (_rlist_)->col_offsets[_col_id_])) : NULL)
+
+#define LDMSD_TENANT_ROW_CELL_PTR(_rlist_, _row_, _col_id_) \
 	(((_col_id_) < (_rlist_)->num_cols) ? \
 	((ldms_mval_t)((void *)(_row_)->data + (_rlist_)->col_offsets[_col_id_])) : NULL)
 
-#define LDMSD_TENANT_ROW_PTR_BY_OFFSET(_row_, _offset_) \
+#define LDMSD_TENANT_ROW_CELL_PTR_AT_OFFSET(_row_, _offset_) \
 	((ldms_mval_t)((void *)(_row_)->data + col_offset))
 
 struct ldmsd_tenant_data_s {
