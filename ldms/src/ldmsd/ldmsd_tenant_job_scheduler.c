@@ -173,18 +173,15 @@ static void job_scheduler_cleanup(void *src_data)
 // 	return 0;
 // }
 
-static int __resolve_column_src(struct ldmsd_tenant_data_s *tdata, ldms_set_t set)
+static struct tenant_job_scheduler_s *__resolve_column_src(struct ldmsd_tenant_data_s *tdata, ldms_set_t set)
 {
-	int i;
+	int i, rc;
 	struct tenant_job_scheduler_s *ctxt;
 	struct ldmsd_tenant_metric_s *tmet;
 	ldmsd_tenant_col_map_t col;
 	ldms_mval_t mval, rec;
-
-	if (tdata->src_ctxt) {
-		/* The column maps have been resolved. Nothing to do. */
-		return 0;
-	}
+	enum ldms_value_type vtype;
+	size_t len;
 
 	ctxt = malloc(sizeof(*ctxt));
 	if (!ctxt) {
@@ -211,14 +208,25 @@ static int __resolve_column_src(struct ldmsd_tenant_data_s *tdata, ldms_set_t se
 		if (col->mid < 0) {
 			col->mid = ldms_metric_by_name(set, common_jobset_metrics[LDMSD_JOBSET_MID_TASK_LIST].name);
 			assert(col->mid >= 0); /* the list of tasks must exist in any jobmgr sets. */
-			rec = ldms_metric_get(set, col->mid);
+			mval = ldms_metric_get(set, col->mid);
+			rec = ldms_list_first(set, mval, &vtype, &len);
+			if (vtype != LDMS_V_RECORD_INST) {
+				ovis_log(NULL, OVIS_LERROR,
+					"Cannot extract tenant values from job set '%s' " \
+					"due to unexpected entry type of list '%s'\n",
+					ldms_set_instance_name_get(set),
+					common_jobset_metrics[LDMSD_JOBSET_MID_TASK_LIST].name);
+				rc = EINTR;
+				goto err;
+			}
 			col->rec_mid = ldms_record_metric_find(rec, tmet->mtempl.name);
 			if (col->rec_mid < 0) {
 				/* Can't find the metric. Mark as missing. */
 				col->mid = -1;
 				continue;
 			}
-			col->type = LDMS_V_LIST;
+			vtype = ldms_record_metric_type_get(rec, col->rec_mid, &col->len);
+			col->type = LDMS_V_LIST; /* This is the first level metric type */
 			col->ele_type = tmet->mtempl.type;
 		} else {
 			mval = ldms_metric_get(set, col->mid);
@@ -227,14 +235,19 @@ static int __resolve_column_src(struct ldmsd_tenant_data_s *tdata, ldms_set_t se
 				col->len = ldms_list_len(set, mval);
 			} else if (ldms_type_is_array(col->type)) {
 				col->len = ldms_metric_array_get_len(set, col->mid);
+			} else {
+				col->len = 1;
 			}
 		}
 	}
-	tdata->src_ctxt = ctxt;
-	return 0;
+	return ctxt;
+ err:
+	errno = rc;
+	return NULL;
  enomem:
 	ovis_log(NULL, OVIS_LCRIT, "Memory allocation failure.\n");
-	return ENOMEM;
+	errno = ENOMEM;
+	return NULL;
 }
 
 static int __init_col_iters(ldms_set_t set, ldmsd_tenant_col_map_t cols,
@@ -259,6 +272,13 @@ static int __init_col_iters(ldms_set_t set, ldmsd_tenant_col_map_t cols,
 		mval = ldms_metric_get(set, col->mid);
 		switch (type) {
 		case LDMS_V_LIST:
+			iter->type = LDMSD_TENANT_ITER_T_LIST;
+			iter->card = ldms_list_len(set, mval);
+			if (0 == iter->card) {
+				iter->type = LDMSD_TENANT_ITER_T_MISSING;
+				iter->card = 1;
+				break;
+			}
 			iter->state.list.curr = ldms_list_first(set, mval, &iter->state.list.type, &iter->state.list.len);
 			if (LDMS_V_RECORD_INST != iter->state.list.type) {
 				ovis_log(NULL, OVIS_LERROR,
@@ -269,12 +289,6 @@ static int __init_col_iters(ldms_set_t set, ldmsd_tenant_col_map_t cols,
 				return ENOTSUP;
 			}
 			iter->state.list.curr_idx = 0;
-			iter->card = ldms_list_len(set, mval);
-			if (0 == iter->card) {
-				iter->type = LDMSD_TENANT_ITER_T_MISSING;
-				iter->card = 1;
-				break;
-			}
 			break;
 		case LDMS_V_CHAR:
 		case LDMS_V_S8:
@@ -319,6 +333,7 @@ static int __get_value_at_index(ldms_set_t set, ldmsd_tenant_col_map_t col_map,
 {
 	int i;
 	ldms_mval_t output_mval = LDMSD_TENANT_ROW_CELL_PTR_AT_OFFSET(row, col_offset);
+	ldms_mval_t src_mval;
 
 	switch (iter->type) {
 	case LDMSD_TENANT_ITER_T_SCALAR:
@@ -337,7 +352,6 @@ static int __get_value_at_index(ldms_set_t set, ldmsd_tenant_col_map_t col_map,
 			for (i = iter->state.list.curr_idx; i <= index; i++) {
 				iter->state.list.curr = ldms_list_next(set, le, &le_type, &le_len);
 			}
-			iter->state.list.curr_idx = i;
 		} else if (index < iter->state.list.curr_idx) {
 			iter->state.list.curr = ldms_list_first(set, le, &le_type, &le_len);
 			i = 0;
@@ -345,10 +359,23 @@ static int __get_value_at_index(ldms_set_t set, ldmsd_tenant_col_map_t col_map,
 				i++;
 				iter->state.list.curr = ldms_list_next(set, le, &le_type, &le_len);
 			}
+		} else {
+			/* Get the element type and length */
+			ldms_list_first(set, le, &le_type, &le_len);
 		}
 		iter->state.list.type = le_type;
 		iter->state.list.len = le_len;
-		memcpy(output_mval, iter->state.list.curr, iter->state.list.len);
+		iter->state.list.curr_idx = index;
+		if ((le_type == LDMS_V_RECORD_INST) && (col_map->rec_mid)) {
+			src_mval = ldms_record_metric_get(iter->state.list.curr, col_map->rec_mid);
+			memcpy(output_mval, src_mval, ldms_metric_value_size_get(col_map->ele_type, col_map->len));
+		} else if (ldms_type_is_array(le_type)) {
+			/* TODO: Implement this to support a list of arrays */
+			assert(0 == ENOTSUP);
+		} else {
+			memcpy(output_mval, iter->state.list.curr, ldms_metric_value_size_get(le_type, col_map->len));
+		}
+
 		break;
 	case LDMSD_TENANT_ITER_T_ARRAY:
 		assert(ENOTSUP);
@@ -421,12 +448,22 @@ static int __jobset_rows(ldms_set_t set, struct ldmsd_tenant_data_s *tdata,
 	return ENOMEM;
 }
 
+static int is_job_end(ldms_set_t job_set)
+{
+	int mid = ldms_metric_by_name(job_set, "job_end");
+	ldms_mval_t end = ldms_metric_get(job_set, mid);
+	if (0 != end->v_ts.sec)
+		return 1;
+	return 0;
+}
+
 /* TODO: Update this when receive the updated job_scehduler APIs from Narate */
 static int job_scheduler_get_tenant_values(struct ldmsd_tenant_data_s *tdata,
 					   struct ldmsd_tenant_row_list_s *rlist)
 {
 	struct tenant_job_scheduler_s *ctxt = tdata->src_ctxt;
 	ldms_set_t job_set = ldmsd_jobset_first();
+	rlist->active_rows = 0;
 
 	if (!job_set) {
 		/* No job set fill all column as NA. */
@@ -435,8 +472,12 @@ static int job_scheduler_get_tenant_values(struct ldmsd_tenant_data_s *tdata,
 	}
 
 	if (!ctxt) {
-		__resolve_column_src(tdata, job_set);
-		ctxt = tdata->src_ctxt;
+		ctxt = tdata->src_ctxt = __resolve_column_src(tdata, job_set);
+		if (!ctxt) {
+			/* TODO: Fix this log message */
+			ovis_log(NULL, OVIS_LERROR, "Failed to initialize a tenant.\n");
+			return EINTR;
+		}
 	}
 
 	if (0 != strcmp(ctxt->schema, ldms_set_schema_name_get(job_set))) {
@@ -446,7 +487,9 @@ static int job_scheduler_get_tenant_values(struct ldmsd_tenant_data_s *tdata,
 	rlist->active_rows = 0; /* Reset the number of valid rows */
 
 	while (job_set) {
-		__jobset_rows(job_set, tdata, ctxt, &tdata->row_list);
+		if (!is_job_end(job_set)) {
+			__jobset_rows(job_set, tdata, ctxt, &tdata->row_list);
+		}
 		job_set = ldmsd_jobset_next(job_set);
 	}
 
