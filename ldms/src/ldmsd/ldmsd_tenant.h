@@ -170,11 +170,11 @@ typedef struct ldmsd_tenant_col_iter_s {
 } *ldmsd_tenant_col_iter_t;
 
 typedef struct ldmsd_tenant_row_s {
-	void *data;        /* Raw row data (array of *ldms_mval_t )*/
 	TAILQ_ENTRY(ldmsd_tenant_row_s) ent;
+	char data[OVIS_FLEX];        /* Raw row data (array of *ldms_mval_t )*/
 } *ldmsd_tenant_row_t;
 
-struct ldmsd_tenant_row_list_s {
+typedef struct ldmsd_tenant_row_list_s {
 	int num_cols;
 	size_t row_size;
 	size_t *col_offsets;
@@ -183,7 +183,7 @@ struct ldmsd_tenant_row_list_s {
 	int allocated_rows;     /* Number of allocated rows, which >= num_active */
 	TAILQ_HEAD(, ldmsd_tenant_row_s) rows;
 	ldmsd_tenant_row_t *row_array;   /*  Array of row pointers for O(1) access */
-};
+} *ldmsd_tenant_row_list_t;
 
 #define LDMSD_TENANT_ROWLIST_CELL_PTR(_rlist_, _row_idx_, _col_id_) \
     (((_row_idx_) < (_rlist_)->active_rows && (_col_id_) < (_rlist_)->num_cols) ? \
@@ -201,7 +201,7 @@ struct ldmsd_tenant_data_s {
 	size_t total_mem;	/* Summation of the memory of each metric ldms_mval_t */
 	int mcount;		/* Number of metrics */
 	struct ldmsd_tenant_metric_list mlist;
-	uint64_t gn;    /* This number is to check if the source needs to update the mval table or not. The source is responsible for genarating this number. */
+	// uint64_t gn;    /* This number is to check if the source needs to update the mval table or not. The source is responsible for genarating this number. */
 	struct ldmsd_tenant_row_table_s vtbl; /**< Metric values table */ /* TODO: We might want to remove this so that we don't need to lock it. */
 	struct ldmsd_tenant_row_list_s row_list; /**< List of rows */
 	void *src_ctxt;        /* Sources-specific context */
@@ -264,7 +264,7 @@ struct ldmsd_tenant_source_s {
  *
  * \return a handle of tenant definition. errno is set on failure.
  */
-struct ldmsd_tenant_def_s *ldmsd_tenant_def_create(const char *name, struct attr_value_list *av_list);
+struct ldmsd_tenant_def_s *ldmsd_tenant_def_create(const char *name, struct ldmsd_str_list *str_list);
 
 /**
  * \brief Call when the tenant definition should not be used anymore

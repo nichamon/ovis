@@ -227,61 +227,65 @@ static int __tenant_data_init(struct ldmsd_tenant_def_s *tdef, struct ldmsd_tena
 	size_t offset;
 	struct ldmsd_tenant_metric_s *tmet;
 
-	tdata->gn = 0;
-
-	/* TODO: start row table */
-	struct ldmsd_tenant_row_table_s *tbl = &(tdata->vtbl);
-
-
-	tbl->num_cols = tdata->mcount;
-
-	tbl->col_offsets = malloc(tbl->num_cols * sizeof(size_t));
-	tbl->col_sizes = malloc(tbl->num_cols * sizeof(size_t));
-	tbl->rows = malloc(sizeof(void *));
-	if (!tbl->col_offsets || !tbl->col_sizes || !tbl->rows) {
-		goto enomem;
+	// tdata->gn = 0;
+	if (0 == tdata->mcount) {
+		/* No metric from this source */
+		return 0;
 	}
 
-	offset = 0;
-	i = 0;
-	tmet = TAILQ_FIRST(&tdata->mlist);
-	while (tmet) {
-		tmet->__rent_id = ldms_record_metric_add(tdef->rec_def,
-							 tmet->mtempl.name,
-							 tmet->mtempl.unit,
-							 tmet->mtempl.type,
-							 tmet->mtempl.len);
-		if (tmet->__rent_id < 0) {
-			rc = -tmet->__rent_id;
-			ovis_log(config_log, OVIS_LERROR,
-				"Cannot create tenant definition '%s' because " \
-				"ldmsd failed to create the record definition " \
-				"with error %d.\n", tdef->name, rc);
-			return rc;
-		}
+	// /* TODO: start row table */
+	// struct ldmsd_tenant_row_table_s *tbl = &(tdata->vtbl);
 
-		tbl->col_sizes[i] = ldms_metric_value_size_get(tmet->mtempl.type, tmet->mtempl.len);
-		tbl->col_offsets[i] = offset;
-		offset += tbl->col_sizes[i];
-		i++;
-		tmet = TAILQ_NEXT(tmet, ent);
-	}
-	assert((i == tdata->mcount) && !tmet); /* If i and tmet must be aligned. */
 
-	tbl->row_size = offset;
+	// tbl->num_cols = tdata->mcount;
 
-	/* Allocate memory of the first row */
-	tbl->rows[0] = calloc(1, tbl->row_size);
-	if (!tbl->rows[0]) {
-		free(tbl->rows);
-		free(tbl->col_sizes);
-		free(tbl->col_offsets);
-		goto enomem;
-	}
-	tbl->allocated_rows = 1;
-	tbl->active_rows = 0;
+	// tbl->col_offsets = malloc(tbl->num_cols * sizeof(size_t));
+	// tbl->col_sizes = malloc(tbl->num_cols * sizeof(size_t));
+	// tbl->rows = malloc(sizeof(void *));
+	// if (!tbl->col_offsets || !tbl->col_sizes || !tbl->rows) {
+	// 	goto enomem;
+	// }
 
-	/* TODO: END row table */
+	// offset = 0;
+	// i = 0;
+	// tmet = TAILQ_FIRST(&tdata->mlist);
+	// while (tmet) {
+	// 	tmet->__rent_id = ldms_record_metric_add(tdef->rec_def,
+	// 						 tmet->mtempl.name,
+	// 						 tmet->mtempl.unit,
+	// 						 tmet->mtempl.type,
+	// 						 tmet->mtempl.len);
+	// 	if (tmet->__rent_id < 0) {
+	// 		rc = -tmet->__rent_id;
+	// 		ovis_log(config_log, OVIS_LERROR,
+	// 			"Cannot create tenant definition '%s' because "
+	// 			"ldmsd failed to create the record definition "
+	// 			"with error %d.\n", tdef->name, rc);
+	// 		return rc;
+	// 	}
+
+	// 	tbl->col_sizes[i] = ldms_metric_value_size_get(tmet->mtempl.type, tmet->mtempl.len);
+	// 	tbl->col_offsets[i] = offset;
+	// 	offset += tbl->col_sizes[i];
+	// 	i++;
+	// 	tmet = TAILQ_NEXT(tmet, ent);
+	// }
+	// assert((i == tdata->mcount) && !tmet); /* If i and tmet must be aligned. */
+
+	// tbl->row_size = offset;
+
+	// /* Allocate memory of the first row */
+	// tbl->rows[0] = calloc(1, tbl->row_size);
+	// if (!tbl->rows[0]) {
+	// 	free(tbl->rows);
+	// 	free(tbl->col_sizes);
+	// 	free(tbl->col_offsets);
+	// 	goto enomem;
+	// }
+	// tbl->allocated_rows = 1;
+	// tbl->active_rows = 0;
+
+	// /* TODO: END row table */
 
 	struct ldmsd_tenant_row_s *row;
 	struct ldmsd_tenant_row_list_s *rlist = &(tdata->row_list);
@@ -322,7 +326,7 @@ static int __tenant_data_init(struct ldmsd_tenant_def_s *tdef, struct ldmsd_tena
 	rlist->row_size = offset;
 
 	/* Allocate memory of the first row */
-	row = calloc(1, rlist->row_size);
+	row = calloc(1, sizeof(*row) + rlist->row_size);
 	if (!row) {
 		free(rlist->col_sizes);
 		free(rlist->col_offsets);
@@ -375,13 +379,13 @@ int ldmsd_tenant_row_table_resize(struct ldmsd_tenant_row_table_s *rtbl, int num
  * Failure in parsing a tenant attribute to an LDMS metric results in a metric of CHAR with an empty string as its value
  * Failure to create the record definition retults in an error of tenant definition creation.
  */
-struct ldmsd_tenant_def_s *ldmsd_tenant_def_create(const char *name, struct attr_value_list *av_list)
+struct ldmsd_tenant_def_s *ldmsd_tenant_def_create(const char *name, struct ldmsd_str_list *str_list)
 {
-	int i, rc;
-	const char *attr_value;
+	int rc;
 	struct ldmsd_tenant_def_s *tdef;
 	struct ldmsd_tenant_metric_s *tmet;
 	enum ldmsd_tenant_src_type src_type;
+	struct ldmsd_str_ent *str;
 
 	tdef = ldmsd_tenant_def_find(name);
 	if (tdef) {
@@ -415,34 +419,16 @@ struct ldmsd_tenant_def_s *ldmsd_tenant_def_create(const char *name, struct attr
 		goto enomem;
 	}
 
-
-
 	/* Initialize the data of each source */
-
-	/* TODO: this is for testing; remove this */
-	char *attr_values[] = { "job_id", "user", "job_name",
-			       "job_uid", "job_gid" };
-
-	for (i = 0; i < 5; i++) {
-		attr_value = attr_values[i];
-		tmet = __process_tenant_attr(attr_value);
+	TAILQ_FOREACH(str, str_list, entry) {
+		tmet = __process_tenant_attr(str->str);
 		if (!tmet) {
 			goto err;
 		}
 		tdef->sources[tmet->__src_type].mcount++;
+		tdef->sources[tmet->__src_type].total_mem += ldms_metric_value_size_get(tmet->mtempl.type, tmet->mtempl.len);
 		TAILQ_INSERT_TAIL(&tdef->sources[tmet->__src_type].mlist, tmet, ent);
 	}
-
-	// for (i = 0; i < av_list->count; i++) {
-	// 	attr_value = av_value_at_idx(av_list, i);
-	// 	tmet = __process_tenant_attr(attr_value);
-	// 	if (!tmet) {
-	// 		goto err;
-	// 	}
-	//	tdef->sources[tmet->__src_type].mcount++;
-	//	tdef->sources[tmet->__src_type].total_mem += ldms_metric_value_size_get(tmet->mtempl.type, tmet->mtempl.len);
-	// 	TAILQ_INSERT_TAIL(&tdef->sources[tmet->__src->type].mlist, tmet, ent);
-	// }
 
 	for (src_type = 0; src_type < LDMSD_TENANT_SRC_COUNT; src_type++) {
 		rc = __tenant_data_init(tdef, &tdef->sources[src_type]);
