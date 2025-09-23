@@ -226,6 +226,10 @@ enum ldmsd_request {
 	/* Job Manager jobmgr */
 	LDMSD_JOBMGR_START_REQ = 0xd00, /* Start jobmgr */
 	LDMSD_JOBMGR_STOP_REQ,          /* Stop jobmgr */
+
+	/* Tenant */
+	LDMSD_TENANT_DEF_ADD_REQ = 0xe00,  /* Add a new tenant definition */
+	LDMSD_TENANT_DEF_DEL_REQ,          /* Delete a tenant definition */
 };
 
 enum ldmsd_request_attr {
