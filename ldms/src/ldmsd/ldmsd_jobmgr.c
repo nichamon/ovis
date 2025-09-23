@@ -417,6 +417,7 @@ ldms_set_t ldmsd_jobset_next(ldms_set_t set)
 		ldms_set_ref_get(next_set, "jobset_iter");
 	} else {
 		errno = ENOENT;
+		next_set = NULL;
 	}
 	JOBSET_RBT_UNLOCK();
 
