@@ -386,19 +386,13 @@ static int __jobset_rows(ldms_set_t set, struct ldmsd_tenant_data_s *tdata,
 	while (row_idx < total_rows) {
 		if (!row) {
 			/* Allocate one more row */
-			row = calloc(1, rlist->row_size);
+			row = calloc(1, sizeof(*row) + rlist->row_size);
 			if (!row) {
-				goto enomem;
-			}
-			row->data = malloc(rlist->row_size);
-			if (!row->data) {
-				free(row);
 				goto enomem;
 			}
 			ldmsd_tenant_row_t *new_array = realloc(rlist->row_array,
 								(rlist->allocated_rows+1) * sizeof(ldmsd_tenant_row_t));
 			if (!new_array) {
-				free(row->data);
 				free(row);
 				goto enomem;
 			}
