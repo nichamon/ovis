@@ -159,6 +159,8 @@ struct req_str_id req_str_id_table[] = {
 	{  "strgp_status",       LDMSD_STRGP_STATUS_REQ  },
 	{  "strgp_stop",         LDMSD_STRGP_STOP_REQ  },
 	{  "subscribe",          LDMSD_STREAM_SUBSCRIBE_REQ  },
+	{  "tenant_def_add",     LDMSD_TENANT_DEF_ADD_REQ  },
+	{  "tenant_def_del",     LDMSD_TENANT_DEF_DEL_REQ  },
 	{  "term",               LDMSD_PLUGN_TERM_REQ  },
 	{  "thread_stats",       LDMSD_THREAD_STATS_REQ  },
 	{  "udata",              LDMSD_SET_UDATA_REQ  },

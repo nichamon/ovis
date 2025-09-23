@@ -76,6 +76,7 @@
 #include "ldmsd_request.h"
 #include "ldmsd_stream.h"
 #include "ldmsd_jobmgr.h"
+#include "ldmsd_tenant.h"
 
 #pragma GCC diagnostic ignored "-Wunused-but-set-variable"
 /*
@@ -343,6 +344,10 @@ static int qgroup_info_handler(ldmsd_req_ctxt_t reqc);
 /* Job Manager jobmgr */
 static int jobmgr_start_handler(ldmsd_req_ctxt_t reqc);
 static int jobmgr_stop_handler(ldmsd_req_ctxt_t reqc);
+
+/* Tenant */
+static int tenant_def_add_handler(ldmsd_req_ctxt_t reqc);
+static int tenant_def_del_handler(ldmsd_req_ctxt_t reqc);
 
 /* executable for all */
 #define XALL 0111
@@ -789,6 +794,14 @@ static struct request_handler_entry request_handler[] = {
 	[LDMSD_JOBMGR_STOP_REQ] = {
 		LDMSD_JOBMGR_STOP_REQ, jobmgr_stop_handler, XUG
 	},
+
+	/* Tenant */
+	[LDMSD_TENANT_DEF_ADD_REQ] = {
+		LDMSD_TENANT_DEF_ADD_REQ, tenant_def_add_handler, XUG
+	},
+	[LDMSD_TENANT_DEF_DEL_REQ] = {
+		LDMSD_TENANT_DEF_DEL_REQ, tenant_def_del_handler, XUG
+	}
 };
 
 int is_req_id_priority(enum ldmsd_request req_id)
@@ -11436,4 +11449,84 @@ static int jobmgr_start_handler(ldmsd_req_ctxt_t reqc)
 static int jobmgr_stop_handler(ldmsd_req_ctxt_t reqc)
 {
 	return jobmgr_op(reqc, "stop", ldmsd_jobmgr_stop);
+}
+
+static int tenant_def_add_handler(ldmsd_req_ctxt_t reqc)
+{
+	char *name;
+	char *metrics;
+	struct ldmsd_tenant_def_s *tdef;
+	struct ldmsd_str_list str_list;
+	struct ldmsd_str_ent *str;
+	const char *delim = ",";
+	char *s, *endptr;
+
+	TAILQ_INIT(&str_list);
+
+	name = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_NAME);
+	if (!name) {
+		reqc->errcode = EINVAL;
+		reqc->line_off = snprintf(reqc->line_buf, reqc->line_len,
+					  "The attribute 'name' is required.");
+		goto send_reply;
+	}
+	metrics = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_METRIC);
+	if (!metrics) {
+		reqc->errcode = EINVAL;
+		reqc->line_off = snprintf(reqc->line_buf, reqc->line_len,
+					  "The attribute 'metrics' is required.");
+		goto send_reply;
+	}
+
+	s = strtok_r(metrics, delim, &endptr);
+	while (s) {
+		str = malloc(sizeof(*str));
+		if (!str) {
+			goto enomem;
+		}
+		str->str = s;
+		TAILQ_INSERT_TAIL(&str_list, str, entry);
+		s = strtok_r(NULL, delim, &endptr);
+	}
+
+	tdef = ldmsd_tenant_def_create(name, &str_list);
+	if (!tdef) {
+		if (errno == EEXIST) {
+			reqc->line_off = snprintf(reqc->line_buf, reqc->line_len,
+						 "The tenant definition name '%s' " \
+						 "already exists.", name);
+		}
+	}
+
+ send_reply:
+	ldmsd_send_req_response(reqc, reqc->line_buf);
+	free(name);
+	free(metrics);
+	return 0;
+ enomem:
+	ovis_log(config_log, OVIS_LCRIT, "Memory allocation failure.\n");
+	free(name);
+	free(metrics);
+	return ENOMEM;
+}
+
+static int tenant_def_del_handler(ldmsd_req_ctxt_t reqc)
+{
+
+	assert(0 == ENOSYS);
+
+	char *name;
+
+	name = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_NAME);
+	if (!name) {
+		reqc->errcode = EINVAL;
+		reqc->line_off = snprintf(reqc->line_buf, reqc->line_len,
+					  "The attribute 'name' is required.");
+		goto send_reply;
+	}
+
+ send_reply:
+	ldmsd_send_req_response(reqc, reqc->line_buf);
+	free(name);
+	return 0;
 }
