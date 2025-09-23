@@ -147,7 +147,7 @@ static struct ldmsd_tenant_source_s *__get_source(const char *attr_value)
 	}
 	return NULL;
  out:
-	ref_get(&(tenant_source_tbl[i]->ref), "__get_source");
+	// ref_get(&(tenant_source_tbl[i]->ref), "__get_source");
 	return tenant_source_tbl[i];
 }
 

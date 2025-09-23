@@ -287,11 +287,13 @@ static int __init_col_iters(ldms_set_t set, ldmsd_tenant_col_map_t cols,
 		case LDMS_V_U64:
 			iter->type = LDMSD_TENANT_ITER_T_SCALAR;
 			iter->card = 1;
+			iter->state.scalar.mval = mval;
 			break;
 		case LDMS_V_CHAR_ARRAY:
 			iter->type = LDMSD_TENANT_ITER_T_STRING;
 			iter->card = 1;
 			iter->state.string.len = ldms_metric_array_get_len(set, col->mid);
+			iter->state.string.mval = mval;
 			break;
 		case LDMS_V_S8_ARRAY:
 		case LDMS_V_U8_ARRAY:
@@ -408,6 +410,7 @@ static int __jobset_rows(ldms_set_t set, struct ldmsd_tenant_data_s *tdata,
 		}
 		rlist->active_rows++;
 		row = TAILQ_NEXT(row, ent);
+		row_idx++;
 	}
 	return 0;
  enomem:
@@ -430,6 +433,7 @@ static int job_scheduler_get_tenant_values(struct ldmsd_tenant_data_s *tdata,
 
 	if (!ctxt) {
 		__resolve_column_src(tdata, job_set);
+		ctxt = tdata->src_ctxt;
 	}
 
 	if (0 == strcmp(ctxt->schema, ldms_set_schema_name_get(job_set))) {
