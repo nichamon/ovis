@@ -314,6 +314,8 @@ int ldmsd_tenant_schema_list_add(struct ldmsd_tenant_def_s *tdef, ldms_schema_t 
  */
 int ldmsd_tenant_row_table_resize(struct ldmsd_tenant_row_table_s *rtbl, int num_rows);
 
+ldmsd_tenant_row_t ldmsd_tenant_row_add(struct ldmsd_tenant_row_list_s *rlist);
+
 /**
  * \brief Update the tenant list of an LDMS set
  *

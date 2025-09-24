@@ -557,6 +557,25 @@ static void __mval_copy(ldms_mval_t src, ldms_mval_t dst, enum ldms_value_type t
 	memcpy(dst, src, sz);
 }
 
+ldmsd_tenant_row_t ldmsd_tenant_row_add(ldmsd_tenant_row_list_t rlist)
+{
+	ldmsd_tenant_row_t row;
+	ldmsd_tenant_row_t *new_array;
+	row = calloc(1, sizeof(*row) + rlist->row_size);
+	new_array = realloc(rlist->row_array, (rlist->allocated_rows+1) * sizeof(ldmsd_tenant_row_t));
+	if (!row || !new_array) {
+		free(row);
+		free(new_array);
+		return NULL;
+	}
+
+	rlist->row_array = new_array;
+	rlist->row_array[rlist->allocated_rows] = row;
+	TAILQ_INSERT_TAIL(&rlist->rows, row, ent);
+	rlist->allocated_rows++;
+	return row;
+}
+
 
 /*
  * **************** !!!!!!!! tdata->mcount MUST be determined before calling this function
