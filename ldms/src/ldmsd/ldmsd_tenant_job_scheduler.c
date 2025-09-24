@@ -220,6 +220,10 @@ static struct tenant_job_scheduler_s *__resolve_column_src(struct ldmsd_tenant_d
 			col->mid = ldms_metric_by_name(set, common_jobset_metrics[LDMSD_JOBSET_MID_TASK_LIST].name);
 			assert(col->mid >= 0); /* the list of tasks must exist in any jobmgr sets. */
 			mval = ldms_metric_get(set, col->mid);
+			if (0 == ldms_list_len(set, mval)) {
+				/* TODO: Can we get the record mid from somewhere else */
+				assert(0 == ENOTSUP);
+			}
 			rec = ldms_list_first(set, mval, &vtype, &len);
 			if (vtype != LDMS_V_RECORD_INST) {
 				ovis_log(NULL, OVIS_LERROR,
@@ -282,16 +286,11 @@ static struct tenant_job_scheduler_s *__resolve_column_src(struct ldmsd_tenant_d
 static int __init_col_iters(ldms_set_t set, ldmsd_tenant_col_map_t cols,
 			  ldmsd_tenant_col_iter_t iters, int num_cols)
 {
-	int i, j;
+	int i;
 	ldmsd_tenant_col_map_t col;
 	ldmsd_tenant_col_iter_t iter;
 	enum ldms_value_type type;
 	ldms_mval_t mval;
-	int64_t *uniq_mids;
-	int num_uniq = 0;
-
-	uniq_mids = malloc(sizeof(int64_t) * num_cols);
-	memset(uniq_mids, -1, num_cols);
 
 	for (i = 0; i < num_cols; i++) {
 		col = &cols[i];
@@ -322,13 +321,6 @@ static int __init_col_iters(ldms_set_t set, ldmsd_tenant_col_map_t cols,
 				return ENOTSUP;
 			}
 			iter->state.list.curr_idx = 0;
-			for (j = 0; j <= num_uniq; j++) {
-				if (uniq_mids[j] == col->mid) {
-					break;
-				}
-			}
-			uniq_mids[num_uniq] = col->mid;
-			num_uniq++;
 			break;
 		case LDMS_V_CHAR:
 		case LDMS_V_S8:
@@ -342,16 +334,12 @@ static int __init_col_iters(ldms_set_t set, ldmsd_tenant_col_map_t cols,
 			iter->type = LDMSD_TENANT_ITER_T_SCALAR;
 			iter->card = 1;
 			iter->state.scalar.mval = mval;
-			uniq_mids[num_uniq] = col->mid;
-			num_uniq++;
 			break;
 		case LDMS_V_CHAR_ARRAY:
 			iter->type = LDMSD_TENANT_ITER_T_STRING;
 			iter->card = 1;
 			iter->state.string.len = ldms_metric_array_get_len(set, col->mid);
 			iter->state.string.mval = mval;
-			uniq_mids[num_uniq] = col->mid;
-			num_uniq++;
 			break;
 		case LDMS_V_S8_ARRAY:
 		case LDMS_V_U8_ARRAY:
@@ -364,8 +352,6 @@ static int __init_col_iters(ldms_set_t set, ldmsd_tenant_col_map_t cols,
 			iter->type = LDMSD_TENANT_ITER_T_ARRAY;
 			iter->card = ldms_metric_array_get_len(set, col->mid);
 			iter->state.array.curr_idx = 0;
-			uniq_mids[num_uniq] = col->mid;
-			num_uniq++;
 		default:
 			break;
 		}
@@ -395,15 +381,15 @@ static int __get_value_at_index(ldms_set_t set, ldmsd_tenant_col_map_t col_map,
 		enum ldms_value_type le_type;
 		size_t le_len;
 		if (index > iter->state.list.curr_idx) {
-			for (i = iter->state.list.curr_idx; i <= index; i++) {
-				iter->state.list.curr = ldms_list_next(set, le, &le_type, &le_len);
+			for (i = iter->state.list.curr_idx; i < index; i++) {
+				iter->state.list.curr = ldms_list_next(set, iter->state.list.curr, &le_type, &le_len);
 			}
 		} else if (index < iter->state.list.curr_idx) {
 			iter->state.list.curr = ldms_list_first(set, le, &le_type, &le_len);
 			i = 0;
 			while (i < index) {
 				i++;
-				iter->state.list.curr = ldms_list_next(set, le, &le_type, &le_len);
+				iter->state.list.curr = ldms_list_next(set, iter->state.list.curr, &le_type, &le_len);
 			}
 		} else {
 			/* Get the element type and length */
@@ -474,20 +460,10 @@ static int __jobset_rows(ldms_set_t set, struct ldmsd_tenant_data_s *tdata,
 	while (row_idx < total_rows) {
 		if (!row) {
 			/* Allocate one more row */
-			row = calloc(1, sizeof(*row) + rlist->row_size);
+			row = ldmsd_tenant_row_add(rlist);
 			if (!row) {
 				goto enomem;
 			}
-			ldmsd_tenant_row_t *new_array = realloc(rlist->row_array,
-								(rlist->allocated_rows+1) * sizeof(ldmsd_tenant_row_t));
-			if (!new_array) {
-				free(row);
-				goto enomem;
-			}
-			rlist->row_array = new_array;
-			rlist->row_array[rlist->allocated_rows] = row;
-			TAILQ_INSERT_TAIL(&rlist->rows, row, ent);
-			rlist->allocated_rows++;
 		}
 
 		/* Calculate index of each metric ID for this row using modular arithmetic */
@@ -531,6 +507,26 @@ static int is_job_end(ldms_set_t job_set)
 	return 0;
 }
 
+// static int __empty_row(struct ldmsd_tenant_data_s *tdata, struct ldmsd_tenant_row_list_s *rlist)
+// {
+// 	int i;
+// 	struct ldmsd_tenant_metric_s *tmet;
+// 	ldms_mval_t dst;
+// 	ldmsd_tenant_row_t row = TAILQ_FIRST(&rlist->rows);
+// 	rlist->active_rows = 0;
+
+// 	if (!row) {
+// 		row = ldmsd_tenant_row_add(tdata, rlist);
+// 		if (!row) {
+// 			return ENOMEM;
+// 		}
+// 	}
+// 	for (i = 0, tmet = TAILQ_FIRST(&tdata->mlist); tmet; i++, tmet = TAILQ_NEXT(tmet, ent)) {
+// 		// dst = LDMSD_TENANT_ROW_CELL_PTR_AT_OFFSET(row, tdata->row_list.col_offsets[i]);
+// 	}
+
+// }
+
 /* TODO: Update this when receive the updated job_scehduler APIs from Narate */
 static int job_scheduler_get_tenant_values(struct ldmsd_tenant_data_s *tdata,
 					   struct ldmsd_tenant_row_list_s *rlist)
@@ -541,7 +537,8 @@ static int job_scheduler_get_tenant_values(struct ldmsd_tenant_data_s *tdata,
 
 	if (!job_set) {
 		/* No job set fill all column as NA. */
-		/* TODO: Complete this. */
+		/* TODO: Complete this. We need to return a single row of missing values */
+		/* __empty_row(); */
 		return 0;
 	}
 
