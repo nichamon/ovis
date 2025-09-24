@@ -42,6 +42,11 @@
 typedef struct tenant_job_scheduler_s {
 	const char *schema; /* Job schema */
 	ldmsd_tenant_col_map_t col_maps; /* Array of metric ID or record ID in job sets. */
+
+	uint64_t *unique_mids;           /* Array of unique metric IDs */
+	int num_uniq_mids;               /* Number of unique metric IDs */
+	int *col_to_uniq_mids;           /* Maps column index to unique metric IDs array */
+	int *uniq_mids_col_counts;           /* Number of column per unique metric ID */
 } *tenant_job_scheduler_t;
 
 static ldms_metric_template_t __find_job_metric(const char *s)
@@ -175,33 +180,39 @@ static void job_scheduler_cleanup(void *src_data)
 
 static struct tenant_job_scheduler_s *__resolve_column_src(struct ldmsd_tenant_data_s *tdata, ldms_set_t set)
 {
-	int i, rc;
+	int i, j, rc;
 	struct tenant_job_scheduler_s *ctxt;
 	struct ldmsd_tenant_metric_s *tmet;
 	ldmsd_tenant_col_map_t col;
 	ldms_mval_t mval, rec;
 	enum ldms_value_type vtype;
 	size_t len;
+	int group_idx;
 
 	ctxt = malloc(sizeof(*ctxt));
 	if (!ctxt) {
 		goto enomem;
 	}
 	ctxt->schema = strdup(ldms_set_schema_name_get(set));
-	if (!ctxt->schema) {
-		free(ctxt);
-		goto enomem;
-	}
-
 	ctxt->col_maps = malloc(sizeof(*ctxt->col_maps) * tdata->mcount);
-	if (!ctxt->col_maps) {
+	ctxt->unique_mids = malloc(sizeof(uint64_t) * tdata->mcount);
+	ctxt->col_to_uniq_mids = malloc(sizeof(int) * tdata->mcount);
+	ctxt->uniq_mids_col_counts = malloc(sizeof(int) * tdata->mcount);
+	if (!ctxt->schema || !ctxt->col_maps || !ctxt->unique_mids || !ctxt->col_to_uniq_mids || !ctxt->uniq_mids_col_counts) {
 		free((char *)ctxt->schema);
+		free(ctxt->col_maps);
+		free(ctxt->unique_mids);
+		free(ctxt->col_to_uniq_mids);
+		free(ctxt->uniq_mids_col_counts);
 		free(ctxt);
 		goto enomem;
 	}
 
-	for (i = 0, tmet = TAILQ_FIRST(&tdata->mlist); (i < tdata->mcount) && tmet;
-				i++, tmet = TAILQ_NEXT(tmet, ent)) {
+	ctxt->num_uniq_mids = 0;
+
+	for (i = 0, tmet = TAILQ_FIRST(&tdata->mlist);
+			(i < tdata->mcount) && tmet;
+			i++, tmet = TAILQ_NEXT(tmet, ent)) {
 		col = &ctxt->col_maps[i];
 		col->rec_mid = -1;
 		col->mid = ldms_metric_by_name(set, tmet->mtempl.name);
@@ -223,6 +234,7 @@ static struct tenant_job_scheduler_s *__resolve_column_src(struct ldmsd_tenant_d
 			if (col->rec_mid < 0) {
 				/* Can't find the metric. Mark as missing. */
 				col->mid = -1;
+				ctxt->col_to_uniq_mids[i] = -1;
 				continue;
 			}
 			vtype = ldms_record_metric_type_get(rec, col->rec_mid, &col->len);
@@ -239,6 +251,23 @@ static struct tenant_job_scheduler_s *__resolve_column_src(struct ldmsd_tenant_d
 				col->len = 1;
 			}
 		}
+
+		group_idx = -1;
+		for (j = 0; j < ctxt->num_uniq_mids; j++) {
+			if (ctxt->unique_mids[j] == col->mid) {
+				group_idx = j;
+				break;
+			}
+		}
+
+		if (group_idx == -1) {
+			/* New unique metric ID */
+			group_idx = ctxt->num_uniq_mids;
+			ctxt->unique_mids[ctxt->num_uniq_mids] = col->mid;
+			ctxt->num_uniq_mids++;
+		}
+		ctxt->col_to_uniq_mids[i] = group_idx;
+		ctxt->uniq_mids_col_counts[group_idx]++;
 	}
 	return ctxt;
  err:
@@ -253,11 +282,16 @@ static struct tenant_job_scheduler_s *__resolve_column_src(struct ldmsd_tenant_d
 static int __init_col_iters(ldms_set_t set, ldmsd_tenant_col_map_t cols,
 			  ldmsd_tenant_col_iter_t iters, int num_cols)
 {
-	int i;
+	int i, j;
 	ldmsd_tenant_col_map_t col;
 	ldmsd_tenant_col_iter_t iter;
 	enum ldms_value_type type;
 	ldms_mval_t mval;
+	int64_t *uniq_mids;
+	int num_uniq = 0;
+
+	uniq_mids = malloc(sizeof(int64_t) * num_cols);
+	memset(uniq_mids, -1, num_cols);
 
 	for (i = 0; i < num_cols; i++) {
 		col = &cols[i];
@@ -267,7 +301,6 @@ static int __init_col_iters(ldms_set_t set, ldmsd_tenant_col_map_t cols,
 			iter->type = LDMSD_TENANT_ITER_T_MISSING;
 			iter->card = 1;
 		}
-
 		type = ldms_metric_type_get(set, col->mid);
 		mval = ldms_metric_get(set, col->mid);
 		switch (type) {
@@ -289,6 +322,13 @@ static int __init_col_iters(ldms_set_t set, ldmsd_tenant_col_map_t cols,
 				return ENOTSUP;
 			}
 			iter->state.list.curr_idx = 0;
+			for (j = 0; j <= num_uniq; j++) {
+				if (uniq_mids[j] == col->mid) {
+					break;
+				}
+			}
+			uniq_mids[num_uniq] = col->mid;
+			num_uniq++;
 			break;
 		case LDMS_V_CHAR:
 		case LDMS_V_S8:
@@ -302,12 +342,16 @@ static int __init_col_iters(ldms_set_t set, ldmsd_tenant_col_map_t cols,
 			iter->type = LDMSD_TENANT_ITER_T_SCALAR;
 			iter->card = 1;
 			iter->state.scalar.mval = mval;
+			uniq_mids[num_uniq] = col->mid;
+			num_uniq++;
 			break;
 		case LDMS_V_CHAR_ARRAY:
 			iter->type = LDMSD_TENANT_ITER_T_STRING;
 			iter->card = 1;
 			iter->state.string.len = ldms_metric_array_get_len(set, col->mid);
 			iter->state.string.mval = mval;
+			uniq_mids[num_uniq] = col->mid;
+			num_uniq++;
 			break;
 		case LDMS_V_S8_ARRAY:
 		case LDMS_V_U8_ARRAY:
@@ -320,6 +364,8 @@ static int __init_col_iters(ldms_set_t set, ldmsd_tenant_col_map_t cols,
 			iter->type = LDMSD_TENANT_ITER_T_ARRAY;
 			iter->card = ldms_metric_array_get_len(set, col->mid);
 			iter->state.array.curr_idx = 0;
+			uniq_mids[num_uniq] = col->mid;
+			num_uniq++;
 		default:
 			break;
 		}
@@ -366,7 +412,7 @@ static int __get_value_at_index(ldms_set_t set, ldmsd_tenant_col_map_t col_map,
 		iter->state.list.type = le_type;
 		iter->state.list.len = le_len;
 		iter->state.list.curr_idx = index;
-		if ((le_type == LDMS_V_RECORD_INST) && (col_map->rec_mid)) {
+		if ((le_type == LDMS_V_RECORD_INST) && (col_map->rec_mid >= 0)) {
 			src_mval = ldms_record_metric_get(iter->state.list.curr, col_map->rec_mid);
 			memcpy(output_mval, src_mval, ldms_metric_value_size_get(col_map->ele_type, col_map->len));
 		} else if (ldms_type_is_array(le_type)) {
@@ -396,16 +442,31 @@ static int __jobset_rows(ldms_set_t set, struct ldmsd_tenant_data_s *tdata,
 	int row_idx;
 	struct ldmsd_tenant_col_iter_s iters[tdata->mcount];
 	struct ldmsd_tenant_row_s *row;
-	int temp, idx;
+	int group_cards[ctxt->num_uniq_mids];   /* Cardinality per unique metric ID */
+	int group_indices[ctxt->num_uniq_mids];   /* Current index per unique metric ID for row generation */
+	int temp, group_idx;
 
 	/* Get cardinality of each column */
 	__init_col_iters(set, ctxt->col_maps, iters, tdata->mcount);
+	memset(group_cards, 0, sizeof(int) * ctxt->num_uniq_mids);
+	memset(group_indices, 0, sizeof(int) * ctxt->num_uniq_mids);
 
 	for (i = 0; i < tdata->mcount; i++) {
-		total_rows *= iters[i].card;
+		group_idx = ctxt->col_to_uniq_mids[i];
+		if (group_idx >= 0) {
+			/* Only set cardinality once per unique metric ID */
+			if (group_cards[group_idx] == 0) {
+				group_cards[group_idx] = iters[i].card;
+			}
+		}
 	}
 
-	assert(total_rows); /* There must be at least 1 row. */
+	/* Calculate total rows as product of group cardinalities */
+	for (i = 0; i < ctxt->num_uniq_mids; i++) {
+		total_rows *= group_cards[i];
+	}
+
+	assert(total_rows > 0); /* There must be at least 1 row. */
 
 	/* Generate all Cartesian products */
 	row_idx = 0;
@@ -429,19 +490,32 @@ static int __jobset_rows(ldms_set_t set, struct ldmsd_tenant_data_s *tdata,
 			rlist->allocated_rows++;
 		}
 
+		/* Calculate index of each metric ID for this row using modular arithmetic */
 		temp = row_idx;
-		for (j = tdata->mcount - 1; j >= 0; j--) {
-			idx = temp % iters[j].card;
-			temp = temp / iters[j].card;
-			/* Extract value at this index */
-			__get_value_at_index(set, &ctxt->col_maps[j], &iters[j],
-					     idx, row,
-					     tdata->row_list.col_offsets[j]);
+		for (i = ctxt->num_uniq_mids-1; i >= 0; i--) {
+			if (group_cards[i] >= 0) {
+				group_indices[i] = temp % group_cards[i];
+				temp = temp / group_cards[i];
+			} else {
+				group_indices[i] = 0;
+			}
 		}
+
+		/* Extract values for all columns using group indices */
+		for (j = 0; j < tdata->mcount; j++) {
+			group_idx = ctxt->col_to_uniq_mids[j];
+			int index_to_use = (group_idx >= 0) ? group_indices[group_idx] : 0;
+
+			__get_value_at_index(set, &ctxt->col_maps[j], &iters[j],
+						  index_to_use, row,
+						  tdata->row_list.col_offsets[j]);
+		}
+
 		rlist->active_rows++;
 		row = TAILQ_NEXT(row, ent);
 		row_idx++;
 	}
+
 	return 0;
  enomem:
 	ovis_log(NULL, OVIS_LCRIT, "Memory allocation failure.\n");
