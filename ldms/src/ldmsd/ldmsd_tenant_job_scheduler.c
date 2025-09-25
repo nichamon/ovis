@@ -363,21 +363,6 @@ static int __init_col_iters(ldms_set_t set, ldmsd_tenant_col_map_t cols,
 	return 0;
 }
 
-static void __missing_value(ldms_set_t set, ldms_mval_t dst, enum ldms_value_type type)
-{
-	switch (type) {
-	case LDMS_V_CHAR:
-		dst->v_char = LDMSD_TENANT_MISSING_VALUE_CHAR;
-		break;
-	case LDMS_V_CHAR_ARRAY:
-		dst->a_char[0] = LDMSD_TENANT_MISSING_VALUE_CHAR;
-		break;
-	default:
-		dst->v_u8 = LDMSD_TENANT_MISSING_VALUE_INT;
-		break;
-	}
-}
-
 static int __get_value_at_index(ldms_set_t set, ldmsd_tenant_col_map_t col_map,
 				ldmsd_tenant_col_iter_t iter, int index,
 				ldmsd_tenant_row_t row, size_t col_offset)
@@ -388,11 +373,7 @@ static int __get_value_at_index(ldms_set_t set, ldmsd_tenant_col_map_t col_map,
 
 	switch (iter->type) {
 	case LDMSD_TENANT_ITER_T_MISSING:
-		if (col_map->type == LDMS_V_LIST) {
-			__missing_value(set, output_mval, col_map->ele_type);
-		} else {
-			__missing_value(set, output_mval, col_map->type);
-		}
+		ldmsd_tenant_missing_value(set, output_mval, col_map);
 		break;
 	case LDMSD_TENANT_ITER_T_SCALAR:
 		memcpy(output_mval, iter->state.scalar.mval,
