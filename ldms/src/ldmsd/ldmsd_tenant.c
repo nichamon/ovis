@@ -576,6 +576,38 @@ ldmsd_tenant_row_t ldmsd_tenant_row_add(ldmsd_tenant_row_list_t rlist)
 	return row;
 }
 
+static void __missing_value(ldms_set_t set, ldms_mval_t dst, enum ldms_value_type type, size_t len)
+{
+	memset(dst, 0, ldms_metric_value_size_get(type, len));
+	switch (type) {
+	case LDMS_V_CHAR:
+		dst->v_char = LDMSD_TENANT_MISSING_VALUE_CHAR;
+		break;
+	case LDMS_V_CHAR_ARRAY:
+		dst->a_char[0] = LDMSD_TENANT_MISSING_VALUE_CHAR;
+		break;
+	case LDMS_V_RECORD_ARRAY:
+	case LDMS_V_RECORD_INST:
+	case LDMS_V_RECORD_TYPE:
+		ovis_log(NULL, OVIS_LWARN, "Unsupported value type in set %s\n",
+						ldms_set_instance_name_get(set));
+		assert(0 == ENOTSUP);
+	default:
+		dst->v_u8 = LDMSD_TENANT_MISSING_VALUE_INT;
+		break;
+	}
+}
+
+void ldmsd_tenant_missing_value(ldms_set_t set, ldms_mval_t dst, ldmsd_tenant_col_map_t col_map)
+{
+	enum ldms_value_type type;
+	if (col_map->type == LDMS_V_LIST)
+		type = col_map->ele_type;
+	else
+		type = col_map->type;
+	__missing_value(set, dst, type, col_map->len);
+}
+
 
 /*
  * **************** !!!!!!!! tdata->mcount MUST be determined before calling this function

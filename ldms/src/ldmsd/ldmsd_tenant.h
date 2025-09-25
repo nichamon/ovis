@@ -317,6 +317,8 @@ int ldmsd_tenant_schema_list_add(struct ldmsd_tenant_def_s *tdef, ldms_schema_t 
  */
 int ldmsd_tenant_row_table_resize(struct ldmsd_tenant_row_table_s *rtbl, int num_rows);
 
+void ldmsd_tenant_missing_value(ldms_set_t set, ldms_mval_t dst, ldmsd_tenant_col_map_t col_map);
+
 ldmsd_tenant_row_t ldmsd_tenant_row_add(struct ldmsd_tenant_row_list_s *rlist);
 
 /**
