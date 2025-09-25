@@ -373,7 +373,7 @@ static int __get_value_at_index(ldms_set_t set, ldmsd_tenant_col_map_t col_map,
 
 	switch (iter->type) {
 	case LDMSD_TENANT_ITER_T_MISSING:
-		ldmsd_tenant_missing_value(set, output_mval, col_map);
+		ldmsd_tenant_col_missing_val(output_mval, col_map);
 		break;
 	case LDMSD_TENANT_ITER_T_SCALAR:
 		memcpy(output_mval, iter->state.scalar.mval,
@@ -512,38 +512,44 @@ static int is_job_end(ldms_set_t job_set)
 	return 0;
 }
 
-// static int __empty_row(struct ldmsd_tenant_data_s *tdata, struct ldmsd_tenant_row_list_s *rlist)
-// {
-// 	int i;
-// 	struct ldmsd_tenant_metric_s *tmet;
-// 	ldms_mval_t dst;
-// 	ldmsd_tenant_row_t row = TAILQ_FIRST(&rlist->rows);
-// 	rlist->active_rows = 0;
+static int __empty_row(struct ldmsd_tenant_data_s *tdata, struct ldmsd_tenant_row_list_s *rlist)
+{
+	int i;
+	struct ldmsd_tenant_metric_s *tmet;
+	ldms_mval_t dst;
+	ldmsd_tenant_row_t row;
 
-// 	if (!row) {
-// 		row = ldmsd_tenant_row_add(tdata, rlist);
-// 		if (!row) {
-// 			return ENOMEM;
-// 		}
-// 	}
-// 	for (i = 0, tmet = TAILQ_FIRST(&tdata->mlist); tmet; i++, tmet = TAILQ_NEXT(tmet, ent)) {
-// 		// dst = LDMSD_TENANT_ROW_CELL_PTR_AT_OFFSET(row, tdata->row_list.col_offsets[i]);
-// 	}
+	if (rlist->active_rows == rlist->allocated_rows) {
+		row = ldmsd_tenant_row_add(rlist);
+		if (!row)
+			return ENOMEM;
+	} else {
+		row = rlist->row_array[rlist->active_rows];
+	}
 
-// }
+	for (i = 0, tmet = TAILQ_FIRST(&tdata->mlist); tmet; i++, tmet = TAILQ_NEXT(tmet, ent)) {
+		dst = LDMSD_TENANT_ROW_CELL_PTR_AT_OFFSET(row, rlist->col_offsets[i]);
+		ldmsd_tenant_mval_missing_val(dst, tmet->mtempl.type, tmet->mtempl.len);
+	}
+	rlist->active_rows++;
+	return 0;
+}
 
 /* TODO: Update this when receive the updated job_scehduler APIs from Narate */
 static int job_scheduler_get_tenant_values(struct ldmsd_tenant_data_s *tdata,
-					   struct ldmsd_tenant_row_list_s *rlist)
+					   struct ldmsd_tenant_row_list_s *rlist,
+					   int *is_missing)
 {
 	struct tenant_job_scheduler_s *ctxt = tdata->src_ctxt;
 	ldms_set_t job_set = ldmsd_jobset_first();
 	rlist->active_rows = 0;
+	*is_missing = 0;
 
 	if (!job_set) {
 		/* No job set fill all column as NA. */
 		/* TODO: Complete this. We need to return a single row of missing values */
-		/* __empty_row(); */
+		__empty_row(tdata, rlist);
+		*is_missing = 1;
 		return 0;
 	}
 
