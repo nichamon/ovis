@@ -302,7 +302,8 @@ ldms_schema_t base_schema_new(base_data_t base)
 		goto err_1;
 	}
 
-	int DELME_EST_NUM_TENANTS = 2;
+	/* TODO: handle this */
+	int DELME_EST_NUM_TENANTS = 10;
 	if (base->tenant_def) {
 		rc = ldmsd_tenant_schema_list_add(base->tenant_def, base->schema,
 						DELME_EST_NUM_TENANTS,
