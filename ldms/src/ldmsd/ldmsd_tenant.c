@@ -128,7 +128,7 @@ int __na_tenant_values_get(struct ldmsd_tenant_data_s *tdata,
 	}
 	row = TAILQ_FIRST(&rlist->rows);
 	for (i = 0; i < rlist->num_cols; i++) {
-		LDMSD_TENANT_ROW_CELL_PTR(rlist, row, i)->v_char = '-';
+		LDMSD_TENANT_ROW_CELL_PTR(rlist, row, i)->v_char = LDMSD_TENANT_MISSING_VALUE_CHAR;
 	}
 	rlist->active_rows = 1;
 	return 0;
