@@ -61,6 +61,9 @@
 
 #include "ldmsd.h"
 
+#define LDMSD_TENANT_MISSING_VALUE_CHAR '-'
+#define LDMSD_TENANT_MISSING_VALUE_INT  0
+
 struct ldmsd_tenant_source_s;
 enum ldmsd_tenant_src_type {
 	LDMSD_TENANT_SRC_NONE = 0,
