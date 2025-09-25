@@ -463,14 +463,13 @@ static int __jobset_rows(ldms_set_t set, struct ldmsd_tenant_data_s *tdata,
 
 	/* Generate all Cartesian products */
 	row_idx = 0;
-	row = TAILQ_FIRST(&rlist->rows);
 	while (row_idx < total_rows) {
-		if (!row) {
-			/* Allocate one more row */
+		if (rlist->active_rows == rlist->allocated_rows) {
 			row = ldmsd_tenant_row_add(rlist);
-			if (!row) {
+			if (!row)
 				goto enomem;
-			}
+		} else {
+			row = rlist->row_array[rlist->active_rows];
 		}
 
 		/* Calculate index of each metric ID for this row using modular arithmetic */
@@ -495,7 +494,6 @@ static int __jobset_rows(ldms_set_t set, struct ldmsd_tenant_data_s *tdata,
 		}
 
 		rlist->active_rows++;
-		row = TAILQ_NEXT(row, ent);
 		row_idx++;
 	}
 
