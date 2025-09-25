@@ -71,7 +71,7 @@ extern struct ldmsd_tenant_source_s tenant_job_scheduler_source; /* TODO: Implem
 int __na_tenant_metric_init(const char *attr_value, struct ldmsd_tenant_metric_s *tmet);
 void __na_tenant_metric_cleanup(void *src_data);
 int __na_tenant_values_get(struct ldmsd_tenant_data_s *tdata,
-			   struct ldmsd_tenant_row_list_s *rlist);
+			   struct ldmsd_tenant_row_list_s *rlist, int *is_empty);
 struct ldmsd_tenant_source_s tenant_na_source = {
 	.type = LDMSD_TENANT_SRC_NONE,
 	.name = "tenant_src_na",
@@ -115,10 +115,12 @@ void __na_tenant_metric_cleanup(void *src_data)
 }
 
 int __na_tenant_values_get(struct ldmsd_tenant_data_s *tdata,
-			   struct ldmsd_tenant_row_list_s *rlist)
+			   struct ldmsd_tenant_row_list_s *rlist,
+			   int *is_empty)
 {
 	int i;
 	struct ldmsd_tenant_row_s *row;
+	*is_empty = 0;
 	if (0 < rlist->active_rows) {
 		/*
 		 * There is always a single row for metrics without source.
@@ -576,7 +578,7 @@ ldmsd_tenant_row_t ldmsd_tenant_row_add(ldmsd_tenant_row_list_t rlist)
 	return row;
 }
 
-static void __missing_value(ldms_set_t set, ldms_mval_t dst, enum ldms_value_type type, size_t len)
+void ldmsd_tenant_mval_missing_val(ldms_mval_t dst, enum ldms_value_type type, size_t len)
 {
 	memset(dst, 0, ldms_metric_value_size_get(type, len));
 	switch (type) {
@@ -589,8 +591,8 @@ static void __missing_value(ldms_set_t set, ldms_mval_t dst, enum ldms_value_typ
 	case LDMS_V_RECORD_ARRAY:
 	case LDMS_V_RECORD_INST:
 	case LDMS_V_RECORD_TYPE:
-		ovis_log(NULL, OVIS_LWARN, "Unsupported value type in set %s\n",
-						ldms_set_instance_name_get(set));
+		ovis_log(NULL, OVIS_LWARN, "Unsupported value type '%s' for missing values\n",
+						ldms_metric_type_to_str(type));
 		assert(0 == ENOTSUP);
 	default:
 		dst->v_u8 = LDMSD_TENANT_MISSING_VALUE_INT;
@@ -598,14 +600,14 @@ static void __missing_value(ldms_set_t set, ldms_mval_t dst, enum ldms_value_typ
 	}
 }
 
-void ldmsd_tenant_missing_value(ldms_set_t set, ldms_mval_t dst, ldmsd_tenant_col_map_t col_map)
+void ldmsd_tenant_col_missing_val(ldms_mval_t dst, ldmsd_tenant_col_map_t col_map)
 {
 	enum ldms_value_type type;
 	if (col_map->type == LDMS_V_LIST)
 		type = col_map->ele_type;
 	else
 		type = col_map->type;
-	__missing_value(set, dst, type, col_map->len);
+	ldmsd_tenant_mval_missing_val(dst, type, col_map->len);
 }
 
 
@@ -621,6 +623,7 @@ int ldmsd_tenant_values_sample(struct ldmsd_tenant_def_s *tdef, ldms_set_t set, 
 	struct ldmsd_tenant_data_s *tdata;
 	struct ldmsd_tenant_metric_s *tmet;
 	int tmp_idx;
+	int is_src_empty, is_empty;
 	// struct ldmsd_tenant_row_table_s *vtbl;
 	struct ldmsd_tenant_row_list_s *rlist;
 	const char *set_name = ldms_set_instance_name_get(set);
@@ -640,6 +643,7 @@ int ldmsd_tenant_values_sample(struct ldmsd_tenant_def_s *tdef, ldms_set_t set, 
 	 * Get all the tenant metric values from all sources and calculate the number of tenants
 	 */
 	int total_tenant_cnt = 1;
+	is_empty = 1;   /* Check if all sources have no values */
 	for (src_type = 0; src_type < LDMSD_TENANT_SRC_COUNT; src_type++) {
 		tdata = &tdef->sources[src_type];
 		if (0 == tdata->mcount) {
@@ -651,12 +655,16 @@ int ldmsd_tenant_values_sample(struct ldmsd_tenant_def_s *tdef, ldms_set_t set, 
 		// rc = tdata->src->get_tenant_values(tdata, vtbl);
 
 		rlist = &tdata->row_list;
-		rc = tdata->src->get_tenant_values(tdata, rlist);
+		rc = tdata->src->get_tenant_values(tdata, rlist, &is_src_empty);
 		if (rc) {
 			/* TODO: complete this */
 		}
 		total_tenant_cnt *= rlist->active_rows;
+		is_empty *= is_src_empty;
 	}
+
+	if (is_empty)
+		total_tenant_cnt = 0;
 
 	for (i = 0; i < total_tenant_cnt; i++) {
 		int src_idx[LDMSD_TENANT_SRC_COUNT] = {0};

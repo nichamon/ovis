@@ -197,7 +197,7 @@ typedef struct ldmsd_tenant_row_list_s {
 	((ldms_mval_t)((void *)(_row_)->data + (_rlist_)->col_offsets[_col_id_])) : NULL)
 
 #define LDMSD_TENANT_ROW_CELL_PTR_AT_OFFSET(_row_, _offset_) \
-	((ldms_mval_t)((void *)(_row_)->data + col_offset))
+	((ldms_mval_t)((void *)(_row_)->data + _offset_))
 
 struct ldmsd_tenant_data_s {
 	struct ldmsd_tenant_source_s *src;
@@ -244,7 +244,7 @@ struct ldmsd_tenant_source_s {
 	int (*init_tenant_metric)(const char *attr_value, struct ldmsd_tenant_metric_s *tmet);
 	/**< Runtime value retrieval method, assuming that \c mval was allocated with enough memory */
 	int (*init_source_ctxt)(struct ldmsd_tenant_data_s *tdata); /* This will be called after the metric list is populated and initialized */
-	int (*get_tenant_values)(struct ldmsd_tenant_data_s *tdata, struct ldmsd_tenant_row_list_s *rlist);
+	int (*get_tenant_values)(struct ldmsd_tenant_data_s *tdata, struct ldmsd_tenant_row_list_s *rlist, int *is_empty);
 	void (*cleanup)(void *src_data);        /**< Cleanup source-specific data */
 };
 
@@ -317,7 +317,8 @@ int ldmsd_tenant_schema_list_add(struct ldmsd_tenant_def_s *tdef, ldms_schema_t 
  */
 int ldmsd_tenant_row_table_resize(struct ldmsd_tenant_row_table_s *rtbl, int num_rows);
 
-void ldmsd_tenant_missing_value(ldms_set_t set, ldms_mval_t dst, ldmsd_tenant_col_map_t col_map);
+void ldmsd_tenant_mval_missing_val(ldms_mval_t dst, enum ldms_value_type type, size_t len);
+void ldmsd_tenant_col_missing_val(ldms_mval_t dst, ldmsd_tenant_col_map_t col_map);
 
 ldmsd_tenant_row_t ldmsd_tenant_row_add(struct ldmsd_tenant_row_list_s *rlist);
 
