@@ -40,6 +40,7 @@
  */
 
 typedef struct tenant_job_scheduler_s {
+	int completed;
 	const char *schema; /* Job schema */
 	ldmsd_tenant_col_map_t col_maps; /* Array of metric ID or record ID in job sets. */
 
@@ -193,6 +194,7 @@ static struct tenant_job_scheduler_s *__resolve_column_src(struct ldmsd_tenant_d
 	if (!ctxt) {
 		goto enomem;
 	}
+	ctxt->completed = 0;
 	ctxt->schema = strdup(ldms_set_schema_name_get(set));
 	ctxt->col_maps = malloc(sizeof(*ctxt->col_maps) * tdata->mcount);
 	ctxt->unique_mids = malloc(sizeof(uint64_t) * tdata->mcount);
@@ -221,8 +223,8 @@ static struct tenant_job_scheduler_s *__resolve_column_src(struct ldmsd_tenant_d
 			assert(col->mid >= 0); /* the list of tasks must exist in any jobmgr sets. */
 			mval = ldms_metric_get(set, col->mid);
 			if (0 == ldms_list_len(set, mval)) {
-				/* TODO: Can we get the record mid from somewhere else */
-				assert(0 == ENOTSUP);
+				col->mid = -2; /* We can't determine the Metric ID */
+				continue;;
 			}
 			rec = ldms_list_first(set, mval, &vtype, &len);
 			if (vtype != LDMS_V_RECORD_INST) {
@@ -273,6 +275,7 @@ static struct tenant_job_scheduler_s *__resolve_column_src(struct ldmsd_tenant_d
 		ctxt->col_to_uniq_mids[i] = group_idx;
 		ctxt->uniq_mids_col_counts[group_idx]++;
 	}
+	ctxt->completed = 1;
 	return ctxt;
  err:
 	errno = rc;
@@ -299,6 +302,7 @@ static int __init_col_iters(ldms_set_t set, ldmsd_tenant_col_map_t cols,
 		if (col->mid < 0) {
 			iter->type = LDMSD_TENANT_ITER_T_MISSING;
 			iter->card = 1;
+			continue;
 		}
 		type = ldms_metric_type_get(set, col->mid);
 		mval = ldms_metric_get(set, col->mid);
@@ -359,6 +363,21 @@ static int __init_col_iters(ldms_set_t set, ldmsd_tenant_col_map_t cols,
 	return 0;
 }
 
+static void __missing_value(ldms_set_t set, ldms_mval_t dst, enum ldms_value_type type)
+{
+	switch (type) {
+	case LDMS_V_CHAR:
+		dst->v_char = LDMSD_TENANT_MISSING_VALUE_CHAR;
+		break;
+	case LDMS_V_CHAR_ARRAY:
+		dst->a_char[0] = LDMSD_TENANT_MISSING_VALUE_CHAR;
+		break;
+	default:
+		dst->v_u8 = LDMSD_TENANT_MISSING_VALUE_INT;
+		break;
+	}
+}
+
 static int __get_value_at_index(ldms_set_t set, ldmsd_tenant_col_map_t col_map,
 				ldmsd_tenant_col_iter_t iter, int index,
 				ldmsd_tenant_row_t row, size_t col_offset)
@@ -368,6 +387,13 @@ static int __get_value_at_index(ldms_set_t set, ldmsd_tenant_col_map_t col_map,
 	ldms_mval_t src_mval;
 
 	switch (iter->type) {
+	case LDMSD_TENANT_ITER_T_MISSING:
+		if (col_map->type == LDMS_V_LIST) {
+			__missing_value(set, output_mval, col_map->ele_type);
+		} else {
+			__missing_value(set, output_mval, col_map->type);
+		}
+		break;
 	case LDMSD_TENANT_ITER_T_SCALAR:
 		memcpy(output_mval, iter->state.scalar.mval,
 			ldms_metric_value_size_get(col_map->type, col_map->len));
