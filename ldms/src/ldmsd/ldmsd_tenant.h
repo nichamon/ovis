@@ -188,8 +188,9 @@ struct ldmsd_tenant_data_s {
 	size_t total_mem;	/* Summation of the memory of each metric ldms_mval_t */
 	int mcount;		/* Number of metrics */
 	struct ldmsd_tenant_metric_list mlist;
+	int init_num_rows;	/* Initial number of rows */
 	struct ldmsd_tenant_row_list_meta_s rlist_meta;
-	struct ldmsd_tenant_row_list_s row_list; /**< List of rows */
+	// struct ldmsd_tenant_row_list_s row_list; /**< List of rows */
 	void *src_ctxt;        /* Sources-specific context */
 };
 

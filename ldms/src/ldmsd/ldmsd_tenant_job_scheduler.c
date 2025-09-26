@@ -39,6 +39,8 @@
  *          - Iterate through job sets to get update data
  */
 
+#define TENANT_JOB_SCHED_INIT_NUM_ROWS 5
+
 typedef struct tenant_job_scheduler_s {
 	int completed;
 	const char *schema; /* Job schema */
@@ -129,55 +131,18 @@ static int job_scheduler_init_tenant_metric(const char *value,
 	return ENOENT;
 }
 
+static int job_scheduler_init_ctxt(struct ldmsd_tenant_data_s *tdata)
+{
+	tdata->init_num_rows = TENANT_JOB_SCHED_INIT_NUM_ROWS;
+	/* The context will be created and initialized the first time the tenant data is quired. */
+	return 0;
+}
+
 static void job_scheduler_cleanup(void *src_data)
 {
 	/* TODO: implement this */
 	assert(0 == ENOSYS);
 }
-
-// /* TODO: Update this when receive the updated job_scehduler APIs from Narate */
-// static int job_scheduler_get_tenant_values(struct ldmsd_tenant_data_s *tdata,
-// 					   struct ldmsd_tenant_row_table_s *vtbl)
-// {
-// 	int i, j, k, rc;
-// 	int num_rows;
-// 	ldms_mval_t v;
-// 	struct ldmsd_tenant_metric_s *tmet;
-
-// 	/* TODO: delme for testing only*/
-// 	static int idx = -1;
-// 	idx++;
-
-// 	/* Determine the number of combinations */
-// 	// num_rows = __num_rows_get(tdata);
-
-
-
-// 	if (num_rows > vtbl->allocated_rows) {
-// 		rc = ldmsd_tenant_row_table_resize(vtbl, num_rows);
-// 		if (rc)
-// 			return rc;
-// 	}
-
-// 	for (i = 0; i < num_rows; i++) {
-// 		j = 0;
-// 		TAILQ_FOREACH(tmet, &tdata->mlist, ent) {
-// 			v = LDMSD_TENANT_ROWTBL_CELL_PTR(vtbl, i, j);
-// 			if (tmet->mtempl.type == LDMS_V_CHAR_ARRAY) {
-// 				for (k = 0; k < 2; k++) {
-// 					v->a_char[k] = 'a' + idx + i;
-// 				}
-// 			} else if (tmet->mtempl.type == LDMS_V_U32) {
-// 				v->v_u32 = (uint32_t)(idx + i);
-// 			} else {
-// 				assert("Unexpected metric value type");
-// 			}
-// 			j++;
-// 		}
-// 	}
-// 	vtbl->active_rows = num_rows;
-// 	return 0;
-// }
 
 static struct tenant_job_scheduler_s *__resolve_column_src(struct ldmsd_tenant_data_s *tdata, ldms_set_t set)
 {
@@ -490,7 +455,7 @@ static int __jobset_rows(ldms_set_t set, struct ldmsd_tenant_data_s *tdata,
 
 			__get_value_at_index(set, &ctxt->col_maps[j], &iters[j],
 						  index_to_use, row,
-						  tdata->row_list.meta.col_offsets[j]);
+						  rlist->meta.col_offsets[j]);
 		}
 
 		rlist->active_rows++;
@@ -570,7 +535,7 @@ static int job_scheduler_get_tenant_values(struct ldmsd_tenant_data_s *tdata,
 
 	while (job_set) {
 		if (!is_job_end(job_set)) {
-			__jobset_rows(job_set, tdata, ctxt, &tdata->row_list);
+			__jobset_rows(job_set, tdata, ctxt, rlist);
 		}
 		job_set = ldmsd_jobset_next(job_set);
 	}
@@ -583,6 +548,7 @@ struct ldmsd_tenant_source_s tenant_job_scheduler_source = {
 	.name = "tenant_src_job_scheduler",
 	.can_provide = job_scheduler_can_provide,
 	.init_tenant_metric = job_scheduler_init_tenant_metric,
+	.init_source_ctxt = job_scheduler_init_ctxt,
 	.cleanup = job_scheduler_cleanup,
 	.get_tenant_values = job_scheduler_get_tenant_values,
 };

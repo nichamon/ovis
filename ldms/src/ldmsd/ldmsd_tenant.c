@@ -72,11 +72,14 @@ int __na_tenant_metric_init(const char *attr_value, struct ldmsd_tenant_metric_s
 void __na_tenant_metric_cleanup(void *src_data);
 int __na_tenant_values_get(struct ldmsd_tenant_data_s *tdata,
 			   struct ldmsd_tenant_row_list_s *rlist, int *is_empty);
+int __na_tenant_src_data_init(struct ldmsd_tenant_data_s *tdata);
+
 struct ldmsd_tenant_source_s tenant_na_source = {
 	.type = LDMSD_TENANT_SRC_NONE,
 	.name = "tenant_src_na",
 	.can_provide = NULL,
 	.init_tenant_metric = __na_tenant_metric_init,
+	.init_source_ctxt = __na_tenant_src_data_init,
 	.cleanup = __na_tenant_metric_cleanup,
 	.get_tenant_values = __na_tenant_values_get,
 };
@@ -105,6 +108,12 @@ int __na_tenant_metric_init(const char *attr_value, struct ldmsd_tenant_metric_s
 	mtempl->type = LDMS_V_CHAR;
 	mtempl->unit = "";
 	mtempl->len = 1;
+	return 0;
+}
+
+int __na_tenant_src_data_init(struct ldmsd_tenant_data_s *tdata)
+{
+	tdata->init_num_rows = 1;
 	return 0;
 }
 
@@ -236,9 +245,6 @@ static int __tenant_data_init(struct ldmsd_tenant_def_s *tdef, struct ldmsd_tena
 		return 0;
 	}
 
-	struct ldmsd_tenant_row_s *row;
-	struct ldmsd_tenant_row_list_s *rlist = &(tdata->row_list);
-	TAILQ_INIT(&rlist->rows);
 	rlist_meta->num_cols = tdata->mcount;
 	rlist_meta->col_offsets = malloc(rlist_meta->num_cols * sizeof(size_t));
 	rlist_meta->col_sizes = malloc(rlist_meta->num_cols * sizeof(size_t));
@@ -274,27 +280,8 @@ static int __tenant_data_init(struct ldmsd_tenant_def_s *tdef, struct ldmsd_tena
 
 	rlist_meta->row_size = offset;
 
-	/* Allocate memory of the first row */
-	row = calloc(1, sizeof(*row) + rlist_meta->row_size);
-	if (!row) {
-		free(rlist_meta->col_sizes);
-		free(rlist_meta->col_offsets);
-		goto enomem;
-	}
-	memcpy(&rlist->meta, rlist_meta, sizeof(*rlist_meta));
-	rlist->allocated_rows = 1;
-	rlist->active_rows = 0;
-	rlist->row_array = malloc(rlist->allocated_rows * sizeof(ldmsd_tenant_row_t));
-	if (!rlist->row_array) {
-		free(rlist_meta->col_sizes);
-		free(rlist_meta->col_offsets);
-		free(row);
-		goto enomem;
-	}
-	TAILQ_INSERT_TAIL(&rlist->rows, row, ent);
-	rlist->row_array[0] = row;
-
-	return 0;
+	rc = tdata->src->init_source_ctxt(tdata);
+	return rc;
  enomem:
 	ovis_log(NULL, OVIS_LCRIT, "Memory allocation failure.\n");
 	return ENOMEM;
@@ -306,10 +293,9 @@ static int __tenant_data_init(struct ldmsd_tenant_def_s *tdef, struct ldmsd_tena
  */
 struct ldmsd_tenant_def_s *ldmsd_tenant_def_create(const char *name, struct ldmsd_str_list *str_list)
 {
-	int rc;
+	int i, rc;
 	struct ldmsd_tenant_def_s *tdef;
 	struct ldmsd_tenant_metric_s *tmet;
-	enum ldmsd_tenant_src_type src_type;
 	struct ldmsd_str_ent *str;
 
 	tdef = ldmsd_tenant_def_find(name);
@@ -333,9 +319,9 @@ struct ldmsd_tenant_def_s *ldmsd_tenant_def_create(const char *name, struct ldms
 	}
 
 	/* Init each source */
-	for (src_type = 0; src_type < LDMSD_TENANT_SRC_COUNT; src_type++) {
-		tdef->sources[src_type].src = tenant_source_tbl[src_type];
-		TAILQ_INIT(&tdef->sources[src_type].mlist);
+	for (i = 0; tenant_source_tbl[i]; i++) {
+		tdef->sources[i].src = tenant_source_tbl[i];
+		TAILQ_INIT(&tdef->sources[i].mlist);
 	}
 
 	tdef->rec_def = ldms_record_create(LDMSD_TENANT_REC_DEF_NAME);
@@ -355,8 +341,8 @@ struct ldmsd_tenant_def_s *ldmsd_tenant_def_create(const char *name, struct ldms
 		TAILQ_INSERT_TAIL(&tdef->sources[tmet->__src_type].mlist, tmet, ent);
 	}
 
-	for (src_type = 0; src_type < LDMSD_TENANT_SRC_COUNT; src_type++) {
-		rc = __tenant_data_init(tdef, &tdef->sources[src_type]);
+	for (i = 0; tenant_source_tbl[i]; i++) {
+		rc = __tenant_data_init(tdef, &tdef->sources[i]);
 		if (rc) {
 			ref_put(&tdef->ref, "create");
 			return NULL;
@@ -493,7 +479,7 @@ ldmsd_tenant_row_t ldmsd_tenant_row_add(ldmsd_tenant_row_list_t rlist)
 		free(new_array);
 		return NULL;
 	}
-
+	TAILQ_INIT(&rlist->rows);
 	rlist->row_array = new_array;
 	rlist->row_array[rlist->allocated_rows] = row;
 	TAILQ_INSERT_TAIL(&rlist->rows, row, ent);
@@ -533,6 +519,47 @@ void ldmsd_tenant_col_missing_val(ldms_mval_t dst, ldmsd_tenant_col_map_t col_ma
 	ldmsd_tenant_mval_missing_val(dst, type, col_map->len);
 }
 
+ldmsd_tenant_row_list_t ldmsd_tenant_row_list_create(ldmsd_tenant_row_list_meta_t meta, int num_rows)
+{
+	ldmsd_tenant_row_list_t rlist = NULL;
+	ldmsd_tenant_row_t row = NULL;
+	int i;
+
+	if (!meta) {
+		errno = EINVAL;
+		return NULL;
+	}
+
+	rlist = calloc(1, sizeof(*rlist));
+	if (!rlist) {
+		goto enomem;
+	}
+	memcpy(&rlist->meta, meta, sizeof(*meta));
+
+	rlist->row_array = malloc(num_rows * sizeof(ldmsd_tenant_row_t));
+	if (!rlist->row_array) {
+		goto enomem;
+	}
+	for (i = 0; i < num_rows; i++) {
+		row = calloc(1, meta->row_size);
+		if (!row) {
+			goto enomem;
+		}
+		rlist->row_array[i] = row;
+		rlist->allocated_rows++;
+	}
+	return rlist;
+ enomem:
+	ovis_log(NULL, OVIS_LCRIT, "Memory allocation failure.\n");
+	errno = ENOMEM;
+	while ((row = TAILQ_FIRST(&rlist->rows))) {
+		TAILQ_REMOVE(&rlist->rows, row, ent);
+		free(row);
+	}
+	free(rlist->row_array);
+	free(rlist);
+	return NULL;
+}
 
 /*
  * **************** !!!!!!!! tdata->mcount MUST be determined before calling this function
@@ -547,8 +574,7 @@ int ldmsd_tenant_values_sample(struct ldmsd_tenant_def_s *tdef, ldms_set_t set, 
 	struct ldmsd_tenant_metric_s *tmet;
 	int tmp_idx;
 	int is_src_empty, is_empty;
-	// struct ldmsd_tenant_row_table_s *vtbl;
-	struct ldmsd_tenant_row_list_s *rlist;
+	ldmsd_tenant_row_list_t rlists[LDMSD_TENANT_SRC_COUNT];
 	const char *set_name = ldms_set_instance_name_get(set);
 
 	tenants = ldms_metric_get(set, tenants_mid);
@@ -573,16 +599,17 @@ int ldmsd_tenant_values_sample(struct ldmsd_tenant_def_s *tdef, ldms_set_t set, 
 			/* No tenant attributes are from this source, skip */
 			continue;
 		}
-		/* TODO: Lock the tdata because multiple threads (multiple sets) can access the table at the same time. */
-		// vtbl = &tdata->vtbl;
-		// rc = tdata->src->get_tenant_values(tdata, vtbl);
 
-		rlist = &tdata->row_list;
-		rc = tdata->src->get_tenant_values(tdata, rlist, &is_src_empty);
+		rlists[src_type] = ldmsd_tenant_row_list_create(&tdata->rlist_meta, tdata->init_num_rows);
+		if (!rlists[src_type]) {
+			rc = errno;
+			return rc;
+		}
+		rc = tdata->src->get_tenant_values(tdata, rlists[src_type], &is_src_empty);
 		if (rc) {
 			/* TODO: complete this */
 		}
-		total_tenant_cnt *= rlist->active_rows;
+		total_tenant_cnt *= rlists[src_type]->active_rows;
 		is_empty *= is_src_empty;
 	}
 
@@ -606,9 +633,8 @@ int ldmsd_tenant_values_sample(struct ldmsd_tenant_def_s *tdef, ldms_set_t set, 
 				/* No metrics from this source, skip */
 				continue;
 			}
-			rlist = &tdata->row_list;
-			src_idx[src_type] = tmp_idx % rlist->active_rows;
-			tmp_idx = tmp_idx / rlist->active_rows;
+			src_idx[src_type] = tmp_idx % rlists[src_type]->active_rows;
+			tmp_idx = tmp_idx / rlists[src_type]->active_rows;
 		}
 
 		/* Add a tenant to the tenant list */
@@ -618,12 +644,11 @@ int ldmsd_tenant_values_sample(struct ldmsd_tenant_def_s *tdef, ldms_set_t set, 
 				/* No metrics from this source, skip */
 				continue;
 			}
-			rlist = &tdata->row_list;
 			/* The number of metrics in tsrc->mlist must be equal to  */
 			for (j = 0, tmet = TAILQ_FIRST(&tdata->mlist); tmet;
 					j++, tmet = TAILQ_NEXT(tmet, ent)) {
 				ldms_mval_t dst = ldms_record_metric_get(tenant, tmet->__rent_id);
-				ldms_mval_t src = LDMSD_TENANT_ROWLIST_CELL_PTR(rlist, src_idx[src_type], j);
+				ldms_mval_t src = LDMSD_TENANT_ROWLIST_CELL_PTR(rlists[src_type], src_idx[src_type], j);
 				// ldms_mval_t src = LDMSD_TENANT_ROWTBL_CELL_PTR(vtbl, src_idx[src_type], j);
 
 				__mval_copy(src, dst, tmet->mtempl.type, tmet->mtempl.len);
