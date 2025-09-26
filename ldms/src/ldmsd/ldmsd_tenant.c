@@ -129,7 +129,7 @@ int __na_tenant_values_get(struct ldmsd_tenant_data_s *tdata,
 		return 0;
 	}
 	row = TAILQ_FIRST(&rlist->rows);
-	for (i = 0; i < rlist->num_cols; i++) {
+	for (i = 0; i < rlist->meta.num_cols; i++) {
 		LDMSD_TENANT_ROW_CELL_PTR(rlist, row, i)->v_char = LDMSD_TENANT_MISSING_VALUE_CHAR;
 	}
 	rlist->active_rows = 1;
@@ -228,6 +228,7 @@ static int __tenant_data_init(struct ldmsd_tenant_def_s *tdef, struct ldmsd_tena
 	int i, rc;
 	size_t offset;
 	struct ldmsd_tenant_metric_s *tmet;
+	ldmsd_tenant_row_list_meta_t rlist_meta = &tdata->rlist_meta;
 
 	// tdata->gn = 0;
 	if (0 == tdata->mcount) {
@@ -238,10 +239,10 @@ static int __tenant_data_init(struct ldmsd_tenant_def_s *tdef, struct ldmsd_tena
 	struct ldmsd_tenant_row_s *row;
 	struct ldmsd_tenant_row_list_s *rlist = &(tdata->row_list);
 	TAILQ_INIT(&rlist->rows);
-	rlist->num_cols = tdata->mcount;
-	rlist->col_offsets = malloc(rlist->num_cols * sizeof(size_t));
-	rlist->col_sizes = malloc(rlist->num_cols * sizeof(size_t));
-	if (!rlist->col_offsets || !rlist->col_sizes) {
+	rlist_meta->num_cols = tdata->mcount;
+	rlist_meta->col_offsets = malloc(rlist_meta->num_cols * sizeof(size_t));
+	rlist_meta->col_sizes = malloc(rlist_meta->num_cols * sizeof(size_t));
+	if (!rlist_meta->col_offsets || !rlist_meta->col_sizes) {
 		goto enomem;
 	}
 
@@ -263,29 +264,30 @@ static int __tenant_data_init(struct ldmsd_tenant_def_s *tdef, struct ldmsd_tena
 			return rc;
 		}
 
-		rlist->col_sizes[i] = ldms_metric_value_size_get(tmet->mtempl.type, tmet->mtempl.len);
-		rlist->col_offsets[i] = offset;
-		offset += rlist->col_sizes[i];
+		rlist_meta->col_sizes[i] = ldms_metric_value_size_get(tmet->mtempl.type, tmet->mtempl.len);
+		rlist_meta->col_offsets[i] = offset;
+		offset += rlist_meta->col_sizes[i];
 		i++;
 		tmet = TAILQ_NEXT(tmet, ent);
 	}
 	assert((i == tdata->mcount) && !tmet); /* If i and tmet must be aligned. */
 
-	rlist->row_size = offset;
+	rlist_meta->row_size = offset;
 
 	/* Allocate memory of the first row */
-	row = calloc(1, sizeof(*row) + rlist->row_size);
+	row = calloc(1, sizeof(*row) + rlist_meta->row_size);
 	if (!row) {
-		free(rlist->col_sizes);
-		free(rlist->col_offsets);
+		free(rlist_meta->col_sizes);
+		free(rlist_meta->col_offsets);
 		goto enomem;
 	}
+	memcpy(&rlist->meta, rlist_meta, sizeof(*rlist_meta));
 	rlist->allocated_rows = 1;
 	rlist->active_rows = 0;
 	rlist->row_array = malloc(rlist->allocated_rows * sizeof(ldmsd_tenant_row_t));
 	if (!rlist->row_array) {
-		free(rlist->col_sizes);
-		free(rlist->col_offsets);
+		free(rlist_meta->col_sizes);
+		free(rlist_meta->col_offsets);
 		free(row);
 		goto enomem;
 	}
@@ -484,7 +486,7 @@ ldmsd_tenant_row_t ldmsd_tenant_row_add(ldmsd_tenant_row_list_t rlist)
 {
 	ldmsd_tenant_row_t row;
 	ldmsd_tenant_row_t *new_array;
-	row = calloc(1, sizeof(*row) + rlist->row_size);
+	row = calloc(1, sizeof(*row) + rlist->meta.row_size);
 	new_array = realloc(rlist->row_array, (rlist->allocated_rows+1) * sizeof(ldmsd_tenant_row_t));
 	if (!row || !new_array) {
 		free(row);

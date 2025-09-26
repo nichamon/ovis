@@ -490,7 +490,7 @@ static int __jobset_rows(ldms_set_t set, struct ldmsd_tenant_data_s *tdata,
 
 			__get_value_at_index(set, &ctxt->col_maps[j], &iters[j],
 						  index_to_use, row,
-						  tdata->row_list.col_offsets[j]);
+						  tdata->row_list.meta.col_offsets[j]);
 		}
 
 		rlist->active_rows++;
@@ -528,7 +528,7 @@ static int __empty_row(struct ldmsd_tenant_data_s *tdata, struct ldmsd_tenant_ro
 	}
 
 	for (i = 0, tmet = TAILQ_FIRST(&tdata->mlist); tmet; i++, tmet = TAILQ_NEXT(tmet, ent)) {
-		dst = LDMSD_TENANT_ROW_CELL_PTR_AT_OFFSET(row, rlist->col_offsets[i]);
+		dst = LDMSD_TENANT_ROW_CELL_PTR_AT_OFFSET(row, rlist->meta.col_offsets[i]);
 		ldmsd_tenant_mval_missing_val(dst, tmet->mtempl.type, tmet->mtempl.len);
 	}
 	rlist->active_rows++;

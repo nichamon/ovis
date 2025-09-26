@@ -157,11 +157,15 @@ typedef struct ldmsd_tenant_row_s {
 	char data[OVIS_FLEX];        /* Raw row data (array of *ldms_mval_t )*/
 } *ldmsd_tenant_row_t;
 
-typedef struct ldmsd_tenant_row_list_s {
+typedef struct ldmsd_tenant_row_list_meta_s {
 	int num_cols;
 	size_t row_size;
 	size_t *col_offsets;
 	size_t *col_sizes;
+} *ldmsd_tenant_row_list_meta_t;
+
+typedef struct ldmsd_tenant_row_list_s {
+	struct ldmsd_tenant_row_list_meta_s meta;
 	int active_rows;        /* Number of rows containing valid values */
 	int allocated_rows;     /* Number of allocated rows, which >= num_active */
 	TAILQ_HEAD(, ldmsd_tenant_row_s) rows;
@@ -169,12 +173,12 @@ typedef struct ldmsd_tenant_row_list_s {
 } *ldmsd_tenant_row_list_t;
 
 #define LDMSD_TENANT_ROWLIST_CELL_PTR(_rlist_, _row_idx_, _col_id_) \
-    (((_row_idx_) < (_rlist_)->active_rows && (_col_id_) < (_rlist_)->num_cols) ? \
-     ((ldms_mval_t)((void *)(_rlist_)->row_array[_row_idx_]->data + (_rlist_)->col_offsets[_col_id_])) : NULL)
+    (((_row_idx_) < (_rlist_)->active_rows && (_col_id_) < (_rlist_)->meta.num_cols) ? \
+     ((ldms_mval_t)((void *)(_rlist_)->row_array[_row_idx_]->data + (_rlist_)->meta.col_offsets[_col_id_])) : NULL)
 
 #define LDMSD_TENANT_ROW_CELL_PTR(_rlist_, _row_, _col_id_) \
-	(((_col_id_) < (_rlist_)->num_cols) ? \
-	((ldms_mval_t)((void *)(_row_)->data + (_rlist_)->col_offsets[_col_id_])) : NULL)
+	(((_col_id_) < (_rlist_)->meta.num_cols) ? \
+	((ldms_mval_t)((void *)(_row_)->data + (_rlist_)->meta.col_offsets[_col_id_])) : NULL)
 
 #define LDMSD_TENANT_ROW_CELL_PTR_AT_OFFSET(_row_, _offset_) \
 	((ldms_mval_t)((void *)(_row_)->data + _offset_))
@@ -184,6 +188,7 @@ struct ldmsd_tenant_data_s {
 	size_t total_mem;	/* Summation of the memory of each metric ldms_mval_t */
 	int mcount;		/* Number of metrics */
 	struct ldmsd_tenant_metric_list mlist;
+	struct ldmsd_tenant_row_list_meta_s rlist_meta;
 	struct ldmsd_tenant_row_list_s row_list; /**< List of rows */
 	void *src_ctxt;        /* Sources-specific context */
 };
