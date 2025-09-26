@@ -66,11 +66,11 @@
 
 struct ldmsd_tenant_source_s;
 enum ldmsd_tenant_src_type {
-	LDMSD_TENANT_SRC_NONE = 0,
-	LDMSD_TENANT_SRC_JOB_SCHEDULER = 1, /* Job scheduler source */
+	LDMSD_TENANT_SRC_JOB_SCHEDULER = 0, /* Job scheduler source */
+	LDMSD_TENANT_SRC_NA, /* Always the last one, Handle attributes that no source can provide them. */
 };
 
-#define LDMSD_TENANT_SRC_COUNT (LDMSD_TENANT_SRC_JOB_SCHEDULER+1)
+#define LDMSD_TENANT_SRC_COUNT (LDMSD_TENANT_SRC_NA+1)
 
 /**
  * \brief Tenant metric structure
