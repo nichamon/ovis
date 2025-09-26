@@ -66,7 +66,7 @@
 
 extern ovis_log_t config_log;
 
-extern struct ldmsd_tenant_source_s tenant_job_scheduler_source; /* TODO: Implement this */
+extern struct ldmsd_tenant_source_s tenant_job_scheduler_source;
 
 int __na_tenant_metric_init(const char *attr_value, struct ldmsd_tenant_metric_s *tmet);
 void __na_tenant_metric_cleanup(void *src_data);
@@ -235,60 +235,6 @@ static int __tenant_data_init(struct ldmsd_tenant_def_s *tdef, struct ldmsd_tena
 		return 0;
 	}
 
-	// /* TODO: start row table */
-	// struct ldmsd_tenant_row_table_s *tbl = &(tdata->vtbl);
-
-
-	// tbl->num_cols = tdata->mcount;
-
-	// tbl->col_offsets = malloc(tbl->num_cols * sizeof(size_t));
-	// tbl->col_sizes = malloc(tbl->num_cols * sizeof(size_t));
-	// tbl->rows = malloc(sizeof(void *));
-	// if (!tbl->col_offsets || !tbl->col_sizes || !tbl->rows) {
-	// 	goto enomem;
-	// }
-
-	// offset = 0;
-	// i = 0;
-	// tmet = TAILQ_FIRST(&tdata->mlist);
-	// while (tmet) {
-	// 	tmet->__rent_id = ldms_record_metric_add(tdef->rec_def,
-	// 						 tmet->mtempl.name,
-	// 						 tmet->mtempl.unit,
-	// 						 tmet->mtempl.type,
-	// 						 tmet->mtempl.len);
-	// 	if (tmet->__rent_id < 0) {
-	// 		rc = -tmet->__rent_id;
-	// 		ovis_log(config_log, OVIS_LERROR,
-	// 			"Cannot create tenant definition '%s' because "
-	// 			"ldmsd failed to create the record definition "
-	// 			"with error %d.\n", tdef->name, rc);
-	// 		return rc;
-	// 	}
-
-	// 	tbl->col_sizes[i] = ldms_metric_value_size_get(tmet->mtempl.type, tmet->mtempl.len);
-	// 	tbl->col_offsets[i] = offset;
-	// 	offset += tbl->col_sizes[i];
-	// 	i++;
-	// 	tmet = TAILQ_NEXT(tmet, ent);
-	// }
-	// assert((i == tdata->mcount) && !tmet); /* If i and tmet must be aligned. */
-
-	// tbl->row_size = offset;
-
-	// /* Allocate memory of the first row */
-	// tbl->rows[0] = calloc(1, tbl->row_size);
-	// if (!tbl->rows[0]) {
-	// 	free(tbl->rows);
-	// 	free(tbl->col_sizes);
-	// 	free(tbl->col_offsets);
-	// 	goto enomem;
-	// }
-	// tbl->allocated_rows = 1;
-	// tbl->active_rows = 0;
-
-	// /* TODO: END row table */
-
 	struct ldmsd_tenant_row_s *row;
 	struct ldmsd_tenant_row_list_s *rlist = &(tdata->row_list);
 	TAILQ_INIT(&rlist->rows);
@@ -350,31 +296,6 @@ static int __tenant_data_init(struct ldmsd_tenant_def_s *tdef, struct ldmsd_tena
  enomem:
 	ovis_log(NULL, OVIS_LCRIT, "Memory allocation failure.\n");
 	return ENOMEM;
-}
-
-int ldmsd_tenant_row_table_resize(struct ldmsd_tenant_row_table_s *rtbl, int num_rows)
-{
-	int i;
-	void **new_rows;
-
-	new_rows = realloc(rtbl->rows, num_rows * sizeof(void *));
-	if (!new_rows) {
-		ovis_log(NULL, OVIS_LCRIT, "Memory allocation failure.\n");
-		return ENOMEM;
-	}
-	rtbl->rows = new_rows;
-	/* TODO: are we leaking the previous rtbl->rows? */
-
-	/* Allocate new rows */
-	for (i = rtbl->allocated_rows; i < num_rows; i++) {
-		rtbl->rows[i] = calloc(1, rtbl->row_size);
-		if (!rtbl->rows[i]) {
-			ovis_log(NULL, OVIS_LCRIT, "Memory allocation failure.\n");
-			return ENOMEM;
-		}
-	}
-	rtbl->allocated_rows = num_rows;
-	return 0;
 }
 
 /*
