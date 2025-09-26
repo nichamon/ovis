@@ -544,7 +544,7 @@ ldmsd_tenant_row_list_t ldmsd_tenant_row_list_create(ldmsd_tenant_row_list_meta_
 		goto enomem;
 	}
 	for (i = 0; i < num_rows; i++) {
-		row = calloc(1, meta->row_size);
+		row = calloc(1, sizeof(*row) + meta->row_size);
 		if (!row) {
 			goto enomem;
 		}
@@ -571,7 +571,7 @@ ldmsd_tenant_row_list_t ldmsd_tenant_row_list_create(ldmsd_tenant_row_list_meta_
  */
 int ldmsd_tenant_values_sample(struct ldmsd_tenant_def_s *tdef, ldms_set_t set, int tenant_rec_mid, int tenants_mid)
 {
-	int i, j, rc;
+	int i, j, type, rc;
 	ldms_mval_t tenants, tenant, src, dst;
 	struct ldmsd_tenant_data_s *tdata;
 	struct ldmsd_tenant_metric_s *tmet;
@@ -629,19 +629,19 @@ int ldmsd_tenant_values_sample(struct ldmsd_tenant_def_s *tdef, ldms_set_t set, 
 		}
 
 		/* Calculate which index to pick from each source */
-		for (i = LDMSD_TENANT_SRC_COUNT - 1; i >= 0; i--) {
-			tdata = &tdef->sources[i];
+		for (type = LDMSD_TENANT_SRC_COUNT - 1; type >= 0; type--) {
+			tdata = &tdef->sources[type];
 			if (0 == tdata->mcount) {
 				/* No metrics from this source, skip */
 				continue;
 			}
-			src_idx[i] = tmp_idx % rlists[i]->active_rows;
-			tmp_idx = tmp_idx / rlists[i]->active_rows;
+			src_idx[type] = tmp_idx % rlists[type]->active_rows;
+			tmp_idx = tmp_idx / rlists[type]->active_rows;
 		}
 
 		/* Add a tenant to the tenant list */
-		for (i = 0; i < LDMSD_TENANT_SRC_COUNT; i++) {
-			tdata = &tdef->sources[i];
+		for (type = 0; type < LDMSD_TENANT_SRC_COUNT; type++) {
+			tdata = &tdef->sources[type];
 			if (0 == tdata->mcount) {
 				/* No metrics from this source, skip */
 				continue;
@@ -650,7 +650,7 @@ int ldmsd_tenant_values_sample(struct ldmsd_tenant_def_s *tdef, ldms_set_t set, 
 			for (j = 0, tmet = TAILQ_FIRST(&tdata->mlist); tmet;
 					j++, tmet = TAILQ_NEXT(tmet, ent)) {
 				dst = ldms_record_metric_get(tenant, tmet->__rent_id);
-				src = LDMSD_TENANT_ROWLIST_CELL_PTR(rlists[i], src_idx[i], j);
+				src = LDMSD_TENANT_ROWLIST_CELL_PTR(rlists[type], src_idx[type], j);
 
 				__mval_copy(src, dst, tmet->mtempl.type, tmet->mtempl.len);
 			}
