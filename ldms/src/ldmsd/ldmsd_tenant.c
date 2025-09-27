@@ -67,22 +67,7 @@
 extern ovis_log_t config_log;
 
 extern struct ldmsd_tenant_source_s tenant_job_scheduler_source;
-
-int __na_tenant_metric_init(const char *attr_value, struct ldmsd_tenant_metric_s *tmet);
-void __na_tenant_metric_cleanup(void *src_data);
-int __na_tenant_values_get(struct ldmsd_tenant_data_s *tdata,
-			   struct ldmsd_tenant_row_list_s *rlist, int *is_empty);
-int __na_tenant_src_data_init(struct ldmsd_tenant_data_s *tdata);
-
-struct ldmsd_tenant_source_s tenant_na_source = {
-	.type = LDMSD_TENANT_SRC_NA,
-	.name = "tenant_src_na",
-	.can_provide = NULL,
-	.init_tenant_metric = __na_tenant_metric_init,
-	.init_source_ctxt = __na_tenant_src_data_init,
-	.cleanup = __na_tenant_metric_cleanup,
-	.get_tenant_values = __na_tenant_values_get,
-};
+extern struct ldmsd_tenant_source_s tenant_na_source;
 
 struct tenant_source_entry {
 	int source_type;
@@ -95,9 +80,19 @@ static struct tenant_source_entry tenant_source_tbl[] = {
 	{ -1, NULL }
 };
 
-/* Not applicable tenant metric */
+static struct ldmsd_tenant_source_s *tenant_find_source(enum ldmsd_tenant_src_type_e type)
+{
+	int i;
+	for (i = 0; tenant_source_tbl[i].src; i++) {
+		if (tenant_source_tbl[i].source_type == type)
+			return tenant_source_tbl[i].src;
+	}
+	return NULL;
+}
 
-int __na_tenant_metric_init(const char *attr_value, struct ldmsd_tenant_metric_s *tmet)
+/* ----------- Handlers of attributes that don't have any providers --------- */
+
+static int __na_tenant_metric_init(const char *attr_value, struct ldmsd_tenant_metric_s *tmet)
 {
 	ldms_metric_template_t mtempl = &(tmet->mtempl);
 
@@ -115,19 +110,23 @@ int __na_tenant_metric_init(const char *attr_value, struct ldmsd_tenant_metric_s
 	return 0;
 }
 
-int __na_tenant_src_data_init(struct ldmsd_tenant_data_s *tdata)
+static void __na_tenant_metric_cleanup(struct ldmsd_tenant_metric_s *tmet)
+{
+	free((char*)tmet->mtempl.name);
+}
+
+static int __na_tenant_src_data_init(struct ldmsd_tenant_data_s *tdata)
 {
 	tdata->init_num_rows = 1;
 	return 0;
 }
 
-void __na_tenant_metric_cleanup(void *src_data)
+static void __na_tenant_src_data_cleanup(void *src_ctxt)
 {
-	/* TODO: complete this */
-	assert(0 == ENOSYS);
+	/* Nothing to do */
 }
 
-int __na_tenant_values_get(struct ldmsd_tenant_data_s *tdata,
+static int __na_tenant_values_get(struct ldmsd_tenant_data_s *tdata,
 			   struct ldmsd_tenant_row_list_s *rlist,
 			   int *is_empty)
 {
@@ -149,6 +148,19 @@ int __na_tenant_values_get(struct ldmsd_tenant_data_s *tdata,
 	return 0;
 }
 
+struct ldmsd_tenant_source_s tenant_na_source = {
+	.type = LDMSD_TENANT_SRC_NA,
+	.name = "tenant_src_na",
+	.can_provide = NULL,
+	.init_tenant_metric = __na_tenant_metric_init,
+	.cleanup_tenant_metric = __na_tenant_metric_cleanup,
+	.init_source_ctxt = __na_tenant_src_data_init,
+	.cleanup_source_ctxt = __na_tenant_src_data_cleanup,
+	.get_tenant_values = __na_tenant_values_get,
+};
+/* ------END:  Handlers of attributes that don't have any providers --------- */
+
+
 /* Tenant definition creation */
 
 static struct ldmsd_tenant_source_s *__get_source(const char *attr_value)
@@ -167,8 +179,8 @@ static struct ldmsd_tenant_source_s *__get_source(const char *attr_value)
 
 void __tenant_metric_destroy(struct ldmsd_tenant_metric_s *tmet)
 {
-	/* TODO: Implement this, or let the source cleanup
-	because source is the one who initializes this */
+	struct ldmsd_tenant_source_s *src = tenant_find_source(tmet->__src_type);
+	src->cleanup_tenant_metric(tmet);
 }
 
 struct ldmsd_tenant_metric_s *__process_tenant_attr(const char *value)
@@ -217,18 +229,21 @@ struct ldmsd_tenant_metric_s *__process_tenant_attr(const char *value)
 void __tenant_def_destroy(void *arg)
 {
 	struct ldmsd_tenant_def_s *tdef = (struct ldmsd_tenant_def_s *)arg;
-	struct ldmsd_tenant_data_s *tsrc;
+	struct ldmsd_tenant_data_s *tdata;
 	struct ldmsd_tenant_metric_s *tmet;
 	int i;
 
 	for (i = 0; tenant_source_tbl[i].src; i++) {
-		tsrc = &tdef->sources[tenant_source_tbl[i].source_type];
-		while ((tmet = TAILQ_FIRST(&tsrc->mlist))) {
-			TAILQ_REMOVE(&tsrc->mlist, tmet, ent);
+		tdata = &tdef->sources[i];
+		while ((tmet = TAILQ_FIRST(&tdata->mlist))) {
+			TAILQ_REMOVE(&tdata->mlist, tmet, ent);
 			__tenant_metric_destroy(tmet);
 		}
+		tdata->src->cleanup_source_ctxt(tdata->src_ctxt);
 	}
 	free(tdef->name);
+	ldms_record_delete(tdef->rec_def);
+	free(tdef);
 }
 
 pthread_mutex_t tenant_def_list_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -582,7 +597,7 @@ int ldmsd_tenant_values_sample(struct ldmsd_tenant_def_s *tdef, ldms_set_t set, 
 
 	tenants = ldms_metric_get(set, tenants_mid);
 	if (!tenants) {
-		ovis_log(NULL, OVIS_LINFO,
+		ovis_log(NULL, OVIS_LWARN,
 			"Failed to retrieve the current information " \
 			"of tenants for set %s.\n", set_name);
 		return ENOENT;
@@ -624,8 +639,7 @@ int ldmsd_tenant_values_sample(struct ldmsd_tenant_def_s *tdef, ldms_set_t set, 
 
 		tenant = ldms_record_alloc(set, tenant_rec_mid);
 		if (!tenant) {
-			/* TODO: resize */
-			assert(0 == ENOMEM);
+			return ENOMEM; /* The caller should resize the set with a bigger heap */
 		}
 
 		/* Calculate which index to pick from each source */

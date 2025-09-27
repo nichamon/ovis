@@ -65,7 +65,7 @@
 #define LDMSD_TENANT_MISSING_VALUE_INT  0
 
 struct ldmsd_tenant_source_s;
-enum ldmsd_tenant_src_type {
+enum ldmsd_tenant_src_type_e {
 	LDMSD_TENANT_SRC_JOB_SCHEDULER = 0, /* Job scheduler source */
 	LDMSD_TENANT_SRC_NA, /* Always the last one, Handle attributes that no source can provide them. */
 };
@@ -86,7 +86,7 @@ struct ldmsd_tenant_metric_s {
 
 	/* Fields internal to tenant core logic */
 	int __rent_id;                            /**< Reference to metric in LDMS record definition */
-	enum ldmsd_tenant_src_type __src_type;    /**< Source type providing the value */
+	enum ldmsd_tenant_src_type_e __src_type;    /**< Source type providing the value */
 	// struct ldmsd_tenant_source_s *__src;      /**< Source that provides this metric (reference counted) */
 	TAILQ_ENTRY(ldmsd_tenant_metric_s) ent;         /**< List linkage */
 };
@@ -219,17 +219,18 @@ struct ldmsd_tenant_def_s {
  */
 struct ldmsd_tenant_source_s {
 	struct ref_s ref;
-	enum ldmsd_tenant_src_type type;        /**< Source type identifier */
+	enum ldmsd_tenant_src_type_e type;        /**< Source type identifier */
 	const char *name;                       /**< Human-readable source name */
 
 	/* Interface methods */
 	int (*can_provide)(const char *attr_name);
 	/**< Assign values to src_data and metric_template, the flag in metric_template can be ignored */
 	int (*init_tenant_metric)(const char *attr_value, struct ldmsd_tenant_metric_s *tmet);
+	void (*cleanup_tenant_metric)(struct ldmsd_tenant_metric_s *tmet);
 	/**< Runtime value retrieval method, assuming that \c mval was allocated with enough memory */
 	int (*init_source_ctxt)(struct ldmsd_tenant_data_s *tdata); /* This will be called after the metric list is populated and initialized */
+	void (*cleanup_source_ctxt)(void *src_ctxt);
 	int (*get_tenant_values)(struct ldmsd_tenant_data_s *tdata, struct ldmsd_tenant_row_list_s *rlist, int *is_empty);
-	void (*cleanup)(void *src_data);        /**< Cleanup source-specific data */
 };
 
 /**
@@ -300,6 +301,9 @@ ldmsd_tenant_row_t ldmsd_tenant_row_add(struct ldmsd_tenant_row_list_s *rlist);
  * \brief Update the tenant list of an LDMS set
  *
  * This function updates the list of tenants to contains the information of all current tenants
+ *
+ * When the returned code is ENOMEM, the caller should resize the set with a bigger heap and call the function again.
+ * This could happen when there are more tenants than first anticipated.
  *
  * \param tdef             Tenant definition to retrieve values for
  * \param set              An LDMS set to be updated

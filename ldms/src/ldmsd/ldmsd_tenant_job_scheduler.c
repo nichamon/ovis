@@ -131,6 +131,12 @@ static int job_scheduler_init_tenant_metric(const char *value,
 	return ENOENT;
 }
 
+static void job_scheduler_cleanup_metric(struct ldmsd_tenant_metric_s *tmet)
+{
+	free((char*)tmet->mtempl.name);
+	free((char*)tmet->mtempl.unit);
+}
+
 static int job_scheduler_init_ctxt(struct ldmsd_tenant_data_s *tdata)
 {
 	tdata->init_num_rows = TENANT_JOB_SCHED_INIT_NUM_ROWS;
@@ -138,10 +144,19 @@ static int job_scheduler_init_ctxt(struct ldmsd_tenant_data_s *tdata)
 	return 0;
 }
 
-static void job_scheduler_cleanup(void *src_data)
+static void job_scheduler_cleanup(void *src_ctxt)
 {
-	/* TODO: implement this */
-	assert(0 == ENOSYS);
+	tenant_job_scheduler_t ctxt;
+	if (!src_ctxt)
+		return;
+
+	ctxt = (tenant_job_scheduler_t)src_ctxt;
+
+	free((char*)ctxt->schema);
+	free(ctxt->col_maps);
+	free(ctxt->unique_mids);
+	free(ctxt->col_to_uniq_mids);
+	free(ctxt->uniq_mids_col_counts);
 }
 
 static struct tenant_job_scheduler_s *__resolve_column_src(struct ldmsd_tenant_data_s *tdata, ldms_set_t set)
@@ -548,7 +563,8 @@ struct ldmsd_tenant_source_s tenant_job_scheduler_source = {
 	.name = "tenant_src_job_scheduler",
 	.can_provide = job_scheduler_can_provide,
 	.init_tenant_metric = job_scheduler_init_tenant_metric,
+	.cleanup_tenant_metric = job_scheduler_cleanup_metric,
 	.init_source_ctxt = job_scheduler_init_ctxt,
-	.cleanup = job_scheduler_cleanup,
+	.cleanup_source_ctxt = job_scheduler_cleanup,
 	.get_tenant_values = job_scheduler_get_tenant_values,
 };
