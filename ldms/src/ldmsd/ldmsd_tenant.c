@@ -242,7 +242,8 @@ void __tenant_def_destroy(void *arg)
 		tdata->src->cleanup_source_ctxt(tdata->src_ctxt);
 	}
 	free(tdef->name);
-	ldms_record_delete(tdef->rec_def);
+	free(tdef->rec_def_tmpl);
+	// ldms_record_delete(tdef->rec_def);
 	free(tdef);
 }
 
@@ -274,19 +275,22 @@ static int __tenant_data_init(struct ldmsd_tenant_def_s *tdef, struct ldmsd_tena
 	i = 0;
 	tmet = TAILQ_FIRST(&tdata->mlist);
 	while (tmet) {
-		tmet->__rent_id = ldms_record_metric_add(tdef->rec_def,
-							 tmet->mtempl.name,
-							 tmet->mtempl.unit,
-							 tmet->mtempl.type,
-							 tmet->mtempl.len);
-		if (tmet->__rent_id < 0) {
-			rc = -tmet->__rent_id;
-			ovis_log(config_log, OVIS_LERROR,
-				"Cannot create tenant definition '%s' because " \
-				"ldmsd failed to create the record definition " \
-				"with error %d.\n", tdef->name, rc);
-			return rc;
-		}
+		tdef->rec_def_tmpl[i] = tmet->mtempl;
+		tmet->__rent_id = i;
+
+		// tmet->__rent_id = ldms_record_metric_add(tdef->rec_def,
+		// 					 tmet->mtempl.name,
+		// 					 tmet->mtempl.unit,
+		// 					 tmet->mtempl.type,
+		// 					 tmet->mtempl.len);
+		// if (tmet->__rent_id < 0) {
+		// 	rc = -tmet->__rent_id;
+		// 	ovis_log(config_log, OVIS_LERROR,
+		// 		"Cannot create tenant definition '%s' because "
+		// 		"ldmsd failed to create the record definition "
+		// 		"with error %d.\n", tdef->name, rc);
+		// 	return rc;
+		// }
 
 		rlist_meta->col_sizes[i] = ldms_metric_value_size_get(tmet->mtempl.type, tmet->mtempl.len);
 		rlist_meta->col_offsets[i] = offset;
@@ -342,11 +346,11 @@ struct ldmsd_tenant_def_s *ldmsd_tenant_def_create(const char *name, struct ldms
 		TAILQ_INIT(&tdef->sources[i].mlist);
 	}
 
-	tdef->rec_def = ldms_record_create(LDMSD_TENANT_REC_DEF_NAME);
-	if (!tdef->rec_def) {
-		ref_put(&tdef->ref, "create");
-		goto enomem;
-	}
+	// tdef->rec_def = ldms_record_create(LDMSD_TENANT_REC_DEF_NAME);
+	// if (!tdef->rec_def) {
+	// 	ref_put(&tdef->ref, "create");
+	// 	goto enomem;
+	// }
 
 	/* Initialize the data of each source */
 	TAILQ_FOREACH(str, str_list, entry) {
@@ -357,6 +361,12 @@ struct ldmsd_tenant_def_s *ldmsd_tenant_def_create(const char *name, struct ldms
 		tdef->sources[tmet->__src_type].mcount++;
 		tdef->sources[tmet->__src_type].total_mem += ldms_metric_value_size_get(tmet->mtempl.type, tmet->mtempl.len);
 		TAILQ_INSERT_TAIL(&tdef->sources[tmet->__src_type].mlist, tmet, ent);
+		tdef->num_attrs++;
+	}
+
+	tdef->rec_def_tmpl = calloc(1, sizeof(struct ldms_metric_template_s) * (tdef->num_attrs + 1)); /* Create one extra element as the termining element of the array */
+	if (!tdef->rec_def_tmpl) {
+		goto enomem;
 	}
 
 	for (i = 0; tenant_source_tbl[i].src; i++) {
@@ -366,7 +376,7 @@ struct ldmsd_tenant_def_s *ldmsd_tenant_def_create(const char *name, struct ldms
 			return NULL;
 		}
 	}
-	tdef->rec_def_heap_sz = ldms_record_heap_size_get(tdef->rec_def);
+	// tdef->rec_def_heap_sz = ldms_record_heap_size_get(tdef->rec_def);
 
 	pthread_mutex_lock(&tenant_def_list_lock);
 	LIST_INSERT_HEAD(&tenant_def_list, tdef, ent);
@@ -413,26 +423,37 @@ int ldmsd_tenant_schema_list_add(struct ldmsd_tenant_def_s *tdef, ldms_schema_t 
 				 int num_tenants,
 				 int *_tenant_rec_def_idx, int *_tenants_idx)
 {
-	int rc;
+	int rc = 0;
 	size_t heap_sz;
 	int rec_def_idx, list_idx;
+	ldms_record_t rec_def;
+	int mids[tdef->num_attrs];
 
-	heap_sz = num_tenants * tdef->rec_def_heap_sz;
-	rec_def_idx = ldms_schema_record_add(schema, tdef->rec_def);
+	rec_def = ldms_record_from_template(LDMSD_TENANT_REC_DEF_NAME, tdef->rec_def_tmpl, mids);
+	if (!rec_def) {
+		ovis_log(NULL, OVIS_LCRIT, "Memory allocation failure.\n");
+		return ENOMEM;
+	}
+	heap_sz = num_tenants * ldms_record_heap_size_get(rec_def);
+
+	rec_def_idx = ldms_schema_record_add(schema, rec_def);
 	if (rec_def_idx < 0) {
 		rc = -rec_def_idx;
-		return rc;
+		goto out;
 	}
 	list_idx = ldms_schema_metric_list_add(schema, LDMSD_TENANT_LIST_NAME, NULL, heap_sz);
 	if (list_idx < 0) {
 		rc = -list_idx;
-		return rc;
+		goto out;
 	}
 	if (_tenant_rec_def_idx)
 		*_tenant_rec_def_idx = rec_def_idx;
 	if (_tenants_idx)
 		*_tenants_idx = list_idx;
-	return 0;
+ out:
+	ldms_record_delete(rec_def);
+	return rc;
+
 }
 
 
@@ -677,3 +698,34 @@ int ldmsd_tenant_values_sample(struct ldmsd_tenant_def_s *tdef, ldms_set_t set, 
 
 	return 0;
 }
+
+// struct iter {
+// 	int n_providers;
+// 	struct list_head *heads; /* array of heads */
+// 	struct row *rows; /* current row of each provider (head) */
+// };
+
+// struct row *iter_first(struct iter *itr)
+// {
+// 	struct row *row;
+// 	for (i = 0; i < itr->n_providers; i++) {
+// 		rows[i] = first(itr->heads[i]);
+// 	}
+// 	/* make joined row */
+// 	row = join(itr->rows);
+// 	return row;
+// }
+
+// struct row *iter_next(struct iter *itr)
+// {
+// 	for (i = itr->n_providers - 1; i>=0; i--) {
+// 		rows[i] = next(itr->heads[i]);
+// 		if (rows[i])
+// 			break;
+// 		rows[i] = first(itr->heads[i]);
+// 	}
+// 	if (i == -1)
+// 		return NULL;
+// 	row = join(iter->rows);
+// 	return row;
+// }
