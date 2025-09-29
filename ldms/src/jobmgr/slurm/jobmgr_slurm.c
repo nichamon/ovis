@@ -1579,6 +1579,7 @@ int make_qres(struct query_ctxt *ctxt,
 		mv_assign(ctxt->mdesc[i], mv, job, step, task);
 	}
 	TAILQ_INSERT_TAIL(&list->tailq, qres, entry);
+	list->len++;
 	return 0;
 }
 
