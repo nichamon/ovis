@@ -590,7 +590,7 @@ static job_data_t __job_data_alloc(jobmgr_slurm_t js, uint64_t job_id)
 {
 	job_data_t job;
 	ldms_schema_t sch;
-	char buf[BUFSIZ];
+	char buf[LDMSD_JOBSET_JOB_ID_LEN];
 
 	job = calloc(1, sizeof(*job));
 	if (!job)
