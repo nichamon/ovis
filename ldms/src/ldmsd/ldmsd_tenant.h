@@ -60,6 +60,7 @@
 #include "ovis_log/ovis_log.h"
 
 #include "ldmsd.h"
+#include "ldmsd_jobmgr.h"
 
 #define LDMSD_TENANT_MISSING_VALUE_CHAR '-'
 #define LDMSD_TENANT_MISSING_VALUE_INT 0
@@ -90,7 +91,8 @@ typedef struct ldmsd_tenant_metric_s {
 	enum ldmsd_tenant_src_type_e
 		__src_type; /**< Source type providing the value */
 	// struct ldmsd_tenant_source_s *__src;      /**< Source that provides this metric (reference counted) */
-	TAILQ_ENTRY(ldmsd_tenant_metric_s) ent; /**< List linkage */
+	TAILQ_ENTRY(ldmsd_tenant_metric_s)
+	ent; /**< List linkage */
 } *ldmsd_tenant_metric_t;
 
 /**
@@ -155,7 +157,8 @@ typedef struct ldmsd_tenant_col_iter_s {
 } *ldmsd_tenant_col_iter_t;
 
 typedef struct ldmsd_tenant_row_s {
-	TAILQ_ENTRY(ldmsd_tenant_row_s) ent;
+	TAILQ_ENTRY(ldmsd_tenant_row_s)
+	ent;
 	char data[OVIS_FLEX]; /* Raw row data (array of *ldms_mval_t )*/
 } *ldmsd_tenant_row_t;
 
@@ -221,8 +224,13 @@ struct ldmsd_tenant_def_s {
 	// ldms_record_t rec_def;                   /**< Definition of the record of the tenant metrics */
 	// size_t rec_def_heap_sz;                  /**< Heap size of a record instance */
 	/**< Array of metric templates of the record definition */
+	int mcount; /* Number of metrics */
+	struct ldmsd_tenant_metric_list mlist;
 	struct ldms_metric_template_s *rec_def_tmpl;
-	LIST_ENTRY(ldmsd_tenant_def_s) ent; /**< Entry in the definition list */
+	ldmsd_jobmgr_query_t query_handle;
+	/**< Entry in the definition list */
+	LIST_ENTRY(ldmsd_tenant_def_s)
+	ent;
 };
 
 /**
