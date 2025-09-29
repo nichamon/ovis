@@ -259,7 +259,8 @@ void __tenant_def_destroy(void *arg)
 }
 
 pthread_mutex_t tenant_def_list_lock = PTHREAD_MUTEX_INITIALIZER;
-LIST_HEAD(ldmsd_tenant_def_list, ldmsd_tenant_def_s) tenant_def_list;
+LIST_HEAD(ldmsd_tenant_def_list, ldmsd_tenant_def_s)
+tenant_def_list;
 
 /* Assume that tdata->mlist has been populated. */
 static int __tenant_data_init(struct ldmsd_tenant_def_s *tdef,
@@ -323,6 +324,9 @@ enomem:
 	return ENOMEM;
 }
 
+extern int jobmgr_can_provide(const char *value);
+extern int jobmgr_init_metric(const char *name, ldmsd_tenant_metric_t tmet);
+
 /*
  * Failure in parsing a tenant attribute to an LDMS metric results in a metric of CHAR with an empty string as its value
  * Failure to create the record definition retults in an error of tenant definition creation.
@@ -334,6 +338,7 @@ ldmsd_tenant_def_create(const char *name, struct ldmsd_str_list *str_list)
 	struct ldmsd_tenant_def_s *tdef;
 	struct ldmsd_tenant_metric_s *tmet;
 	struct ldmsd_str_ent *str;
+	ldms_metric_template_t m;
 
 	tdef = ldmsd_tenant_def_find(name);
 	if (tdef) {
@@ -355,15 +360,25 @@ ldmsd_tenant_def_create(const char *name, struct ldmsd_str_list *str_list)
 		goto enomem;
 	}
 
-	/* Init each source */
-	for (i = 0; tenant_source_tbl[i].src; i++) {
-		tdef->sources[i].src = tenant_source_tbl[i].src;
-		TAILQ_INIT(&tdef->sources[i].mlist);
-	}
+	// /* Init each source */
+	// for (i = 0; tenant_source_tbl[i].src; i++) {
+	// 	tdef->sources[i].src = tenant_source_tbl[i].src;
+	// 	TAILQ_INIT(&tdef->sources[i].mlist);
+	// }
 
 	/* Initialize the data of each source */
 	TAILQ_FOREACH(str, str_list, entry)
 	{
+		if (!jobmgr_can_provide(str->str)) {
+			ovis_log(
+				tenant_log, OVIS_LERROR,
+				"The tenant attribute '%s' is not recognized.\n",
+				str->str);
+			free(tdef->name);
+			free(tdef);
+			errno = EINVAL;
+			return NULL;
+		}
 		tmet = __process_tenant_attr(str->str);
 		if (!tmet) {
 			goto err;

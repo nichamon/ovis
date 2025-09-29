@@ -10,7 +10,7 @@ ovis_log_t tn_jobmgr_log = NULL; /* TODO: register the log handle */
 
 #define TENANT_JOBMGR_INIT_NUM_ROWS 4
 
-static int jobmgr_can_provide(const char *value)
+int jobmgr_can_provide(const char *value)
 {
 	ldms_metric_template_t m;
 
@@ -21,12 +21,14 @@ static int jobmgr_can_provide(const char *value)
 	return 0;
 }
 
-static int jobmgr_init_metric(const char *name, ldmsd_tenant_metric_t tmet)
+int jobmgr_init_metric(const char *name, ldmsd_tenant_metric_t tmet)
 {
 	ldms_metric_template_t m =
 		(ldms_metric_template_t)ldmsd_jobmgr_metric_lookup(name);
-	if (!m)
-		memcpy(&tmet->mtempl, m, sizeof(tmet->mtempl));
+	if (!m) {
+		/* TODO: */
+	}
+	memcpy(&tmet->mtempl, m, sizeof(tmet->mtempl));
 	tmet->mtempl.name = strdup(m->name);
 	if (!tmet->mtempl.name) {
 		ovis_log(tn_jobmgr_log, OVIS_LCRIT,
