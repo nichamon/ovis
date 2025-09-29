@@ -166,11 +166,12 @@ typedef struct ldmsd_tenant_row_list_meta_s {
 	size_t *col_sizes;
 } *ldmsd_tenant_row_list_meta_t;
 
+TAILQ_HEAD(ldmsd_tenant_row_list_tq_s, ldmsd_tenant_row_s);
 typedef struct ldmsd_tenant_row_list_s {
 	struct ldmsd_tenant_row_list_meta_s meta;
 	int active_rows; /* Number of rows containing valid values */
 	int allocated_rows; /* Number of allocated rows, which >= num_active */
-	TAILQ_HEAD(, ldmsd_tenant_row_s) rows;
+	struct ldmsd_tenant_row_list_tq_s rows;
 	ldmsd_tenant_row_t
 		*row_array; /*  Array of row pointers for O(1) access */
 } *ldmsd_tenant_row_list_t;
@@ -213,13 +214,14 @@ typedef struct ldmsd_tenant_data_s {
 struct ldmsd_tenant_def_s {
 	struct ref_s ref;
 	char *name; /**< Name of the tenant type, this is a key to reuse tenant definition. */
-	struct ldmsd_tenant_data_s sources
-		[LDMSD_TENANT_SRC_COUNT]; /**< List of metrics by sources, for easy querying */
+	/**< List of metrics by sources, for easy querying */
+	struct ldmsd_tenant_data_s sources[LDMSD_TENANT_SRC_COUNT];
 	int num_attrs; /**< Number of attributes. This is equal to the length of the tenant record. */
+	int num_sources; /**< Number of sources that provides values, <= LDMSD_TENANT_SRC_COUNT */
 	// ldms_record_t rec_def;                   /**< Definition of the record of the tenant metrics */
 	// size_t rec_def_heap_sz;                  /**< Heap size of a record instance */
-	struct ldms_metric_template_s *
-		rec_def_tmpl; /**< Array of metric templates of the record definition */
+	/**< Array of metric templates of the record definition */
+	struct ldms_metric_template_s *rec_def_tmpl;
 	LIST_ENTRY(ldmsd_tenant_def_s) ent; /**< Entry in the definition list */
 };
 

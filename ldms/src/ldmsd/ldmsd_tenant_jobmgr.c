@@ -25,7 +25,8 @@ static int jobmgr_init_metric(const char *name, ldmsd_tenant_metric_t tmet)
 {
 	ldms_metric_template_t m =
 		(ldms_metric_template_t)ldmsd_jobmgr_metric_lookup(name);
-	memcpy(&tmet->mtempl, m, sizeof(tmet->mtempl));
+	if (!m)
+		memcpy(&tmet->mtempl, m, sizeof(tmet->mtempl));
 	tmet->mtempl.name = strdup(m->name);
 	if (!tmet->mtempl.name) {
 		ovis_log(tn_jobmgr_log, OVIS_LCRIT,
