@@ -62,18 +62,6 @@
 #include "ldmsd.h"
 #include "ldmsd_jobmgr.h"
 
-#define LDMSD_TENANT_MISSING_VALUE_CHAR '-'
-#define LDMSD_TENANT_MISSING_VALUE_INT 0
-
-struct ldmsd_tenant_source_s;
-enum ldmsd_tenant_src_type_e {
-	// LDMSD_TENANT_SRC_JOB_SCHEDULER = 0, /* Job scheduler source */
-	LDMSD_TENANT_SRC_JOBMGR = 0,
-	LDMSD_TENANT_SRC_NA, /* Always the last one, Handle attributes that no source can provide them. */
-};
-
-#define LDMSD_TENANT_SRC_COUNT (LDMSD_TENANT_SRC_NA + 1)
-
 /**
  * \brief Tenant metric structure
  *
@@ -82,15 +70,9 @@ enum ldmsd_tenant_src_type_e {
  * the record definition and accessed via \c rent_id.
  */
 typedef struct ldmsd_tenant_metric_s {
-	/* Fields for tenant source to assign values */
-	void *src_data; /**< Source-specific runtime data */
 	struct ldms_metric_template_s mtempl; /**< Metric template */
-
 	/* Fields internal to tenant core logic */
 	int __rent_id; /**< Reference to metric in LDMS record definition */
-	enum ldmsd_tenant_src_type_e
-		__src_type; /**< Source type providing the value */
-	// struct ldmsd_tenant_source_s *__src;      /**< Source that provides this metric (reference counted) */
 	TAILQ_ENTRY(ldmsd_tenant_metric_s)
 	ent; /**< List linkage */
 } *ldmsd_tenant_metric_t;
@@ -99,112 +81,6 @@ typedef struct ldmsd_tenant_metric_s {
  * \brief List type for tenant metrics
  */
 TAILQ_HEAD(ldmsd_tenant_metric_list, ldmsd_tenant_metric_s);
-
-typedef struct ldmsd_tenant_col_map_s {
-	int mid; /* LDMS metric ID in the source set */
-	enum ldms_value_type type; /* Value type */
-	size_t len; /* List length if mid is a list, array len if mid is an array */
-	int rec_mid; /* Record member ID (-1 if N/A) in the source set */
-	enum ldms_value_type ele_type; /* Element's value type */
-
-} *ldmsd_tenant_col_map_t;
-
-enum ldmsd_tenant_iter_type_e {
-	LDMSD_TENANT_ITER_T_SCALAR,
-	LDMSD_TENANT_ITER_T_STRING,
-	LDMSD_TENANT_ITER_T_LIST,
-	LDMSD_TENANT_ITER_T_REC,
-	LDMSD_TENANT_ITER_T_REC_ARRAY,
-	LDMSD_TENANT_ITER_T_ARRAY,
-	LDMSD_TENANT_ITER_T_MISSING,
-};
-
-typedef struct ldmsd_tenant_col_iter_s {
-	enum ldmsd_tenant_iter_type_e type;
-	ldmsd_tenant_col_map_t *map;
-	ldms_set_t set;
-	uint8_t exhausted; /* 1 when no more data available */
-	union {
-		struct {
-			ldms_mval_t mval;
-		} scalar;
-		struct {
-			int curr_idx;
-			int max_len;
-		} array;
-		struct {
-			ldms_mval_t curr; /* Current element*/
-			int curr_idx; /* The index of the current element */
-			enum ldms_value_type type; /* element type */
-			size_t len; /* element length */
-		} list;
-		struct {
-			ldms_mval_t rec;
-			ldms_mval_t curr;
-		} rec_inst;
-		struct {
-			int curr_idx;
-			int max_len;
-			ldms_mval_t array;
-			ldms_mval_t curr_rec;
-		} rec_array;
-		struct {
-			ldms_mval_t mval;
-			int len;
-		} string;
-	} state;
-	int card;
-} *ldmsd_tenant_col_iter_t;
-
-typedef struct ldmsd_tenant_row_s {
-	TAILQ_ENTRY(ldmsd_tenant_row_s)
-	ent;
-	char data[OVIS_FLEX]; /* Raw row data (array of *ldms_mval_t )*/
-} *ldmsd_tenant_row_t;
-
-typedef struct ldmsd_tenant_row_list_meta_s {
-	int num_cols;
-	size_t row_size;
-	size_t *col_offsets;
-	size_t *col_sizes;
-} *ldmsd_tenant_row_list_meta_t;
-
-TAILQ_HEAD(ldmsd_tenant_row_list_tq_s, ldmsd_tenant_row_s);
-typedef struct ldmsd_tenant_row_list_s {
-	struct ldmsd_tenant_row_list_meta_s meta;
-	int active_rows; /* Number of rows containing valid values */
-	int allocated_rows; /* Number of allocated rows, which >= num_active */
-	struct ldmsd_tenant_row_list_tq_s rows;
-	ldmsd_tenant_row_t
-		*row_array; /*  Array of row pointers for O(1) access */
-} *ldmsd_tenant_row_list_t;
-
-#define LDMSD_TENANT_ROWLIST_CELL_PTR(_rlist_, _row_idx_, _col_id_)             \
-	(((_row_idx_) < (_rlist_)->active_rows &&                               \
-	  (_col_id_) < (_rlist_)->meta.num_cols) ?                              \
-		 ((ldms_mval_t)((void *)(_rlist_)->row_array[_row_idx_]->data + \
-				(_rlist_)->meta.col_offsets[_col_id_])) :       \
-		 NULL)
-
-#define LDMSD_TENANT_ROW_CELL_PTR(_rlist_, _row_, _col_id_)               \
-	(((_col_id_) < (_rlist_)->meta.num_cols) ?                        \
-		 ((ldms_mval_t)((void *)(_row_)->data +                   \
-				(_rlist_)->meta.col_offsets[_col_id_])) : \
-		 NULL)
-
-#define LDMSD_TENANT_ROW_CELL_PTR_AT_OFFSET(_row_, _offset_) \
-	((ldms_mval_t)((void *)(_row_)->data + _offset_))
-
-typedef struct ldmsd_tenant_data_s {
-	struct ldmsd_tenant_source_s *src;
-	size_t total_mem; /* Summation of the memory of each metric ldms_mval_t */
-	int mcount; /* Number of metrics */
-	struct ldmsd_tenant_metric_list mlist;
-	int init_num_rows; /* Initial number of rows */ /* TDOO: remove this */
-	struct ldmsd_tenant_row_list_meta_s rlist_meta;
-	// struct ldmsd_tenant_row_list_s row_list; /**< List of rows */
-	void *src_ctxt; /* Sources-specific context */
-} *ldmsd_tenant_data_t;
 
 #define LDMSD_TENANT_REC_DEF_NAME "tenant_def"
 #define LDMSD_TENANT_LIST_NAME "tenants"
@@ -217,13 +93,6 @@ typedef struct ldmsd_tenant_data_s {
 struct ldmsd_tenant_def_s {
 	struct ref_s ref;
 	char *name; /**< Name of the tenant type, this is a key to reuse tenant definition. */
-	/**< List of metrics by sources, for easy querying */
-	struct ldmsd_tenant_data_s sources[LDMSD_TENANT_SRC_COUNT];
-	int num_attrs; /**< Number of attributes. This is equal to the length of the tenant record. */
-	int num_sources; /**< Number of sources that provides values, <= LDMSD_TENANT_SRC_COUNT */
-	// ldms_record_t rec_def;                   /**< Definition of the record of the tenant metrics */
-	// size_t rec_def_heap_sz;                  /**< Heap size of a record instance */
-	/**< Array of metric templates of the record definition */
 	int mcount; /* Number of metrics */
 	struct ldmsd_tenant_metric_list mlist;
 	struct ldms_metric_template_s *rec_def_tmpl;
@@ -231,32 +100,6 @@ struct ldmsd_tenant_def_s {
 	/**< Entry in the definition list */
 	LIST_ENTRY(ldmsd_tenant_def_s)
 	ent;
-};
-
-/**
- * \brief Generic source interface
- *
- * Each source type implements this interface to provide tenant attributes.
- * Source are reference counted to allow sharing between multiple tenant metrics.
- */
-struct ldmsd_tenant_source_s {
-	struct ref_s ref;
-	enum ldmsd_tenant_src_type_e type; /**< Source type identifier */
-	const char *name; /**< Human-readable source name */
-
-	/* Interface methods */
-	int (*can_provide)(const char *attr_name);
-	/**< Assign values to src_data and metric_template, the flag in metric_template can be ignored */
-	int (*init_tenant_metric)(const char *attr_value,
-				  struct ldmsd_tenant_metric_s *tmet);
-	void (*cleanup_tenant_metric)(struct ldmsd_tenant_metric_s *tmet);
-	/**< Runtime value retrieval method, assuming that \c mval was allocated with enough memory */
-	int (*init_source_ctxt)(
-		struct ldmsd_tenant_data_s *
-			tdata); /* This will be called after the metric list is populated and initialized */
-	void (*cleanup_source_ctxt)(void *src_ctxt);
-	int (*get_tenant_values)(struct ldmsd_tenant_data_s *tdata,
-				 ldmsd_tenant_row_list_t rlist, int *is_empty);
 };
 
 /**
@@ -274,7 +117,7 @@ struct ldmsd_tenant_source_s {
  *  - Attribute position follows the order in \c av_list among attributes from the same source
  *
  * \param name    A tenant definition name
- * \param attrs   User-specified attribute list for a tenant definition
+ * \param str_list   List of strings of attribute names
  *
  * \return a handle of tenant definition. errno is set on failure.
  */
@@ -318,18 +161,6 @@ void ldmsd_tenant_def_put(struct ldmsd_tenant_def_s *tdef);
 int ldmsd_tenant_schema_list_add(struct ldmsd_tenant_def_s *tdef,
 				 ldms_schema_t schema, int num_tenants,
 				 int *_tenant_rec_def_idx, int *_tenants_idx);
-
-void ldmsd_tenant_mval_missing_val(ldms_mval_t dst, enum ldms_value_type type,
-				   size_t len);
-void ldmsd_tenant_col_missing_val(ldms_mval_t dst,
-				  ldmsd_tenant_col_map_t col_map);
-
-ldmsd_tenant_row_list_t
-ldmsd_tenant_row_list_create(ldmsd_tenant_row_list_meta_t meta, int num_rows);
-
-ldmsd_tenant_row_list_t
-ldmsd_tenant_row_list_resize(struct ldmsd_tenant_row_list_s *rlist,
-			     int num_rows);
 
 /**
  * \brief Update the tenant list of an LDMS set
