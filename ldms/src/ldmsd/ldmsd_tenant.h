@@ -62,6 +62,8 @@
 #include "ldmsd.h"
 #include "ldmsd_jobmgr.h"
 
+#define LDMSD_TENANT_NUM_DEFAULT 10 /* Default initial number of tenants */
+
 /**
  * \brief Tenant metric structure
  *
@@ -73,8 +75,8 @@ typedef struct ldmsd_tenant_metric_s {
 	struct ldms_metric_template_s mtempl; /**< Metric template */
 	/* Fields internal to tenant core logic */
 	int __rent_id; /**< Reference to metric in LDMS record definition */
-	TAILQ_ENTRY(ldmsd_tenant_metric_s)
-	ent; /**< List linkage */
+	TAILQ_ENTRY(ldmsd_tenant_metric_s) ent; /**< List linkage */
+
 } *ldmsd_tenant_metric_t;
 
 /**
@@ -96,6 +98,7 @@ struct ldmsd_tenant_def_s {
 	int mcount; /* Number of metrics */
 	struct ldmsd_tenant_metric_list mlist;
 	struct ldms_metric_template_s *rec_def_tmpl;
+	size_t rec_def_heap_sz;
 	ldmsd_jobmgr_query_t query_handle;
 	/**< Entry in the definition list */
 	LIST_ENTRY(ldmsd_tenant_def_s)
@@ -161,6 +164,8 @@ void ldmsd_tenant_def_put(struct ldmsd_tenant_def_s *tdef);
 int ldmsd_tenant_schema_list_add(struct ldmsd_tenant_def_s *tdef,
 				 ldms_schema_t schema, int num_tenants,
 				 int *_tenant_rec_def_idx, int *_tenants_idx);
+
+size_t ldmsd_tenant_heap_sz_get(struct ldmsd_tenant_def_s *tdef, int num_tenants);
 
 /**
  * \brief Update the tenant list of an LDMS set

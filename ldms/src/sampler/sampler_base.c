@@ -261,6 +261,14 @@ base_data_t base_config(struct attr_value_list *avl,
 		}
 	}
 
+	value = av_value(avl, "num_tenants");
+	if (value) {
+		char *endptr;
+		base->num_tenants = strtol(value, &endptr, 0);
+	} else {
+		base->num_tenants = LDMSD_TENANT_NUM_DEFAULT;
+	}
+
 	value = av_value(avl, "set_array_card");
 	base->set_array_card = (value)?(strtol(value, NULL, 0)):(1);
 	return base;
@@ -303,12 +311,11 @@ ldms_schema_t base_schema_new(base_data_t base)
 	}
 
 	/* TODO: handle this */
-	int DELME_EST_NUM_TENANTS = 10;
 	if (base->tenant_def) {
 		rc = ldmsd_tenant_schema_list_add(base->tenant_def, base->schema,
-						DELME_EST_NUM_TENANTS,
-						&base->tenant_rec_def_idx,
-						&base->tenants_idx);
+						  base->num_tenants,
+						  &base->tenant_rec_def_idx,
+						  &base->tenants_idx);
 		if (rc) {
 			errno = rc;
 			goto err_1;
@@ -390,8 +397,67 @@ void base_set_delete(base_data_t base)
 	base->set = NULL;
 }
 
+struct key_value_ent {
+	char *key;
+	char *value;
+	TAILQ_ENTRY(key_value_ent) ent;
+};
+TAILQ_HEAD(key_value_list, key_value_ent);
+
+static int __set_info_copy_cb(const char *key, const char *value, void *cb_arg)
+{
+	struct key_value_ent *e;
+	struct key_value_list *list = (struct key_value_list *)cb_arg;
+	e = malloc(sizeof(*e));
+	if (!e) {
+		return ENOMEM;
+	}
+	e->key = strdup(key);
+	e->value = strdup(value);
+	if (!e->key || !e->value) {
+		return ENOMEM;
+	}
+	TAILQ_INSERT_TAIL(list, e, ent);
+	return 0;
+}
+
+static int __set_heap_resize(base_data_t base)
+{
+	int rc;
+	size_t new_heap_sz;
+	struct key_value_list set_info_l;
+	struct key_value_ent *e;
+
+	TAILQ_INIT(&set_info_l);
+
+	new_heap_sz = ldms_set_heap_size_get(base->set) +
+		ldmsd_tenant_heap_sz_get(base->tenant_def, base->num_tenants);
+	rc = ldms_set_info_traverse(base->set, __set_info_copy_cb, LDMS_SET_INFO_F_LOCAL, &set_info_l);
+	if (rc) {
+		ovis_log(base->mylog, OVIS_LERROR, "Failed to copy the set info of set '%s'\n", base->instance_name);
+		return rc;
+	}
+	base_set_delete(base);
+	base_set_new_heap(base, new_heap_sz);
+	if (!base->set) {
+		rc = errno;
+		ovis_log(base->mylog, OVIS_LERROR, "Failed to create set '%s' with a bigger heap.\n", base->instance_name);
+		return rc;
+	}
+
+	while ((e = TAILQ_FIRST(&set_info_l))) {
+		ldms_set_info_set(base->set, e->key, e->value);
+		TAILQ_REMOVE(&set_info_l, e, ent);
+		free(e->key);
+		free(e->value);
+		free(e);
+	}
+	return 0;
+}
+
 void base_sample_begin(base_data_t base)
 {
+	int rc;
 	uint64_t job_id = 0;
 	uint64_t app_id = 0;
 	uint32_t start, end;
@@ -403,12 +469,23 @@ void base_sample_begin(base_data_t base)
 	/* Check if job data is available */
 	if (!base->job_set)
 		init_job_data(base);
-
+begin:
 	ldms_transaction_begin(base->set);
 	if (base->tenant_def) {
-		ldmsd_tenant_values_sample(base->tenant_def, base->set,
-					   base->tenant_rec_def_idx,
-					   base->tenants_idx);
+		rc = ldmsd_tenant_values_sample(base->tenant_def, base->set,
+						base->tenant_rec_def_idx,
+						base->tenants_idx);
+		if (rc == ENOMEM) {
+			rc = __set_heap_resize(base);
+			if (rc) {
+				ovis_log(base->mylog, OVIS_LERROR,
+					 "Failed to create a bigger heap set '%s'\n",
+					 base->instance_name);
+				return;
+			} else {
+				goto begin;
+			}
+		}
 	}
 
 	if (base->job_id_idx < 0)

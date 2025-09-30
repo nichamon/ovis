@@ -79,6 +79,7 @@ typedef struct base_data_s {
 	struct ldmsd_tenant_def_s *tenant_def; /* A tenant definition handle */
 	int tenant_rec_def_idx;                /* Metric ID of the tenant record definition */
 	int tenants_idx;                       /* Metric ID of the tenant list */
+	int num_tenants; /* The number of tenants. This will be used to increment the set heap size. */
 
 	/* TODO: We should consider removing this job-related info. */
 	int job_id_idx;

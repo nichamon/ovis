@@ -75,7 +75,8 @@ void __tenant_metric_destroy(struct ldmsd_tenant_metric_s *tmet)
 }
 
 pthread_mutex_t tenant_def_list_lock = PTHREAD_MUTEX_INITIALIZER;
-LIST_HEAD(ldmsd_tenant_def_list, ldmsd_tenant_def_s) tenant_def_list;
+LIST_HEAD(ldmsd_tenant_def_list, ldmsd_tenant_def_s)
+tenant_def_list;
 
 void __tenant_def_destroy(void *arg)
 {
@@ -115,12 +116,19 @@ static int __init_query_handle(struct ldmsd_tenant_def_s *tdef)
 }
 
 /* Assume that tdata->mlist has been populated. */
-static int __prep_rec_def_template(struct ldmsd_tenant_def_s *tdef)
+static int __init_tenant_def(struct ldmsd_tenant_def_s *tdef)
 {
-	int i, rc;
+	int i, rc = 0;
 	struct ldmsd_tenant_metric_s *tmet;
 	ldms_record_t rec_def;
 	size_t rec_sz;
+
+	/* Create one extra element as the termining element of the array */
+	tdef->rec_def_tmpl = calloc(1, sizeof(struct ldms_metric_template_s) * (tdef->mcount + 1));
+	if (!tdef->rec_def_tmpl) {
+		ovis_log(NULL, OVIS_LCRIT, "Memory allocation failure.\n");
+		return ENOMEM;
+	}
 
 	i = 0;
 	tmet = TAILQ_FIRST(&tdef->mlist);
@@ -130,31 +138,32 @@ static int __prep_rec_def_template(struct ldmsd_tenant_def_s *tdef)
 		i++;
 		tmet = TAILQ_NEXT(tmet, ent);
 	}
-	assert((i == tdef->mcount) &&
-	       !tmet); /* If i and tmet must be aligned. */
+	assert((i == tdef->mcount) && !tmet); /* If i and tmet must be aligned. */
 
 	int mids[tdef->mcount];
 	rec_def = ldms_record_from_template("tenant_rec", tdef->rec_def_tmpl, mids);
 	if (!rec_def) {
-		goto enomem;
-	}
-	rec_sz = ldms_record_value_size_get(rec_def);
-	rc = __init_query_handle(tdef);
-	if (rc) {
-		goto err;
-	}
-	if (rec_sz != tdef->query_handle->qres_size) {
-		ovis_log(tenant_log, OVIS_LERROR, "Tenant '%s' has sizing mismatched between the job manager output and the tenant record.\n", tdef->name);
-		rc = EINTR;
-		goto err;
+		ovis_log(NULL, OVIS_LCRIT, "Memory allocation failure.\n");
+		return ENOMEM;
 	}
 
-	return rc;
-enomem:
-	ovis_log(NULL, OVIS_LCRIT, "Memory allocation failure.\n");
-	return ENOMEM;
-err:
-	/* TODO: cleanup */
+	tdef->rec_def_heap_sz = ldms_record_heap_size_get(rec_def);
+	rc = __init_query_handle(tdef);
+	if (rc) {
+		goto out;
+	}
+	rec_sz = ldms_record_value_size_get(rec_def);
+	if (rec_sz != tdef->query_handle->qres_size) {
+		ovis_log(tenant_log, OVIS_LERROR,
+			 "Tenant '%s' has sizing mismatched between "
+			 "the job manager output and the tenant record.\n",
+			 tdef->name);
+		rc = EINTR;
+		assert(rec_sz != tdef->query_handle->qres_size);
+		goto out;
+	}
+	ldms_record_delete(rec_def);
+out:
 	return rc;
 }
 
@@ -187,11 +196,14 @@ struct ldmsd_tenant_def_s *ldmsd_tenant_def_create(const char *name, struct ldms
 		goto enomem;
 	}
 
-	/* Initialize the data of each source */
-	TAILQ_FOREACH(str, str_list, entry) {
+	/* Process the attributes */
+	TAILQ_FOREACH(str, str_list, entry)
+	{
 		m = (struct ldms_metric_template_s *)ldmsd_jobmgr_metric_lookup(str->str);
 		if (!m) {
-			ovis_log(tenant_log, OVIS_LERROR, "Tenant definition '%s': attribute '%s' is unrecognized.\n", name, str->str);
+			ovis_log(tenant_log, OVIS_LERROR,
+				 "Tenant definition '%s': attribute '%s' is unrecognized.\n",
+				 name, str->str);
 			rc = EINVAL;
 			goto err;
 		}
@@ -216,15 +228,11 @@ struct ldmsd_tenant_def_s *ldmsd_tenant_def_create(const char *name, struct ldms
 		TAILQ_INSERT_TAIL(&tdef->mlist, tmet, ent);
 	}
 
-	/* Create one extra element as the termining element of the array */
-	tdef->rec_def_tmpl = calloc(1, sizeof(struct ldms_metric_template_s) * (tdef->mcount + 1));
-	if (!tdef->rec_def_tmpl) {
-		goto enomem;
-	}
-
-	rc = __prep_rec_def_template(tdef);
+	rc = __init_tenant_def(tdef);
 	if (rc) {
-		ovis_log(tenant_log, OVIS_LERROR, "Failed to create a handle to job manager. Error: %s\n", strerror(rc));
+		ovis_log(tenant_log, OVIS_LERROR,
+			 "Failed to create a handle to job manager. Error: %s\n",
+			 strerror(rc));
 		goto err;
 	}
 
@@ -270,6 +278,11 @@ void ldmsd_tenant_def_put(struct ldmsd_tenant_def_s *tdef)
 	ref_put(&tdef->ref, "find");
 }
 
+size_t ldmsd_tenant_heap_sz_get(struct ldmsd_tenant_def_s *tdef, int num_tenants)
+{
+	return tdef->rec_def_heap_sz * num_tenants;
+}
+
 int ldmsd_tenant_schema_list_add(struct ldmsd_tenant_def_s *tdef,
 				 ldms_schema_t schema, int num_tenants,
 				 int *_tenant_rec_def_idx, int *_tenants_idx)
@@ -311,7 +324,6 @@ out:
 int ldmsd_tenant_values_sample(struct ldmsd_tenant_def_s *tdef, ldms_set_t set,
 			       int tenant_rec_mid, int tenants_mid)
 {
-	int rc;
 	ldms_mval_t tenants, tenant;
 	const char *set_name = ldms_set_instance_name_get(set);
 	ldmsd_jobmgr_qres_list_t qres_list;
@@ -337,16 +349,10 @@ int ldmsd_tenant_values_sample(struct ldmsd_tenant_def_s *tdef, ldms_set_t set,
 	for (qres = TAILQ_FIRST(&qres_list->tailq); qres; qres = TAILQ_NEXT(qres, entry)) {
 		tenant = ldms_record_alloc(set, tenant_rec_mid);
 		if (!tenant) {
-			/* TODO: handle this .. probably resize the set. */
-			ovis_log(tenant_log, OVIS_LCRIT,
-				 "Memory allocation failure.\n");
 			return ENOMEM;
 		}
 		memcpy(tenant->v_rec_inst.rec_data, qres->data, tdef->query_handle->qres_size);
-		rc = ldms_list_append_record(set, tenants, tenant);
-		if (rc) {
-			/* TODO: handle this .. probably resize the set. */
-		}
+		ldms_list_append_record(set, tenants, tenant);
 	}
 	ldmsd_jobmgr_qres_list_free(qres_list);
 	return 0;
