@@ -55,489 +55,27 @@
 
 #define _GNU_SOURCE
 #include "ldmsd_jobmgr.h"
+#include "ldmsd_jobmgr_query.h"
+
 #include "ovis_event/ovis_event.h"
 
 extern ovis_log_t config_log;
 
-static ovis_scheduler_t jobmgr_sched;
+ovis_scheduler_t jobmgr_sched;
 static pthread_t jobmgr_thr;
-
-struct ldms_metric_template_s common_jobset_metrics[] = {
-
-	{ "component_id", LDMS_MDESC_F_META, LDMS_V_CHAR_ARRAY, NULL,
-		          LDMSD_JOBSET_COMPONENT_ID_LEN,   NULL },
-
-	{ "job_id",       LDMS_MDESC_F_META, LDMS_V_CHAR_ARRAY, NULL,
-			  LDMSD_JOBSET_JOB_ID_LEN, NULL },
-
-	{ "user",         LDMS_MDESC_F_META, LDMS_V_CHAR_ARRAY, NULL,
-			  LDMSD_JOBSET_USER_LEN, NULL },
-
-	{ "job_name",     LDMS_MDESC_F_META, LDMS_V_CHAR_ARRAY, NULL,
-			  LDMSD_JOBSET_JOB_NAME_LEN, NULL },
-
-	{ "job_uid",      LDMS_MDESC_F_META, LDMS_V_U32,        NULL, 1,   NULL },
-	{ "job_gid",      LDMS_MDESC_F_META, LDMS_V_U32,        NULL, 1,   NULL },
-	{ "job_start",    LDMS_MDESC_F_DATA, LDMS_V_TIMESTAMP,  NULL, 1,   NULL },
-	{ "job_end",      LDMS_MDESC_F_DATA, LDMS_V_TIMESTAMP,  NULL, 1,   NULL },
-	{ "node_count",   LDMS_MDESC_F_DATA, LDMS_V_U32,        NULL, 1,   NULL },
-	{ "total_tasks",  LDMS_MDESC_F_DATA, LDMS_V_U32,        NULL, 1,   NULL },
-	{ "local_tasks",  LDMS_MDESC_F_DATA, LDMS_V_U32,        NULL, 1,   NULL },
-	{ "task_list",    LDMS_MDESC_F_DATA, LDMS_V_LIST,       NULL, 4096, NULL },
-	/* "task_rec_def" which describes task records shall also be added
-	 * by the plugin. */
-	{0},
-};
-
-struct ldms_metric_template_s common_task_rec_metrics[] = {
-
-	{ "task_id",          LDMS_MDESC_F_DATA, LDMS_V_CHAR_ARRAY, NULL,
-			      LDMSD_JOBSET_TASK_ID_LEN, NULL },
-
-	{ "task_pid",         LDMS_MDESC_F_DATA, LDMS_V_U64,        NULL, 1,   NULL },
-	{ "task_rank",        LDMS_MDESC_F_DATA, LDMS_V_U32,        NULL, 1,   NULL },
-	{ "task_start",       LDMS_MDESC_F_DATA, LDMS_V_TIMESTAMP,  NULL, 1,   NULL },
-	{ "task_end",         LDMS_MDESC_F_DATA, LDMS_V_TIMESTAMP,  NULL, 1,   NULL },
-	{ "task_exit_status", LDMS_MDESC_F_DATA, LDMS_V_S32,        NULL, 1,   NULL },
-	{0}
-};
-
-static int __jobset_cmp(void *tree_key, const void *key);
-
-static pthread_mutex_t jobset_rbt_mutex;
-static struct rbt jobset_rbt = RBT_INITIALIZER(__jobset_cmp);
-
-#define JOBSET_RBT_LOCK() pthread_mutex_lock(&jobset_rbt_mutex)
-#define JOBSET_RBT_UNLOCK() pthread_mutex_unlock(&jobset_rbt_mutex)
-
-typedef struct jobset_s {
-	struct rbn rbn;
-	ldms_set_t set;
-	const char *job_id; /* points to set['job_id'] */
-	struct ovis_event_s del_ev;
-	ldmsd_plug_handle_t mgr;
-} *jobset_t;
-
-static int __jobset_cmp(void *tree_key, const void *key)
-{
-	/* tree_key and key are `char*` */
-	return strcmp(tree_key, key);
-}
-
-static void __client_finalize(ldmsd_jobmgr_event_client_t c);
-
-/* jobset_rbt_mutex must be held */
-jobset_t __jobset_new(ldmsd_plug_handle_t p, ldms_schema_t sch, const char *job_id)
-{
-	char buf[BUFSIZ];
-	ldms_set_t set = NULL;
-	ldmsd_cfgobj_jobmgr_t j = p;
-	jobset_t jobset = NULL;
-	ldms_mval_t mval;
-
-	jobset = calloc(1, sizeof(*jobset));
-	if (!jobset)
-		goto out;
-
-	assert(j->cfg.type == LDMSD_CFGOBJ_JOBMGR);
-
-	snprintf(buf, sizeof(buf), "%s/job_%s", ldmsd_myname_get(), job_id);
-	set = ldms_set_new_with_auth(buf, sch, geteuid(), getegid(), 0640);
-	if (!set)
-		goto err_0;
-	jobset->set = set;
-	ldms_set_ref_get(set, "jobset");
-
-	jobset->mgr = p;
-	ldmsd_jobmgr_get(p, "jobset");
-
-	/* setup job_id  */
-	mval = ldmsd_jobset_mval(jobset->set, JOB_ID);
-	snprintf(mval->a_char, LDMSD_JOBSET_JOB_ID_LEN, "%s", job_id);
-	rbn_init(&jobset->rbn, mval);
-
-	rbt_ins(&jobset_rbt, &jobset->rbn);
-
-	goto out;
-
- err_0:
-	free(jobset);
-	jobset = NULL;
-
- out:
-	return jobset;
-}
-
-/* jobset_rbt_mutex must be held */
-static jobset_t __jobset_find(const char *job_id)
-{
-	struct rbn *rbn;
-	rbn = rbt_find(&jobset_rbt, job_id);
-	return (rbn)?(container_of(rbn, struct jobset_s, rbn)):(NULL);
-}
-
-static void __jobset_free(jobset_t jobset)
-{
-	/* already removed from the jobset_tree */
-	ldms_set_delete(jobset->set);
-	ldms_set_ref_put(jobset->set, "jobset");
-	ldmsd_jobmgr_put(jobset->mgr, "jobset");
-	free(jobset);
-}
-
-ldms_set_t ldmsd_jobset_new(ldmsd_plug_handle_t p, ldms_schema_t sch, const char *job_id)
-{
-	ldms_set_t set = NULL;
-	jobset_t jobset;
-
-	JOBSET_RBT_LOCK();
-
-	jobset = __jobset_find(job_id);
-	if (jobset) {
-		errno = EEXIST;
-		goto out;
-	}
-	jobset = __jobset_new(p, sch, job_id);
-	if (jobset)
-		set = jobset->set;
- out:
-	JOBSET_RBT_UNLOCK();
-	return set;
-}
-
-ldms_set_t ldmsd_jobset_find(const char *job_id)
-{
-	jobset_t jobset;
-	JOBSET_RBT_LOCK();
-	jobset = __jobset_find(job_id);
-	JOBSET_RBT_UNLOCK();
-	if (jobset)
-		return jobset->set;
-	errno = ENOENT;
-	return NULL;
-}
-
-static void jobset_delete_cb(ovis_event_t ev)
-{
-	jobset_t jobset = ev->param.ctxt;
-	/* note: TIMEOUT event is a loop event :( need to remove it */
-	ovis_scheduler_event_del(jobmgr_sched, ev);
-	__jobset_free(jobset);
-}
-
-void ldmsd_jobset_delete(ldms_set_t set)
-{
-	/* TODO if ldms_set has app_ctxt ... our life would be easier */
-	ldms_mval_t mval;
-	jobset_t jobset;
-
-	mval = ldmsd_jobset_mval(set, JOB_ID);
-	JOBSET_RBT_LOCK();
-	jobset = __jobset_find(mval->a_char);
-	if (jobset)
-		rbt_del(&jobset_rbt, &jobset->rbn);
-	JOBSET_RBT_UNLOCK();
-
-	if (jobset) {
-		/* post jobset delete events to clients so that they're aware */
-		struct ldmsd_jobmgr_event ev = {
-			.type = LDMSD_JOBMGR_SET_DELETE,
-			.jobset = jobset->set,
-			.mgr = jobset->mgr,
-		};
-
-		ldmsd_jobmgr_event_post(&ev, NULL);
-
-		/* delay delete */
-		OVIS_EVENT_INIT(&jobset->del_ev);
-		jobset->del_ev.param.type = OVIS_EVENT_TIMEOUT;
-		jobset->del_ev.param.cb_fn = jobset_delete_cb;
-		jobset->del_ev.param.ctxt  = jobset;
-		jobset->del_ev.param.timeout.tv_sec  = 10;
-		jobset->del_ev.param.timeout.tv_usec = 0;
-		ovis_scheduler_event_add(jobmgr_sched, &jobset->del_ev);
-	}
-}
-
-typedef struct jobmgr_ev_s {
-	struct ldmsd_jobmgr_event job_ev;
-	void *ctxt; /* event context from the plugin */
-	struct ovis_event_s ovis_ev;
-} *jobmgr_ev_t;
-
-struct ldmsd_jobmgr_event_client_s {
-	TAILQ_ENTRY(ldmsd_jobmgr_event_client_s) entry;
-	ldmsd_jobmgr_event_cb_fn_t cb;
-	void *arg;
-	int is_default_query; /* q is default query */
-	const_ldmsd_jobmgr_query_t q;
-	int list_ref; /* protected by client_tq_mutex */
-};
-TAILQ_HEAD(jobmgr_client_tq, ldmsd_jobmgr_event_client_s);
-
-static struct jobmgr_client_tq client_tq = TAILQ_HEAD_INITIALIZER(client_tq);
-pthread_mutex_t client_tq_mutex;
-#define CLIENT_TQ_LOCK() pthread_mutex_lock(&client_tq_mutex)
-#define CLIENT_TQ_UNLOCK() pthread_mutex_unlock(&client_tq_mutex)
-
-static void job_event_cb(ovis_event_t oev)
-{
-	jobmgr_ev_t jev = oev->param.ctxt;
-	struct jobmgr_client_tq rm_tq = TAILQ_HEAD_INITIALIZER(rm_tq);
-	ldmsd_jobmgr_event_client_t c, _c;
-	ldmsd_cfgobj_jobmgr_t mgr;
-	int i, rc;
-	void *q_ctxt;
-
-	mgr = container_of(jev->job_ev.mgr, struct ldmsd_cfgobj_jobmgr, cfg);
-	CLIENT_TQ_LOCK();
-	c = TAILQ_FIRST(&client_tq);
-	while (c) {
-		assert(c->list_ref > 0);
-		c->list_ref++;
-		CLIENT_TQ_UNLOCK();
-
-		/* reuse job_ev for each client */
-		jev->job_ev.q = c->q;
-		jev->job_ev.res = NULL;
-		q_ctxt = NULL;
-		for (i = 0; i < c->q->n_jobmgrs; i++) {
-			if (c->q->jobmgrs[i] == jev->job_ev.mgr) {
-				/* found! */
-				q_ctxt = c->q->jobmgrs_ctxt[i];
-				break;
-			}
-		}
-		if (jev->job_ev.type != LDMSD_JOBMGR_SET_DELETE) {
-			rc = mgr->api->make_event_qres(jev->job_ev.mgr, &jev->job_ev, q_ctxt, jev->ctxt);
-		} else {
-			rc = 0;
-		}
-		if (0 == rc) {
-			c->cb(c, &jev->job_ev, c->arg);
-		}
-		if (jev->job_ev.res) {
-			free((void*)jev->job_ev.res);
-		}
-
-		CLIENT_TQ_LOCK();
-		c->list_ref--;
-		if (0 == c->list_ref) {
-			_c = c;
-			c = TAILQ_NEXT(c, entry);
-			TAILQ_REMOVE(&client_tq, _c, entry);
-			TAILQ_INSERT_TAIL(&rm_tq, _c, entry);
-		} else {
-			c = TAILQ_NEXT(c, entry);
-		}
-	}
-	CLIENT_TQ_UNLOCK();
-
-	/* done with the event */
-	mgr->api->event_done(jev->job_ev.mgr, &jev->job_ev, jev->ctxt);
-
-	while ((c = TAILQ_FIRST(&rm_tq))) {
-		TAILQ_REMOVE(&rm_tq, c, entry);
-		__client_finalize(c);
-	}
-}
-
-
-int ldmsd_jobmgr_event_post(const struct ldmsd_jobmgr_event *ev, void *ctxt)
-{
-	int rc;
-	jobmgr_ev_t jev = calloc(1, sizeof(*jev));
-
-	if (!jev)
-		return ENOMEM;
-
-	jev->ctxt = ctxt;
-	OVIS_EVENT_INIT(&jev->ovis_ev);
-
-	jev->job_ev = *ev; /* copy */
-	jev->ovis_ev.param.type  = OVIS_EVENT_ONESHOT;
-	jev->ovis_ev.param.cb_fn = job_event_cb;
-	jev->ovis_ev.param.ctxt  = jev;
-
-	rc = ovis_scheduler_event_add(jobmgr_sched, &jev->ovis_ev);
-	if (rc) {
-		free(jev);
-		return rc;
-	}
-
-	return 0;
-}
-
-ldmsd_jobmgr_event_client_t
-ldmsd_jobmgr_event_subscribe(const_ldmsd_jobmgr_query_t q,
-			     ldmsd_jobmgr_event_cb_fn_t cb, void *arg)
-{
-	ldmsd_jobmgr_event_client_t c;
-
-	c = calloc(1, sizeof(*c));
-	if (!c)
-		goto out;
-	c->arg = arg;
-	c->cb = cb;
-	c->list_ref = 1;
-	if (!q) {
-		q = ldmsd_jobmgr_query_new(0, NULL);
-		if (!q) {
-			free(c);
-			c = NULL;
-			goto out;
-		}
-		c->is_default_query = 1;
-	}
-	c->q = q;
-	CLIENT_TQ_LOCK();
-	TAILQ_INSERT_TAIL(&client_tq, c, entry);
-	CLIENT_TQ_UNLOCK();
-
- out:
-	return c;
-}
-
-static void __client_finalize(ldmsd_jobmgr_event_client_t c)
-{
-	struct ldmsd_jobmgr_event ev = {
-		.type = LDMSD_JOBMGR_CLIENT_CLOSE,
-	};
-	c->cb(c, &ev, c->arg);
-	free(c);
-}
-
-void ldmsd_jobmgr_event_client_close(ldmsd_jobmgr_event_client_t c)
-{
-	assert(0 == ENOSYS);
-	int removed = 0;
-	CLIENT_TQ_LOCK();
-	c->list_ref--;
-	if (0 == c->list_ref) {
-		/* safe to remove from the list */
-		TAILQ_REMOVE(&client_tq, c, entry);
-		removed = 1;
-	}
-	CLIENT_TQ_UNLOCK();
-
-	if (removed) {
-		__client_finalize(c);
-	}
-}
-
-ldms_set_t ldmsd_jobset_first()
-{
-	struct rbn *rbn;
-	ldms_set_t set = NULL;
-
-	JOBSET_RBT_LOCK();
-	rbn = rbt_min(&jobset_rbt);
-	if (rbn) {
-		set = container_of(rbn, struct jobset_s, rbn)->set;
-		ldms_set_ref_get(set, "jobset_iter");
-	} else {
-		errno = ENOENT;
-	}
-	JOBSET_RBT_UNLOCK();
-	return set;
-}
-
-ldms_set_t ldmsd_jobset_next(ldms_set_t set)
-{
-	struct rbn *rbn;
-	ldms_set_t next_set;
-	ldms_mval_t mval;
-
-	/* TODO Maybe add some check to make sure set is a job set */
-
-	JOBSET_RBT_LOCK();
-	mval = ldmsd_jobset_mval(set, JOB_ID);
-	rbn = rbt_find_lub(&jobset_rbt, mval);
- again:
-	if (rbn) {
-		next_set = container_of(rbn, struct jobset_s, rbn)->set;
-		if (next_set == set) {
-			rbn = rbn_succ(rbn);
-			goto again;
-		}
-		ldms_set_ref_get(next_set, "jobset_iter");
-	} else {
-		errno = ENOENT;
-		next_set = NULL;
-	}
-	JOBSET_RBT_UNLOCK();
-
-	ldms_set_ref_put(set, "jobset_iter");
-	return next_set;
-}
-
-ldms_mval_t ldmsd_task_first(ldms_set_t set)
-{
-	ldms_mval_t task_list = ldmsd_jobset_mval(set, TASK_LIST);
-	ldms_mval_t task;
-	task = ldms_list_first(set, task_list, NULL, NULL);
-	if (!task)
-		errno = ENOENT;
-	return task;
-}
-
-ldms_mval_t ldmsd_task_next(ldms_set_t set, ldms_mval_t task)
-{
-	ldms_mval_t next_task = ldms_list_next(set, task, NULL, NULL);
-	if (!next_task)
-		errno = ENOENT;
-	return next_task;
-}
 
 int ldmsd_jobmgr_start(ldmsd_cfgobj_jobmgr_t jm)
 {
-	/* TODO revise me, e.g. check status ... */
+	if (!jm->api->start)
+		return ENOSYS;
 	return jm->api->start(jm);
 }
 
 int ldmsd_jobmgr_stop(ldmsd_cfgobj_jobmgr_t jm)
 {
-	/* TODO revise me, e.g. check status ... */
+	if (!jm->api->stop)
+		return ENOSYS;
 	return jm->api->stop(jm);
-}
-
-int ldmsd_jobset_list(struct ldmsd_jobset_tq *tq)
-{
-	struct rbn *rbn;
-	struct ldmsd_jobset_entry *ent;
-	struct jobset_s *jset;
-
-	JOBSET_RBT_LOCK();
-	RBT_FOREACH(rbn, &jobset_rbt) {
-		jset = container_of(rbn, struct jobset_s, rbn);
-		ent = calloc(1, sizeof(*ent));
-		if (!ent)
-			goto err_0;
-		ent->set = jset->set;
-		ldms_set_ref_get(ent->set, "jobset_list");
-		TAILQ_INSERT_TAIL(tq, ent, entry);
-	}
-	JOBSET_RBT_UNLOCK();
-	return 0;
-
- err_0:
-	JOBSET_RBT_UNLOCK();
-	while ((ent = TAILQ_FIRST(tq))) {
-		TAILQ_REMOVE(tq, ent, entry);
-		ldms_set_ref_put(ent->set, "jobset_list");
-		free(ent);
-	}
-	return errno;
-}
-
-void ldmsd_jobset_list_free(struct ldmsd_jobset_tq *tq)
-{
-	struct ldmsd_jobset_entry *ent;
-	while ((ent = TAILQ_FIRST(tq))) {
-		TAILQ_REMOVE(tq, ent, entry);
-		ldms_set_ref_put(ent->set, "jobset_list");
-		free(ent);
-	}
 }
 
 void *jobmgr_sched_proc(void *arg)
@@ -560,10 +98,10 @@ struct rbt jobmgr_mtmp_rbt = RBT_INITIALIZER(jobmgr_mtmp_cmp);
 
 struct jobmgr_mtmp_s {
 	struct rbn rbn;
-	struct ldms_metric_template_s tmp;
+	struct ldmsd_jobmgr_query_mdesc_s tmp;
 };
 
-int ldmsd_jobmgr_metric_register(struct ldms_metric_template_s *m)
+int ldmsd_jobmgr_metric_register(ldmsd_jobmgr_query_mdesc_t m)
 {
 	struct rbn *rbn;
 	struct jobmgr_mtmp_s *mtmp;
@@ -613,6 +151,7 @@ int ldmsd_jobmgr_metric_register(struct ldms_metric_template_s *m)
 		goto enomem;
 	mtmp->tmp.type = m->type;
 	mtmp->tmp.len = m->len;
+	mtmp->tmp.level = m->level;
 	mtmp->tmp.name = (char*)&mtmp[1];
 	memcpy((void*)mtmp->tmp.name, m->name, name_len);
 	if (unit_len) {
@@ -636,12 +175,12 @@ int ldmsd_jobmgr_metric_register(struct ldms_metric_template_s *m)
 	return ENOMEM;
 }
 
-const struct ldms_metric_template_s *
+const struct ldmsd_jobmgr_query_mdesc_s *
 ldmsd_jobmgr_metric_lookup(const char *name)
 {
 	struct rbn *rbn;
 	struct jobmgr_mtmp_s *mtmp;
-	struct ldms_metric_template_s *tmp;
+	struct ldmsd_jobmgr_query_mdesc_s *tmp;
 	JOBMGR_MTMP_RBT_LOCK();
 	rbn = rbt_find(&jobmgr_mtmp_rbt, name);
 	if (!rbn) {
@@ -657,183 +196,33 @@ ldmsd_jobmgr_metric_lookup(const char *name)
 
 extern struct rbt *cfgobj_trees[]; /* defined in ldmsd_cfgobj.c */
 
-ldmsd_jobmgr_query_t ldmsd_jobmgr_query_new(int n, const char *metrics[])
-{
-	ldmsd_cfgobj_t obj;
-	ldmsd_cfgobj_jobmgr_t mgr;
-	ldmsd_jobmgr_query_t q;
-	const struct ldms_metric_template_s *tmp;
-	int i, card;
-	size_t sz;
-	off_t off;
-	int rc;
-	struct rbn *rbn;
-	struct jobmgr_mtmp_s *mtmp;
-	const char *_metrics[512] = {0}; /* should suffice */
+struct ldmsd_jobmgr_query_mdesc_s jobmgr_common_metrics[] = {
+	{ "job_id",   LDMS_V_CHAR_ARRAY, NULL, LDMSD_JOBMGR_JOB_ID_LEN,   0 },
+	{ "user",     LDMS_V_CHAR_ARRAY, NULL, LDMSD_JOBMGR_USER_LEN,     0 },
+	{ "job_name", LDMS_V_CHAR_ARRAY, NULL, LDMSD_JOBMGR_JOB_NAME_LEN, 0 },
 
-	if (n == 0 || metrics == NULL) {
-		JOBMGR_MTMP_RBT_LOCK();
-		n = jobmgr_mtmp_rbt.card;
-		metrics = _metrics;
-		rbn = rbt_min(&jobmgr_mtmp_rbt);
-		for (i = 0; i < n && rbn; i++) {
-			mtmp = container_of(rbn, struct jobmgr_mtmp_s, rbn);
-			metrics[i] = mtmp->tmp.name;
-			rbn = rbn_succ(rbn);
-		}
-		JOBMGR_MTMP_RBT_UNLOCK();
-	}
+	{ "job_uid",   LDMS_V_U32,        NULL, 1,  0 },
+	{ "job_gid",   LDMS_V_U32,        NULL, 1,  0 },
+	{ "job_start", LDMS_V_TIMESTAMP,  NULL, 1,  0 },
+	{ "job_end",   LDMS_V_TIMESTAMP,  NULL, 1,  0 },
 
-	ldmsd_cfg_lock(LDMSD_CFGOBJ_JOBMGR);
-	/* get card */
-	card = cfgobj_trees[LDMSD_CFGOBJ_JOBMGR]->card;
-	if (!card) {
-		errno = ENOENT;
-		goto err;
-	}
+	{ "job_state", LDMS_V_CHAR_ARRAY, NULL, 16, 0 },
 
-	sz = sizeof(*q) + n*sizeof(q->mdesc[0])
-			+ card*sizeof(q->jobmgrs[0])
-			+ card*sizeof(q->jobmgrs_ctxt[0]) ;
+	{ "step_id",    LDMS_V_CHAR_ARRAY, NULL, LDMSD_JOBMGR_STEP_ID_LEN, 1 },
+	{ "step_start", LDMS_V_TIMESTAMP,  NULL, 1,                        1 },
+	{ "step_end",   LDMS_V_TIMESTAMP,  NULL, 1,                        1 },
 
-	q = calloc(1, sz);
-	if (!q)
-		goto err;
-	q->mdesc = (void*)&q[1];
-	q->jobmgrs = (void*)&q->mdesc[n];
-	q->jobmgrs_ctxt = (void*)&q->jobmgrs[card];
+	{ "node_count",  LDMS_V_U32, NULL, 1, 1 },
+	{ "total_tasks", LDMS_V_U32, NULL, 1, 1 },
+	{ "local_tasks", LDMS_V_U32, NULL, 1, 1 },
 
-	/* build mdesc */
-	off = 0;
-	for (i = 0; i < n; i++) {
-		tmp = ldmsd_jobmgr_metric_lookup(metrics[i]);
-		if (!tmp) {
-			errno = ENOENT;
-			goto err_1;
-		}
-		q->mdesc[i].off = off;
-		q->mdesc[i].len = tmp->len;
-		q->mdesc[i].type = tmp->type;
-		q->mdesc[i].name = tmp->name;
-		q->mdesc[i].unit = tmp->unit;
-		off += ldms_metric_value_size_get(tmp->type, tmp->len);
-	}
-	q->qres_size = off;
-	q->n_metrics = n;
+	{ "task_id",     LDMS_V_CHAR_ARRAY, NULL, LDMSD_JOBMGR_TASK_ID_LEN, 2 },
 
-	/* jobmgr business */
-	q->n_jobmgrs = card;
-
-	obj = ldmsd_cfgobj_first(LDMSD_CFGOBJ_JOBMGR);
-	i = 0;
-
-	while (obj) {
-		mgr = container_of(obj, struct ldmsd_cfgobj_jobmgr, cfg);
-		/* BACK HERE success/failed? maybe change the API */
-		rc = mgr->api->on_query_new(obj, q, &q->jobmgrs_ctxt[i]);
-		if (rc) {
-			errno = rc;
-			goto err_2;
-		}
-		q->jobmgrs[i] = mgr;
-		ldmsd_cfgobj_get(obj, "jobmgr_query");
-		obj = ldmsd_cfgobj_next(obj);
-	}
-	ldmsd_cfg_unlock(LDMSD_CFGOBJ_JOBMGR);
-	return q;
- err_2:
-	for (i = 0; i < q->n_jobmgrs; i++) {
-		if (!q->jobmgrs[i])
-			continue;
-		obj = &q->jobmgrs[i]->cfg;
-		q->jobmgrs[i]->api->on_query_free(obj, q, q->jobmgrs_ctxt[i]);
-		ldmsd_cfgobj_put(obj, "jobmgr_query");
-	}
-
- err_1:
-	free(q);
- err:
-	ldmsd_cfg_unlock(LDMSD_CFGOBJ_JOBMGR);
-	return NULL;
-}
-
-void ldmsd_jobmgr_query_free(ldmsd_jobmgr_query_t q)
-{
-	int i;
-	ldmsd_cfgobj_t obj;
-	for (i = 0; i < q->n_jobmgrs; i++) {
-		if (!q->jobmgrs[i])
-			continue;
-		obj = &q->jobmgrs[i]->cfg;
-		q->jobmgrs[i]->api->on_query_free(obj, q, q->jobmgrs_ctxt[i]);
-		ldmsd_cfgobj_put(obj, "jobmgr_query");
-	}
-	free(q);
-}
-
-ldmsd_jobmgr_qres_list_t ldmsd_jobmgr_query_ls(const_ldmsd_jobmgr_query_t q)
-{
-	ldmsd_jobmgr_qres_list_t lst, _lst;
-	int i;
-	lst = NULL;
-	for (i = 0; i < q->n_jobmgrs; i++) {
-		_lst = q->jobmgrs[i]->api->on_query_ls(
-				&q->jobmgrs[i]->cfg,
-				q,
-				q->jobmgrs_ctxt[i]);
-		if (!_lst)
-			continue;
-		if (lst) {
-			TAILQ_CONCAT(&lst->tailq, &_lst->tailq, entry);
-			free(_lst);
-		} else {
-			lst = _lst;
-		}
-	}
-	return lst;
-}
-
-void ldmsd_jobmgr_qres_list_free(ldmsd_jobmgr_qres_list_t l)
-{
-	ldmsd_jobmgr_qres_t qres;
-	while ((qres = TAILQ_FIRST(&l->tailq))) {
-		TAILQ_REMOVE(&l->tailq, qres, entry);
-		free(qres);
-	}
-	free(l);
-}
-
-struct ldms_metric_template_s jobmgr_common_metrics[] = {
-	{ "job_id",       LDMS_MDESC_F_META, LDMS_V_CHAR_ARRAY, NULL,
-			  LDMSD_JOBMGR_JOB_ID_LEN, NULL },
-
-	{ "user",         LDMS_MDESC_F_META, LDMS_V_CHAR_ARRAY, NULL,
-			  LDMSD_JOBMGR_USER_LEN, NULL },
-
-	{ "job_name",     LDMS_MDESC_F_META, LDMS_V_CHAR_ARRAY, NULL,
-			  LDMSD_JOBMGR_JOB_NAME_LEN, NULL },
-
-	{ "job_uid",      LDMS_MDESC_F_META, LDMS_V_U32,        NULL, 1,   NULL },
-	{ "job_gid",      LDMS_MDESC_F_META, LDMS_V_U32,        NULL, 1,   NULL },
-	{ "job_start",    LDMS_MDESC_F_DATA, LDMS_V_TIMESTAMP,  NULL, 1,   NULL },
-	{ "job_end",      LDMS_MDESC_F_DATA, LDMS_V_TIMESTAMP,  NULL, 1,   NULL },
-	{ "node_count",   LDMS_MDESC_F_DATA, LDMS_V_U32,        NULL, 1,   NULL },
-	{ "total_tasks",  LDMS_MDESC_F_DATA, LDMS_V_U32,        NULL, 1,   NULL },
-	{ "local_tasks",  LDMS_MDESC_F_DATA, LDMS_V_U32,        NULL, 1,   NULL },
-
-	{ "step_id",          LDMS_MDESC_F_DATA, LDMS_V_CHAR_ARRAY, NULL,
-			      LDMSD_JOBMGR_STEP_ID_LEN, NULL },
-	{ "step_start",       LDMS_MDESC_F_DATA, LDMS_V_TIMESTAMP, NULL, 1, NULL },
-	{ "step_end",         LDMS_MDESC_F_DATA, LDMS_V_TIMESTAMP, NULL, 1, NULL },
-
-	{ "task_id",          LDMS_MDESC_F_DATA, LDMS_V_CHAR_ARRAY, NULL,
-			      LDMSD_JOBMGR_TASK_ID_LEN, NULL },
-
-	{ "task_pid",         LDMS_MDESC_F_DATA, LDMS_V_U64,        NULL, 1,   NULL },
-	{ "task_rank",        LDMS_MDESC_F_DATA, LDMS_V_U32,        NULL, 1,   NULL },
-	{ "task_start",       LDMS_MDESC_F_DATA, LDMS_V_TIMESTAMP,  NULL, 1,   NULL },
-	{ "task_end",         LDMS_MDESC_F_DATA, LDMS_V_TIMESTAMP,  NULL, 1,   NULL },
-	{ "task_exit_status", LDMS_MDESC_F_DATA, LDMS_V_S32,        NULL, 1,   NULL },
+	{ "task_pid",         LDMS_V_U64,       NULL, 1, 2 },
+	{ "task_rank",        LDMS_V_U32,       NULL, 1, 2 },
+	{ "task_start",       LDMS_V_TIMESTAMP, NULL, 1, 2 },
+	{ "task_end",         LDMS_V_TIMESTAMP, NULL, 1, 2 },
+	{ "task_exit_status", LDMS_V_S32,       NULL, 1, 2 },
 
 	{0} /* terminator */
 };
@@ -842,7 +231,7 @@ __attribute__((constructor))
 static void jobmgr_once()
 {
 	/* register common metrics */
-	struct ldms_metric_template_s *tmp;
+	struct ldmsd_jobmgr_query_mdesc_s *tmp;
 	for (tmp = &jobmgr_common_metrics[0]; tmp->name; tmp++) {
 		ldmsd_jobmgr_metric_register(tmp);
 	}

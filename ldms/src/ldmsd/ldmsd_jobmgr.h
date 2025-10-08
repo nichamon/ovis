@@ -53,7 +53,22 @@
  */
 #ifndef __LDMSD_JOBMGR_H__
 #define __LDMSD_JOBMGR_H__
+
 #include "ldmsd.h"
+
+#define LDMSD_JOBMGR_JOB_ID_LEN 128
+#define LDMSD_JOBMGR_STEP_ID_LEN 128
+#define LDMSD_JOBMGR_TASK_ID_LEN 128
+#define LDMSD_JOBMGR_JOB_NAME_LEN 128
+#define LDMSD_JOBMGR_USER_LEN     32
+
+typedef struct ldmsd_cfgobj_jobmgr *ldmsd_cfgobj_jobmgr_t;
+typedef struct ldmsd_jobmgr_query_s *ldmsd_jobmgr_query_t;
+typedef const struct ldmsd_jobmgr_query_s *const_ldmsd_jobmgr_query_t;
+
+typedef struct ldmsd_jobmgr_query_event_s *ldmsd_jobmgr_query_event_t;
+
+typedef struct ldmsd_jobmgr_query_mdesc_s *ldmsd_jobmgr_query_mdesc_t;
 
 /**
  * \brief Register a metric.
@@ -65,7 +80,7 @@
  *                different type).
  * \retval EINVAL Invalid metric template (e.g. trying to add an invalid type).
  */
-int ldmsd_jobmgr_metric_register(struct ldms_metric_template_s *m);
+int ldmsd_jobmgr_metric_register(struct ldmsd_jobmgr_query_mdesc_s *m);
 
 /**
  * \brief Lookup a job-related metric by \c name.
@@ -76,95 +91,16 @@ int ldmsd_jobmgr_metric_register(struct ldms_metric_template_s *m);
  *             The caller must NOT free the template.
  * \retval NULL If there is an error (e.g. \c ENOENT if metric not found).
  */
-const struct ldms_metric_template_s *ldmsd_jobmgr_metric_lookup(const char *name);
+const struct ldmsd_jobmgr_query_mdesc_s *ldmsd_jobmgr_metric_lookup(const char *name);
 
-struct ldmsd_jobmgr_query_metric_desc_s {
+struct ldmsd_jobmgr_query_mdesc_s {
 	/* describe metrics in the query results */
 	const char *name;
 	enum ldms_value_type type;
 	const char *unit;
 	uint32_t len; /* array_len for ARRAY type; otherwise 1 */
-	off_t off; /* offset from the beginning of the result data */
+	int level;
 };
-
-struct ldmsd_jobmgr_query_s {
-	size_t qres_size; /* size of each query result in bytes */
-	int n_metrics; /* number of metrics in each result */
-	struct ldmsd_jobmgr_query_metric_desc_s *mdesc; /* array of descriptors */
-
-	int n_jobmgrs; /* number of jobmgr plugins related to this query */
-	struct ldmsd_cfgobj_jobmgr **jobmgrs; /* array of plugins */
-	void **jobmgrs_ctxt; /* array of context for each plugin */
-
-};
-typedef struct ldmsd_jobmgr_query_s *ldmsd_jobmgr_query_t;
-typedef const struct ldmsd_jobmgr_query_s *const_ldmsd_jobmgr_query_t;
-
-/**
- * \brief Create a query handle.
- *
- * If \c n is 0 or \c metrics is \c NULL, the query gets all available metrics.
- * The returned query handle \c q can be used repeatedly in
- * \c ldmsd_jobmgr_query_ls().
- *
- * \param n       The number of elements in \c metrics.
- * \param metrics An array of char* identifying job metrics.
- *
- * \retval q The query handle.
- * \retval NULL If there is an error, \c errno will describe the error.
- */
-ldmsd_jobmgr_query_t ldmsd_jobmgr_query_new(int n, const char *metrics[]);
-
-/**
- * \brief Free the query handle.
- */
-void ldmsd_jobmgr_query_free(ldmsd_jobmgr_query_t q);
-
-/**
- * Individual query result.
- */
-struct ldmsd_jobmgr_qres_s {
-	TAILQ_ENTRY(ldmsd_jobmgr_qres_s) entry;
-	char data[];
-	/* data format: mval0 mval1 mval2 ... according to `metrics` given
-	 * to `ldmsd_jobmgr_query_new()`
-	 */
-};
-typedef struct ldmsd_jobmgr_qres_s *ldmsd_jobmgr_qres_t;
-typedef const struct ldmsd_jobmgr_qres_s *const_ldmsd_jobmgr_qres_t;
-
-static inline ldms_mval_t
-ldmsd_jobmgr_qres_mval(const_ldmsd_jobmgr_query_t q,
-		       const_ldmsd_jobmgr_qres_t r, int idx)
-{
-	if (idx < 0 || idx >= q->n_metrics) {
-		errno = EINVAL;
-		return NULL;
-	}
-	return (ldms_mval_t) &r->data[q->mdesc[idx].off];
-}
-
-/**
- * List of query result.
- */
-typedef struct ldmsd_jobmgr_qres_list_s {
-	int len;
-	TAILQ_HEAD(, ldmsd_jobmgr_qres_s) tailq;
-} *ldmsd_jobmgr_qres_list_t;
-
-/**
- * \brief List current job information according to query \c q.
- *
- * The returned list must be freed with \c ldmsd_jobmgr_qres_list_free().
- *
- * \retval NULL If there is an error, \c errno also set to describe the error.
- * \retval list The pointer to the list of query results.
- */
-ldmsd_jobmgr_qres_list_t ldmsd_jobmgr_query_ls(const_ldmsd_jobmgr_query_t q);
-
-void ldmsd_jobmgr_qres_list_free(ldmsd_jobmgr_qres_list_t l);
-
-struct ldmsd_jobmgr_event; /* see definition below */
 
 /* jobmgr API */
 struct ldmsd_jobmgr {
@@ -184,7 +120,7 @@ struct ldmsd_jobmgr {
 	 * \c on_query_ls() and \c on_query_free() calls.
 	 */
 	int (*on_query_new)(ldmsd_plug_handle_t p,
-			const struct ldmsd_jobmgr_query_s *q,
+			ldmsd_jobmgr_query_t q,
 			void **q_ctxt_out);
 
 	/*
@@ -192,15 +128,7 @@ struct ldmsd_jobmgr {
 	 * \c on_query_new().
 	 */
 	void (*on_query_free)(ldmsd_plug_handle_t p,
-			const struct ldmsd_jobmgr_query_s *q, void *q_ctxt);
-
-	/*
-	 * The plugin shall return a list of query result (qres) according
-	 * to the query \c q. The \c q_ctxt is the context the plugin supplied
-	 * from \c on_query_new() call.
-	 */
-	ldmsd_jobmgr_qres_list_t (*on_query_ls)(ldmsd_plug_handle_t p,
-			const struct ldmsd_jobmgr_query_s *q, void *q_ctxt);
+			ldmsd_jobmgr_query_t q, void *q_ctxt);
 
 	/*
 	 * This function is called by ldmsd_jobmgr subsystem to fill in
@@ -211,19 +139,19 @@ struct ldmsd_jobmgr {
 	 *
 	 * The `q_ctxt` is the query context.
 	 */
-	int (*make_event_qres)(ldmsd_plug_handle_t p,
-				struct ldmsd_jobmgr_event *ev,
-				void *q_ctxt,
-				void *ev_ctxt);
+	int (*make_qev)(ldmsd_plug_handle_t p,
+			struct ldmsd_jobmgr_query_event_s *ev,
+			void *q_ctxt,
+			void *ev_ctxt);
 
 	/*
 	 * This is called when ldmsd_jobmgr is done with the ev.
 	 * The plugin can then clean up the `ev_ctxt` provided to the
 	 * ldmsd_jobmgr_event_post() call.
 	 */
-	void (*event_done)(ldmsd_plug_handle_t p,
-			   struct ldmsd_jobmgr_event *ev,
-			   void *ev_ctxt);
+	void (*qev_done)(ldmsd_plug_handle_t p,
+			 struct ldmsd_jobmgr_query_event_s *ev,
+			 void *ev_ctxt);
 
 };
 
@@ -241,67 +169,6 @@ struct ldmsd_cfgobj_jobmgr {
 	/* ovis_log handle to use when logging plugin messages */
 	ovis_log_t log;
 };
-typedef struct ldmsd_cfgobj_jobmgr *ldmsd_cfgobj_jobmgr_t;
-
-#define LDMSD_JOBSET_COMPONENT_ID_LEN   256
-#define LDMSD_JOBSET_JOB_ID_LEN   256
-#define LDMSD_JOBSET_USER_LEN     32
-#define LDMSD_JOBSET_JOB_NAME_LEN 256
-#define LDMSD_JOBSET_TASK_ID_LEN  256
-
-#define LDMSD_JOBMGR_JOB_ID_LEN 256
-#define LDMSD_JOBMGR_STEP_ID_LEN 256
-#define LDMSD_JOBMGR_TASK_ID_LEN 256
-#define LDMSD_JOBMGR_JOB_NAME_LEN 256
-#define LDMSD_JOBMGR_USER_LEN     32
-
-typedef enum ldmsd_jobset_metric_id_e {
-	/* maintain the same order with common_jobset_metrics[] */
-	LDMSD_JOBSET_MID_COMPONENT_ID = 0,
-	LDMSD_JOBSET_MID_JOB_ID,
-	LDMSD_JOBSET_MID_USER,
-	LDMSD_JOBSET_MID_JOB_NAME,
-	LDMSD_JOBSET_MID_JOB_UID,
-	LDMSD_JOBSET_MID_JOB_GID,
-	LDMSD_JOBSET_MID_JOB_START,
-	LDMSD_JOBSET_MID_JOB_END,
-	LDMSD_JOBSET_MID_NODE_COUNT,
-	LDMSD_JOBSET_MID_TOTAL_TASKS,
-	LDMSD_JOBSET_MID_LOCAL_TASKS,
-	LDMSD_JOBSET_MID_TASK_LIST,
-	LDMSD_JOBSET_MID_TASK_REC_DEF,
-} ldmsd_jobset_metric_id_t;
-#define ldmsd_jobset_mval( set, SYM ) \
-		ldms_metric_get( set, LDMSD_JOBSET_MID_ ## SYM )
-
-/*
- * Each job set will have at the least the following metrics.
- * See ldmsd_jobmgr.c
- *
- * This list is {0} terminated.
- */
-extern struct ldms_metric_template_s common_jobset_metrics[];
-
-
-typedef enum ldmsd_task_rec_metric_id_e {
-	/* maintain the same order as common_task_rec_metrics[] */
-	LDMSD_TASK_REC_MID_TASK_ID = 0,
-	LDMSD_TASK_REC_MID_TASK_PID,
-	LDMSD_TASK_REC_MID_TASK_RANK,
-	LDMSD_TASK_REC_MID_TASK_START,
-	LDMSD_TASK_REC_MID_TASK_END,
-	LDMSD_TASK_REC_MID_TASK_EXIT_STATUS
-} ldmsd_task_rec_metric_id_t;
-#define ldmsd_task_rec_mval( rec, SYM ) \
-		ldms_record_metric_get( rec, LDMSD_TASK_REC_MID_ ## SYM )
-
-/*
- * The task records will have at least the following metrics.
- * See ldmsd_jobmgr.c.
- *
- * This list is {0} terminated.
- */
-extern struct ldms_metric_template_s common_task_rec_metrics[];
 
 static inline ldmsd_cfgobj_jobmgr_t ldmsd_jobmgr_find_get(const char *cfg_name)
 {
@@ -312,126 +179,6 @@ static inline ldmsd_cfgobj_jobmgr_t ldmsd_jobmgr_find_get(const char *cfg_name)
 }
 
 #define ldmsd_jobmgr_find_put(j) ldmsd_cfgobj_find_put(((struct ldmsd_cfgobj*)j))
-
-/* These are functions for plugins to call to manage `jobset` with ldmsd. */
-
-/**
- * \brief Tell `ldmsd` to create a job set.
- *
- * This function is called by job plugins to create a new job set. The job
- * plugins are expected to create a schema containing at least metrics in
- * \c common_jobset_metrics template plus \c task_rec_def task record
- * definition (which has at least \c common_task_rec_metrics).
- *
- * \retval jobset  A handle to the job set.
- * \retval NULL     If there is an error. \c errno will be set.
- */
-ldms_set_t ldmsd_jobset_new(ldmsd_plug_handle_t p, ldms_schema_t sch, const char *job_id);
-
-/**
- * \brief Find the \c jobset of the given \c job_id.
- *
- * \retval jobset  A handle to the job set.
- * \retval NULL     If the job set for the \c job_id is not found.
- *                  \c errno is set to \c ENOENT.
- */
-ldms_set_t ldmsd_jobset_find(const char *job_id);
-
-struct ldmsd_jobset_entry {
-	TAILQ_ENTRY(ldmsd_jobset_entry) entry;
-	ldms_set_t set;
-};
-TAILQ_HEAD(ldmsd_jobset_tq, ldmsd_jobset_entry);
-
-/**
- * List current job sets, insert entries into the given \c tq.
- *
- * \retval 0     If success,
- * \retval errno If error.
- */
-int ldmsd_jobset_list(struct ldmsd_jobset_tq *tq);
-
-/**
- * Free entries populated from \c ldmsd_jobset_list().
- */
-void ldmsd_jobset_list_free(struct ldmsd_jobset_tq *tq);
-
-/* Tell \c ldmsd that the \c jobset is no longer needed by the plugin. */
-void ldmsd_jobset_delete(ldms_set_t jobset);
-
-enum ldmsd_jobmgr_event_type {
-	LDMSD_JOBMGR_JOB_START,
-	LDMSD_JOBMGR_JOB_END,
-	LDMSD_JOBMGR_STEP_START,
-	LDMSD_JOBMGR_STEP_END,
-	LDMSD_JOBMGR_TASK_START,
-	LDMSD_JOBMGR_TASK_END,
-	LDMSD_JOBMGR_SET_DELETE, /* the jobset is going away ... stop using it */
-	LDMSD_JOBMGR_CLIENT_CLOSE, /* the last event delivered to the cb fn */
-};
-
-struct ldmsd_jobmgr_event {
-	enum ldmsd_jobmgr_event_type type;
-	ldmsd_plug_handle_t mgr; /* The job manager plugin that posted the event */
-	ldms_set_t  jobset;     /* for client side convenience */
-	ldms_mval_t task_record; /* NULL if type is not LDMSD_JOBMGR_TASK_{START|END} */
-
-	const_ldmsd_jobmgr_query_t q; /* query handle */
-	const_ldmsd_jobmgr_qres_t  res; /* query result related to the event */
-};
-
-/**
- * \brief Post an event to ldmsd job event notification system.
- */
-int ldmsd_jobmgr_event_post(const struct ldmsd_jobmgr_event *ev, void *ctxt);
-
-typedef struct ldmsd_jobmgr_event_client_s *ldmsd_jobmgr_event_client_t;
-
-typedef void (*ldmsd_jobmgr_event_cb_fn_t)(ldmsd_jobmgr_event_client_t c,
-		const struct ldmsd_jobmgr_event *ev,
-		void *arg);
-
-/**
- * \brief Subscribe for job events from all available job managers.
- *
- * The callback function \c cb will be called when there is a job event has been
- * posted by a job manager plugin. The \c arg specified here will be supplied to
- * \c arg argument when the \c cb() is called.
- *
- * If query \c q is \c NULL, the default query with all available metrics will
- * be used. In this case, the consumer must NOT free the default query. The
- * query \c q specifies metrics the subscriber wants in the \c ev->qres in the
- * event callback.
- *
- * \param q   The query handle (can be \c NULL).
- * \param cb  The callback function (see \c ldmsd_jobmgr_event_cb_fn_t).
- * \param arg The argument supplied to \c arg in \c cb function.
- *
- * \retval handle If the subscription was a success, or
- * \retval NULL   If subscription failed. \c errno will be set to describe the
- *                error.
- */
-ldmsd_jobmgr_event_client_t
-ldmsd_jobmgr_event_subscribe(const_ldmsd_jobmgr_query_t q,
-			     ldmsd_jobmgr_event_cb_fn_t cb, void *arg);
-
-/**
- * \brief Terminating the job event client.
- *
- * This will generate \c LDMSD_JOBMGR_CLIENT_CLOSE event to the client \c c,
- * indicating that there will be no more events afterwards.
- */
-void ldmsd_jobmgr_event_client_close(ldmsd_jobmgr_event_client_t c);
-
-/* get the first job */
-ldms_set_t ldmsd_jobset_first();
-/* get the next job */
-ldms_set_t ldmsd_jobset_next(ldms_set_t jobset);
-
-/* get the first task in the list */
-ldms_mval_t ldmsd_task_first(ldms_set_t jobset);
-/* get the next task job */
-ldms_mval_t ldmsd_task_next(ldms_set_t jobset, ldms_mval_t task);
 
 #define ldmsd_jobmgr_get(_s_, _r_) ((ldmsd_cfgobj_jobmgr_t)ldmsd_cfgobj_get(&((ldmsd_cfgobj_jobmgr_t)_s_)->cfg, _r_))
 #define ldmsd_jobmgr_put(_s_, _r_) ldmsd_cfgobj_put(&((ldmsd_cfgobj_jobmgr_t)_s_)->cfg, _r_)

@@ -49,6 +49,7 @@
 
 #include "ldmsd.h"
 #include "ldmsd_jobmgr.h"
+#include "ldmsd_jobmgr_query.h"
 #include "ldmsd_plug_api.h"
 
 #include "ovis_json/ovis_json.h"
@@ -248,12 +249,12 @@ struct shell_task_data {
 
 struct query_ctxt {
 	int n;
-	const struct ldmsd_jobmgr_query_s *q; /* for convenient */
+	ldmsd_jobmgr_query_t q; /* for convenient */
 	int level; /* 0 for job, 1 for step, 2 for task */
+	int lv_idx[3];
+	int lv_end_idx[3];
 	const struct jobmgr_flux_mdesc_s *mdesc[OVIS_FLEX];
 };
-
-static ldmsd_jobmgr_qres_t make_qres(struct query_ctxt *qc, struct shell_task_data *d);
 
 static const char *usage_str =
 "config inst=NAME message_channel=CH_NAME\n"
@@ -399,6 +400,7 @@ get_shell_data(jobmgr_flux_t jf, struct info_array *a)
 	i++;
 	parent = d;
 	parent_rbt = &parent->rbt;
+	sep = "/";
 
 	goto loop;
 
@@ -508,12 +510,11 @@ static void handle_shell_init(ldmsd_plug_handle_t p, jobmgr_flux_t jf,
 		d->start.sec = json_value_int(val);
 	}
 
-	struct ldmsd_jobmgr_event ev = {
-		.type   = d->level?LDMSD_JOBMGR_STEP_START:LDMSD_JOBMGR_JOB_START,
-		.mgr    = jf->plug,
-	};
-
-	ldmsd_jobmgr_event_post(&ev, d);
+	if (d->level) {
+		ldmsd_jobmgr_qev_post(p, LDMSD_JOBMGR_QUERY_EVENT_STEP_START, d);
+	} else {
+		ldmsd_jobmgr_qev_post(p, LDMSD_JOBMGR_QUERY_EVENT_JOB_START, d);
+	}
 }
 
 static void handle_shell_exit(ldmsd_plug_handle_t p, jobmgr_flux_t jf,
@@ -529,12 +530,11 @@ static void handle_shell_exit(ldmsd_plug_handle_t p, jobmgr_flux_t jf,
 		d->end.sec = json_value_int(val);
 	}
 
-	struct ldmsd_jobmgr_event ev = {
-		.type   = d->level?LDMSD_JOBMGR_STEP_END:LDMSD_JOBMGR_JOB_END,
-		.mgr    = jf->plug,
-	};
-
-	ldmsd_jobmgr_event_post(&ev, d);
+	if (d->level) {
+		ldmsd_jobmgr_qev_post(p, LDMSD_JOBMGR_QUERY_EVENT_STEP_END, d);
+	} else {
+		ldmsd_jobmgr_qev_post(p, LDMSD_JOBMGR_QUERY_EVENT_JOB_END, d);
+	}
 }
 
 static int handle_task_common(ldmsd_plug_handle_t p, jobmgr_flux_t jf,
@@ -589,11 +589,7 @@ static void handle_task_fork(ldmsd_plug_handle_t p, jobmgr_flux_t jf,
 		td->start.sec = json_value_int(val);
 	}
 
-	struct ldmsd_jobmgr_event ev = {
-		.type        = LDMSD_JOBMGR_TASK_START,
-		.mgr         = jf->plug,
-	};
-	ldmsd_jobmgr_event_post(&ev, td);
+	ldmsd_jobmgr_qev_post(p, LDMSD_JOBMGR_QUERY_EVENT_TASK_START, td);
 }
 
 static void handle_task_exit(ldmsd_plug_handle_t p, jobmgr_flux_t jf,
@@ -612,11 +608,7 @@ static void handle_task_exit(ldmsd_plug_handle_t p, jobmgr_flux_t jf,
 		td->end.sec = json_value_int(val);
 	}
 
-	struct ldmsd_jobmgr_event ev = {
-		.type        = LDMSD_JOBMGR_TASK_END,
-		.mgr         = jf->plug,
-	};
-	ldmsd_jobmgr_event_post(&ev, td);
+	ldmsd_jobmgr_qev_post(p, LDMSD_JOBMGR_QUERY_EVENT_TASK_END, td);
 }
 
 static void handle_msg_recv(ldmsd_plug_handle_t p, jobmgr_flux_t jf, ldms_msg_event_t ev)
@@ -783,24 +775,55 @@ static int stop(ldmsd_plug_handle_t p)
 }
 
 static int on_query_new(ldmsd_plug_handle_t p,
-			const struct ldmsd_jobmgr_query_s *q,
+			ldmsd_jobmgr_query_t q,
 			void **q_ctxt_out)
 {
 	int i;
 	int mx = 0;
 	struct query_ctxt *ctxt;
-	ctxt = calloc(1, sizeof(*ctxt) + q->n_metrics*sizeof(q->mdesc[0]));
+	struct ldms_metric_template_s tmp;
+	int n_metrics = ldms_record_metric_card(q->recdef);
+	ctxt = calloc(1, sizeof(*ctxt) + n_metrics*sizeof(ctxt->mdesc[0]));
 	if (!ctxt)
 		return ENOMEM;
-	ctxt->n = q->n_metrics;
+	ctxt->n = n_metrics;
 	ctxt->q = q;
-	for (i = 0; i < q->n_metrics; i++) {
-		ctxt->mdesc[i] = jobmgr_flux_mdesc_find(q->mdesc[i].name);
+	ctxt->lv_idx[0] = -1;
+	ctxt->lv_idx[1] = -1;
+	ctxt->lv_idx[2] = -1;
+	ctxt->lv_end_idx[0] = -1;
+	ctxt->lv_end_idx[1] = -1;
+	ctxt->lv_end_idx[2] = -1;
+	for (i = 0; i < n_metrics; i++) {
+		ldms_record_metric_template_get(q->recdef, i, &tmp);
+		ctxt->mdesc[i] = jobmgr_flux_mdesc_find(tmp.name);
 		/* it is OK if we may not have all of the metrics */
 		if (!ctxt->mdesc[i])
 			continue;
 		if (ctxt->mdesc[i]->m_type > mx)
 			mx = ctxt->mdesc[i]->m_type;
+		switch (ctxt->mdesc[i]->m_type) {
+		case JOBMGR_FLUX_METRIC_JOB_ID:
+			ctxt->lv_idx[0] = i;
+			break;
+		case JOBMGR_FLUX_METRIC_STEP_ID:
+			ctxt->lv_idx[1] = i;
+			break;
+		case JOBMGR_FLUX_METRIC_TASK_ID:
+			ctxt->lv_idx[2] = i;
+			break;
+		case JOBMGR_FLUX_METRIC_JOB_END:
+			ctxt->lv_end_idx[0] = i;
+			break;
+		case JOBMGR_FLUX_METRIC_STEP_END:
+			ctxt->lv_end_idx[1] = i;
+			break;
+		case JOBMGR_FLUX_METRIC_TASK_END:
+			ctxt->lv_end_idx[2] = i;
+			break;
+		default:
+			/* no-op */;
+		}
 	}
 	if (mx >= 0x200) {
 		ctxt->level = 2;
@@ -814,7 +837,7 @@ static int on_query_new(ldmsd_plug_handle_t p,
 }
 
 static void on_query_free(ldmsd_plug_handle_t p,
-			const struct ldmsd_jobmgr_query_s *q, void *q_ctxt)
+			  ldmsd_jobmgr_query_t q, void *q_ctxt)
 {
 	struct query_ctxt *ctxt = q_ctxt;
 	free(ctxt);
@@ -853,9 +876,11 @@ void mv_assign(const struct jobmgr_flux_mdesc_s *mdesc,
 		break;
 
 	case JOBMGR_FLUX_METRIC_STEP_ID:
-		if (l1)
-			snprintf(mv->a_char, LDMSD_JOBMGR_STEP_ID_LEN,
-				 "%s", l1->id);
+		if (l1) {
+			char *s = strchr(l1->id, '/');
+			s = s?(s+1):l1->id;
+			snprintf(mv->a_char, LDMSD_JOBMGR_STEP_ID_LEN, "%s", s);
+		}
 		break;
 	case JOBMGR_FLUX_METRIC_STEP_START:
 		if (l1)
@@ -875,8 +900,11 @@ void mv_assign(const struct jobmgr_flux_mdesc_s *mdesc,
 		break;
 
 	case JOBMGR_FLUX_METRIC_TASK_ID:
-		if (l2)
-			snprintf(mv->a_char, LDMSD_JOBMGR_TASK_ID_LEN, "%s", l2->id);
+		if (l2) {
+			char *s = strrchr(l2->id, '/');
+			s = s?(s+1):l2->id;
+			snprintf(mv->a_char, LDMSD_JOBMGR_TASK_ID_LEN, "%s", s);
+		}
 		break;
 	case JOBMGR_FLUX_METRIC_TASK_PID:
 		if (l2)
@@ -901,102 +929,92 @@ void mv_assign(const struct jobmgr_flux_mdesc_s *mdesc,
 	}
 }
 
-static ldmsd_jobmgr_qres_t
-make_qres(struct query_ctxt *qc, struct shell_task_data *d)
-{
-	int i;
-	ldms_mval_t mv;
-	ldmsd_jobmgr_qres_t qres;
+struct flux_qrec_key_s {
+	struct ldmsd_jobmgr_qrec_key_s k;
+	struct ldmsd_jobmgr_qrec_key_ent_s keys[3];
+	char l0_id[LDMSD_JOBMGR_JOB_ID_LEN];
+	char l1_id[LDMSD_JOBMGR_STEP_ID_LEN];
+	char l2_id[LDMSD_JOBMGR_TASK_ID_LEN];
+};
 
-	struct shell_task_data *l[3] = {}, *p;
-	p = d;
-	while (p) {
-		l[p->level] = p;
-		p = p->parent;
-	}
-
-	qres = calloc(1, sizeof(*qres) + qc->q->qres_size);
-	if (!qres)
-		goto out;
-	for (i = 0; i < qc->n; i++) {
-		if (!qc->mdesc[i])
-			continue; /* we don't have this metric */
-		mv = ldmsd_jobmgr_qres_mval(qc->q, qres, i);
-		mv_assign(qc->mdesc[i], mv, l[0], l[1], l[2]);
-	}
- out:
-	return qres;
-}
-
-/*
- * jf->mutex is locked
- */
-static int qwalk(jobmgr_flux_t jf, struct rbt *rbt,
-		 struct query_ctxt *qc,
-		 ldmsd_jobmgr_qres_list_t list)
-{
-	int rc;
-	struct rbn *rbn;
-	struct shell_task_data *d;
-	ldmsd_jobmgr_qres_t qres;
-
-	for (rbn = rbt_min(rbt); rbn; rbn = rbn_succ(rbn)) {
-		d = container_of(rbn, struct shell_task_data, rbn);
-		if (d->level < qc->level) {
-			rc = qwalk(jf, &d->rbt, qc, list);
-			if (rc)
-				return rc;
-		} else {
-			qres = make_qres(qc, d);
-			if (qres) {
-				TAILQ_INSERT_TAIL(&list->tailq, qres, entry);
-				list->len++;
-			} else {
-				return errno;
-			}
-		}
-	}
-	return 0;
-}
-
-static int job_ls(jobmgr_flux_t jf, struct query_ctxt *qc,
-		  ldmsd_jobmgr_qres_list_t list)
-{
-	/* TODO */
-	int rc;
-	pthread_mutex_lock(&jf->mutex);
-	rc = qwalk(jf, &jf->rbt, qc, list);
-	pthread_mutex_unlock(&jf->mutex);
-	return rc;
-}
-
-static ldmsd_jobmgr_qres_list_t on_query_ls(ldmsd_plug_handle_t p,
-			const struct ldmsd_jobmgr_query_s *q, void *q_ctxt)
-{
-	jobmgr_flux_t jf = ldmsd_plug_ctxt_get(p);
-	struct query_ctxt *ctxt = q_ctxt;
-	ldmsd_jobmgr_qres_list_t list;
-	list = calloc(1, sizeof(*list));
-	if (!list)
-		return NULL;
-	TAILQ_INIT(&list->tailq);
-	job_ls(jf, ctxt, list);
-	return list;
-}
-
-static int make_event_qres(ldmsd_plug_handle_t p, struct ldmsd_jobmgr_event *ev,
+static int make_qev(ldmsd_plug_handle_t p,
+		struct ldmsd_jobmgr_query_event_s *qev,
 			   void *_q_ctxt, void *_ev_ctxt)
 {
 	struct query_ctxt *qc = _q_ctxt;
 	struct shell_task_data *d = _ev_ctxt;
-	ev->res = make_qres(qc, d);
-	if (ev->res)
-		return 0;
-	return errno;
+	ldms_mval_t qrec, mv, sqrec, smv;
+	int i;
+	struct shell_task_data *x, *l[3] = {};
+
+	struct flux_qrec_key_s k = {
+		.k.n = 1 + d->level,
+		.keys = {
+			{qc->lv_idx[0] , LDMSD_JOBMGR_JOB_ID_LEN,
+				LDMS_V_CHAR_ARRAY, (ldms_mval_t)&k.l0_id},
+			{qc->lv_idx[1] , LDMSD_JOBMGR_STEP_ID_LEN,
+				LDMS_V_CHAR_ARRAY, (ldms_mval_t)&k.l1_id},
+			{qc->lv_idx[2] , LDMSD_JOBMGR_TASK_ID_LEN,
+				LDMS_V_CHAR_ARRAY, (ldms_mval_t)&k.l2_id},
+		},
+	};
+
+	/* make key */
+	for (x = d; x; x = x->parent) {
+		l[x->level] = x;
+		mv_assign(qc->mdesc[qc->lv_idx[x->level]],
+			  k.keys[x->level].mval, l[0], l[1], l[2]);
+	}
+
+	/* get qrec */
+	qrec = ldmsd_jobmgr_qrec_get(qc->q, &k.k);
+	if (!qrec) {
+		qev->event_type = LDMSD_JOBMGR_QUERY_EVENT_NO_SPACE;
+		ldms_mval_t lh = ldms_metric_get(qev->q->set, qev->q->list_midx);
+		qev->no_space.number_of_records = ldms_list_len(qev->q->set, lh);
+		return errno;
+	}
+
+	/* assign values */
+	for (i = 0; i < qc->n; i++) {
+		if (!qc->mdesc[i])
+			continue; /* we don't have this metric */
+		mv = ldms_record_metric_get(qrec, i);
+		mv_assign(qc->mdesc[i], mv, l[0], l[1], l[2]);
+	}
+	int end_idx;
+
+	if (qev->event_type == LDMSD_JOBMGR_QUERY_EVENT_JOB_END &&
+	    qc->lv_end_idx[0] >= 0) {
+		/* do the job_end update */
+		end_idx = qc->lv_end_idx[0];
+	} else if (qev->event_type == LDMSD_JOBMGR_QUERY_EVENT_STEP_END &&
+		   qc->lv_end_idx[1] >= 0) {
+		/* do the task_end update */
+		end_idx = qc->lv_end_idx[1];
+	} else {
+		goto skip;
+	}
+
+	/* update subsequent records that shares the same umbrella
+	 * e.g. `step_end` event should be updated in all tasks under the same
+	 * step. */
+	mv = ldms_record_metric_get(qrec, end_idx);
+	sqrec = ldmsd_jobmgr_qrec_next(qev->q, &k.k, qrec);
+	while (sqrec) {
+		smv = ldms_record_metric_get(sqrec, end_idx);
+		smv->v_ts = mv->v_ts;
+		sqrec = ldmsd_jobmgr_qrec_next(qev->q, &k.k, sqrec);
+	}
+
+ skip:
+	qev->start_end.qrec = qrec;
+
+	return 0;
 }
 
-void event_done(ldmsd_plug_handle_t p,
-		struct ldmsd_jobmgr_event *ev,
+void qev_done(ldmsd_plug_handle_t p,
+		struct ldmsd_jobmgr_query_event_s *qev,
 		void *ev_ctxt)
 {
 	/* no-op */
@@ -1041,9 +1059,8 @@ struct ldmsd_jobmgr ldmsd_plugin_interface = {
 	.stop  = stop,
 	.on_query_new = on_query_new,
 	.on_query_free = on_query_free,
-	.on_query_ls = on_query_ls,
-	.make_event_qres = make_event_qres,
-	.event_done = event_done,
+	.make_qev = make_qev,
+	.qev_done = qev_done,
 };
 
 __attribute__((constructor))
