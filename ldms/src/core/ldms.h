@@ -2626,6 +2626,17 @@ extern int ldms_schema_array_card_set(ldms_schema_t schema, int card);
 ldms_record_t ldms_record_create(const char *name);
 
 /**
+ * Create a new record with the same list of record entry
+ *
+ * \param rec_def      The handle of a record definition
+ * \param add_recdef   The handle of a record definition that will append to \c rec_def
+ * \param mid          Array of metric IDs
+ *
+ * \return 0 on success. A negative number on error
+ */
+int ldms_record_metric_add_record(ldms_record_t rec_def, ldms_record_t add_recdef, int mid[]);
+
+/**
  * \brief Delete the record type definition.
  *
  * \param rec_def The record type definition handle.
