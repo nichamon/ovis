@@ -1330,6 +1330,25 @@ void ldms_record_delete(ldms_record_t rec_def)
 	free(rec_def);
 }
 
+int ldms_record_metric_add_record(ldms_record_t rec_def, ldms_record_t add_recdef, int mid[])
+{
+	int ret;
+	ldms_record_t recdef;
+	ldms_mdef_t m;
+	int i = 0;
+
+	STAILQ_FOREACH(m, &add_recdef->rec_metric_list, entry) {
+		ret = ldms_record_metric_add(recdef, m->name, m->unit, m->type, m->count);
+		if (ret < 0) {
+			return ret;
+		} else {
+			mid[i++] = ret;
+		}
+	}
+	return 0;
+}
+
+
 void ldms_schema_delete(ldms_schema_t schema)
 {
 	ldms_mdef_t m;
