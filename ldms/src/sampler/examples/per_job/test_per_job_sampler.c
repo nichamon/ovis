@@ -165,9 +165,14 @@ static void __populate_pid_record(job_metrics_t jm, job_set_t jset,
 		return;
 	}
 
+	/* TODO: The real code will call per_pid sampler plugin to assign the value to the record entries */
+
+	/* TODO: Delete this */
 	ldms_record_set_u64(rec, 0, pid_val->v_u64); /* Set pid value */
 	__record_metrics_set(jm, rec);
 	lh = ldms_metric_get(jset->set, jm->mlist_mid);
+	/* TODO: END Delete this */
+
 	ldms_list_append_record(jset->set, lh, rec);
 
 	ldms_transaction_end(jset->set);
@@ -413,6 +418,9 @@ static int config(ldmsd_plug_handle_t handle,
 	if (!jm->rec_ent_mids)
 		return ENOMEM;
 
+	/* TODO: The real code will call per_pid sampler plugin interface to add entries to the record definition */
+	/* TODO: alternatively the per_pid sampler plugin will call per_pid_sampler_base_config(schema_name, record_entry_list) */
+
 	jm->recdef = ldms_record_from_template("pid_recdef", test_recdef, jm->rec_ent_mids);
 	if (!jm->recdef) {
 		ovis_log(jm->log, OVIS_LERROR, "Failed to create record definition\n");
@@ -420,10 +428,12 @@ static int config(ldmsd_plug_handle_t handle,
 	}
 
 	/* Create schema */
+	/* TODO: Clean this code up. It is embeded the number of metrics of 3 */
 	jm->mids = calloc(3, sizeof(int));
 	if (!jm->mids)
 		return ENOMEM;
 
+	/* TODO: How can we get the */
 	jm->schema = ldms_schema_from_template("per_job_schema", per_job_common_metrics, jm->mids);
 	if (!jm->schema) {
 		ovis_log(jm->log, OVIS_LERROR, "Failed to create schema\n");
