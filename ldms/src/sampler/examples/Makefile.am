@@ -29,3 +29,5 @@ endif
 if ENABLE_RECORD_SAMPLER_LDMS_TEST
 SUBDIRS += record_sampler
 endif
+
+SUBDIRS += per_job
