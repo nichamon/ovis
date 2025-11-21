@@ -1330,15 +1330,14 @@ void ldms_record_delete(ldms_record_t rec_def)
 	free(rec_def);
 }
 
-int ldms_record_metric_add_record(ldms_record_t rec_def, ldms_record_t add_recdef, int mid[])
+int ldms_record_metric_add_record(ldms_record_t recdef_dst, ldms_record_t recdef, int mid[])
 {
 	int ret;
-	ldms_record_t recdef;
 	ldms_mdef_t m;
 	int i = 0;
 
-	STAILQ_FOREACH(m, &add_recdef->rec_metric_list, entry) {
-		ret = ldms_record_metric_add(recdef, m->name, m->unit, m->type, m->count);
+	STAILQ_FOREACH(m, &recdef->rec_metric_list, entry) {
+		ret = ldms_record_metric_add(recdef_dst, m->name, m->unit, m->type, m->count);
 		if (ret < 0) {
 			return ret;
 		} else {
@@ -4511,6 +4510,21 @@ int ldms_record_bulk_template_get(ldms_record_t record, int len,
 		mdef = STAILQ_NEXT(mdef, entry);
 	}
 	return record->n;
+}
+
+int ldms_record_index_get(ldms_record_t recdef, const char *name)
+{
+	int i, rc;
+	struct ldms_metric_template_s mtemp;
+
+	for (i = 0; i < recdef->n; i++) {
+		rc = ldms_record_metric_template_get(recdef, i, &mtemp);
+		assert(rc >= 0); /* It is impossible that i won't be in the range. */
+		if (0 == strcmp(mtemp.name, name)) {
+			return i;
+		}
+	}
+	return -ENOENT;
 }
 
 const char *ldms_record_name_get(ldms_record_t record)
