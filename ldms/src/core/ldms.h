@@ -2757,6 +2757,16 @@ extern int ldms_record_metric_template_get(ldms_record_t record, int mid,
 				struct ldms_metric_template_s *out);
 
 /**
+ * \brief Get the index of the record entry \c name
+ *
+ * \param recdef    The record handle returned from `ldms_record_create()`
+ * \param name      Name of the entry
+ *
+ * \return Index of the entry. -ENOENT if entry doesn't exist
+ */
+int ldms_record_index_get(ldms_record_t recdef, const char *name);
+
+/**
  * \brief Like \c ldms_record_metric_template_get(), but in bulk.
  *
  * This function copies metric template information from \c record into \c out
