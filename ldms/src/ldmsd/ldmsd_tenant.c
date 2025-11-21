@@ -88,6 +88,13 @@ enum ldmsd_tenant_metric_e {
 #define ARRAY_LEN(a) (sizeof(a) / sizeof(a[0]))
 #endif /* ARRAY_LEN */
 
+typedef struct tenant_event_consumer_s {
+	ldmsd_tenant_def_t tdef;
+	ldmsd_tenant_event_cb_fn_t cb_fn;
+	void *cb_arg;
+	TAILQ_ENTRY(tenant_event_consumer_s) ent;
+} *tenant_event_consumer_t;
+
 /* The table contains the metrics in the tenant schema besides the tenant record definition and the list of tenants */
 static struct ldms_metric_template_s tenant_metrics[] = {
 	{ "last_event"                 , 0,  LDMS_V_CHAR_ARRAY   , ""       , JOBMGR_EVENT_NAME_LEN }, /* This collects the events delivered by jobmgr */
@@ -96,8 +103,8 @@ static struct ldms_metric_template_s tenant_metrics[] = {
 
 static int __jobmgr_event_cb(ldmsd_jobmgr_query_t q, ldmsd_jobmgr_query_event_t e, void *arg)
 {
-	int rc = 0;
 	ldmsd_tenant_def_t tdef = (ldmsd_tenant_def_t)arg;
+	ldms_mval_t qrec = e->start_end.qrec;
 	ldms_mval_t last_e;
 
 	switch (e->event_type) {
@@ -138,7 +145,15 @@ static int __jobmgr_event_cb(ldmsd_jobmgr_query_t q, ldmsd_jobmgr_query_event_t 
 		ovis_log(tenant_log, OVIS_LINFO, "Received an unexpected job event. Event no. %d\n", e->event_type);
 		break;
 	}
-	return rc;
+
+	/* Notify all registered consumers */
+	tenant_event_consumer_t consumer;
+	pthread_mutex_lock(&tdef->event_consumer_lock);
+	TAILQ_FOREACH(consumer, &tdef->event_consumer_list, ent) {
+		consumer->cb_fn(tdef, e->event_type, qrec, consumer->cb_arg);
+	}
+	pthread_mutex_unlock(&tdef->event_consumer_lock);
+	return 0;
 }
 
 void ldmsd_tenant___del(ldmsd_cfgobj_t obj)
@@ -154,8 +169,41 @@ void ldmsd_tenant___del(ldmsd_cfgobj_t obj)
 	ldmsd_cfgobj___del(obj);
 }
 
+static int __add_key2attr_list(struct ldmsd_str_list *attr_list, const char *key_name)
+{
+	struct ldmsd_str_ent *str_ent;
+
+	TAILQ_FOREACH(str_ent, attr_list, entry) {
+		if (0 == strcmp(str_ent->str, key_name)) {
+			/* Key name is already in the list. Nothing to do */
+			return 0;
+		}
+	}
+
+	/* Key name isn't in the list. Add it to the list. */
+	str_ent = malloc(sizeof(*str_ent));
+	if (!str_ent) {
+		return ENOMEM;
+	}
+	str_ent->str = strdup(key_name);
+	if (!str_ent->str) {
+		free(str_ent);
+		return ENOMEM;
+	}
+	TAILQ_INSERT_TAIL(attr_list, str_ent, entry);
+	return 0;
+}
+
+static int __get_key_index(ldmsd_tenant_def_t tdef)
+{
+	if (!tdef->jquery)
+		return ENOENT;
+
+	return ldms_record_index_get(tdef->jquery->recdef, tdef->key_field_name);
+}
+
 ldmsd_tenant_def_t ldmsd_tenant_def_new(const char *name, const char *dameon_name,
-					struct ldmsd_str_list *attr_list,
+					struct ldmsd_str_list *attr_list, const char *key_name,
 					uid_t uid, gid_t gid, int perm)
 {
 	int rc;
@@ -178,11 +226,30 @@ ldmsd_tenant_def_t ldmsd_tenant_def_new(const char *name, const char *dameon_nam
 		return NULL;
 	}
 
+	/* Initialize event consumer list and lock */
+	pthread_mutex_init(&tdef->event_consumer_lock, NULL);
+	TAILQ_INIT(&tdef->event_consumer_list);
+
 	tdef->mids = malloc(sizeof(int) * template_len);
 	if (!tdef->mids) {
 		goto enomem;
 	}
 	memset(tdef->mids, -1, template_len);
+
+	if (key_name) {
+		tdef->key_field_name = strdup(key_name);
+		if (!tdef->key_field_name) {
+			ovis_log(tenant_log, OVIS_LCRIT, "Memory allocation failure.\n");
+			goto enomem;
+		}
+
+		rc = __add_key2attr_list(attr_list, key_name);
+		if (rc) {
+			ovis_log(tenant_log, OVIS_LCRIT, "Memory allocation failure.\n");
+			goto enomem;
+		}
+	}
+	tdef->key_mid = -1;
 
 	rc = asprintf(&set_name, "%s/%s", dameon_name, schema_name);
 	if (rc < 0) {
@@ -196,6 +263,10 @@ ldmsd_tenant_def_t ldmsd_tenant_def_new(const char *name, const char *dameon_nam
 				     "Fail to query job information. Error %s\n", errstr);
 		rc = EINTR;
 		goto put_jobmgr;
+	}
+
+	if (key_name) {
+		tdef->key_mid = __get_key_index(tdef);
 	}
 
 	tdef->schema = ldms_schema_from_template(schema_name, tenant_metrics, tdef->mids);
@@ -239,7 +310,9 @@ ldmsd_tenant_def_t ldmsd_tenant_def_new(const char *name, const char *dameon_nam
 	tdef->heap_sz = ldms_set_heap_size_get(tdef->set);
 	ldms_set_producer_name_set(tdef->set, ldmsd_myname_get());
 
-	rc = ldmsd_jobmgr_query_execute(tdef->jquery, tdef->set, tdef->tenant_recdef_mid, tdef->tenant_list_mid);
+	rc = ldmsd_jobmgr_query_execute(tdef->jquery, tdef->set,
+					tdef->tenant_recdef_mid,
+					tdef->tenant_list_mid);
 	if (rc) {
 		ovis_log(tenant_log, OVIS_LERROR,
 				     "Failed to query the job information "
@@ -303,4 +376,64 @@ int ldmsd_tenant_def_str(ldmsd_tenant_def_t tdef, int summary, ldmsd_req_ctxt_t 
 	return 0;
 enomem:
 	return ENOMEM;
+}
+
+int ldmsd_tenant_def_get_key_name(ldmsd_tenant_def_t tdef, const char **key_name)
+{
+	if (!tdef->key_field_name || tdef->key_mid < 0)
+		return -ENOENT;
+	*key_name = tdef->key_field_name;
+	return tdef->key_mid;
+}
+
+int ldmsd_tenant_def_attr_index(ldmsd_tenant_def_t tdef, const char *attr_name)
+{
+	if (!tdef->jquery)
+		return -EINVAL;
+
+	return ldms_record_index_get(tdef->jquery->recdef, attr_name);
+}
+
+/* Multi-tenant Event Notification */
+
+ldmsd_tenant_event_consumer_t
+ldmsd_tenant_event_register(ldmsd_tenant_def_t tdef,
+				ldmsd_tenant_event_cb_fn_t event_cb,
+				void *cb_arg)
+{
+	tenant_event_consumer_t consumer = calloc(1, sizeof(*consumer));
+	if (!consumer)
+		return NULL;
+
+	consumer->cb_fn = event_cb;
+	consumer->cb_arg = cb_arg;
+
+	ldmsd_cfgobj_get(&tdef->obj, "ev_register");
+	consumer->tdef = tdef;
+	pthread_mutex_lock(&tdef->event_consumer_lock);
+	TAILQ_INSERT_TAIL(&tdef->event_consumer_list, consumer, ent);
+	pthread_mutex_unlock(&tdef->event_consumer_lock);
+
+	return (ldmsd_tenant_event_consumer_t)consumer;
+}
+
+int ldmsd_tenant_event_unregister(ldmsd_tenant_event_consumer_t consumer)
+{
+	assert(consumer->tdef); /* consumer->tdef must not be NULL. */
+
+	ldmsd_tenant_def_t tdef = consumer->tdef;
+	ldmsd_tenant_event_consumer_t _c;
+
+	pthread_mutex_lock(&tdef->event_consumer_lock);
+	_c = TAILQ_FIRST(&tdef->event_consumer_list);
+	while (_c && (_c != consumer)) {
+		_c = TAILQ_NEXT(_c, ent);
+	}
+	if (_c) {
+		/* Found the consumer */
+		TAILQ_REMOVE(&tdef->event_consumer_list, _c, ent);
+		free(_c);
+	}
+	pthread_mutex_unlock(&tdef->event_consumer_lock);
+	return 0;
 }
