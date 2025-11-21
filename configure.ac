@@ -1123,6 +1123,7 @@ ldms/src/sampler/examples/test_sampler/Makefile
 ldms/src/sampler/examples/list_sampler/Makefile
 ldms/src/sampler/examples/record_sampler/Makefile
 ldms/src/sampler/examples/per_job/Makefile
+ldms/src/sampler/per_job/Makefile
 ldms/src/sampler/ibm_occ/Makefile
 ldms/src/sampler/syspapi/Makefile
 ldms/src/sampler/app_sampler/Makefile

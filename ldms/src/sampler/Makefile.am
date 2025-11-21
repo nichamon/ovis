@@ -30,6 +30,10 @@ libsampler_base_la_SOURCES = sampler_base.c sampler_base.h
 libsampler_base_la_LIBADD = $(CORE_LIBADD)
 lib_LTLIBRARIES += libsampler_base.la
 
+libper_job_sampler_base_la_SOURCES = per_job_sampler_base.c per_job_sampler_base.h
+libper_job_sampler_base_la_LIBADD = $(CORE_LIBADD)
+lib_LTLIBRARIES += libper_job_sampler_base.la
+
 ldmssamplerincludedir = $(includedir)/ldms/sampler
 ldmssamplerinclude_HEADERS = sampler_base.h
 
@@ -292,6 +296,8 @@ SUBDIRS += slingshot_metrics
 SUBDIRS += slingshot_info
 endif
 endif
+
+SUBDIRS += per_job
 
 CLEANFILES = $(dist_man7_MANS)
 
