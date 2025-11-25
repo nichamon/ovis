@@ -247,14 +247,16 @@ static int __create_internal_tenant(per_job_base_t base,
 	return 0;
 }
 
-int per_job_base_schema_create(per_job_base_t base,
-			       struct ldms_metric_template_s *pid_metrics,
-			       int max_num_pids)
+ldms_schema_t per_job_base_schema_create(per_job_base_t base,
+				         struct ldms_metric_template_s *pid_metrics,
+				         int max_num_pids)
 {
 	size_t heap_sz;
 
-	if (!base || !pid_metrics)
-		return EINVAL;
+	if (!base || !pid_metrics) { /* TODO: consider making pid_metrics optional. Another thing we should pair up pid_metrics with the pid_sample_fn */
+		errno = EINVAL;
+		return NULL;
+	}
 
 	if (max_num_pids <= 0)
 		max_num_pids = DEFAULT_MAX_NUM_PIDS;
@@ -266,64 +268,74 @@ int per_job_base_schema_create(per_job_base_t base,
 
 	/* Create record definition */
 	base->rec_ent_mids = calloc(base->rec_ent_count, sizeof(int));
-	if (!base->rec_ent_mids)
-		return ENOMEM;
+	if (!base->rec_ent_mids) {
+		ovis_log(base->log, OVIS_LCRIT, "Memory allocation failure.\n");
+		errno = ENOMEM;
+		goto err;
+	}
 
 	base->recdef = ldms_record_from_template("pid_record",
 						 pid_metrics,
 						 base->rec_ent_mids);
-	if (!base->recdef)
-	{
+	if (!base->recdef) {
 		ovis_log(base->log, OVIS_LERROR,
 			 "Failed to create record definition\n");
-		return errno;
+		goto err;
 	}
 
 	/* Create schema */
 	base->mids = calloc(3, sizeof(int)); /* job_id, binding_key, terminator */
-	if (!base->mids)
-		return ENOMEM;
+	if (!base->mids) {
+		ovis_log(base->log, OVIS_LCRIT, "Memory allocation failure.\n");
+		errno = ENOMEM;
+		goto err;
+	}
 
 	base->schema = ldms_schema_from_template(base->schema_name,
 						 per_job_std_metrics,
 						 base->mids);
-	if (!base->schema)
-	{
+	if (!base->schema) {
 		ovis_log(base->log, OVIS_LERROR, "Failed to create schema\n");
-		return errno;
+		goto err;
 	}
 
 	/* Add record definition to schema */
 	base->recdef_mid = ldms_schema_record_add(base->schema, base->recdef);
-	if (base->recdef_mid < 0)
-	{
+	if (base->recdef_mid < 0) {
 		ovis_log(base->log, OVIS_LERROR,
 			 "Failed to add record to schema\n");
-		return -base->recdef_mid;
+		errno = -base->recdef_mid;
+		goto err;
 	}
 
 	/* Add PID list to schema */
 	heap_sz = ldms_record_heap_size_get(base->recdef) * max_num_pids;
 	base->mlist_mid = ldms_schema_metric_list_add(base->schema,
 						      "pid_list", "", heap_sz);
-	if (base->mlist_mid < 0)
-	{
+	if (base->mlist_mid < 0) {
 		ovis_log(base->log, OVIS_LERROR, "Failed to add list to schema\n");
-		return -base->mlist_mid;
+		errno = -base->mlist_mid;
+		goto err;
 	}
 
 	/* Register for tenant events */
 	base->event_handle = ldmsd_tenant_event_register(base->tdef,
 							 per_job_event_cb,
 							 base);
-	if (!base->event_handle)
-	{
+	if (!base->event_handle) {
 		ovis_log(base->log, OVIS_LERROR,
 			 "Failed to register for tenant events\n");
-		return errno;
+		goto err;
 	}
 
-	return 0;
+	return base->schema;
+
+ err:
+	free(base->rec_ent_mids);
+	ldms_record_delete(base->recdef);
+	free(base->mids);
+	ldms_schema_delete(base->schema);
+	return NULL;
 }
 
 int per_job_base_set_pid_sampler(per_job_base_t base,

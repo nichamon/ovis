@@ -90,9 +90,9 @@ per_job_base_t per_job_base_config(struct attr_value_list *avl,
  *                        (terminated with {0})
  * \param max_num_pids    Maximum PIDs to track per job (default: 1024)
  *
- * \return 0 on success, errno on failure
+ * \return A schema handle. NULL is returned and errno is set on errors
  */
-int per_job_base_schema_create(per_job_base_t base,
+ldms_schema_t per_job_base_schema_create(per_job_base_t base,
                                 struct ldms_metric_template_s *pid_metrics,
                                 int max_num_pids);
 
