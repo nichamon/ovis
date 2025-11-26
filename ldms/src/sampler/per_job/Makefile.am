@@ -17,3 +17,8 @@ libper_job_stat_la_SOURCES = per_job_stat.c
 libper_job_stat_la_LIBADD = $(COMMON_LIBADD)
 
 pkglib_LTLIBRARIES += libper_job_stat.la
+
+#libper_job_netdev_la_SOURCES = per_job_netdev.c
+#libper_job_netdev_la_LIBADD = $(COMMON_LIBADD)
+
+#pkglib_LTLIBRARIES += libper_job_netdev.la
