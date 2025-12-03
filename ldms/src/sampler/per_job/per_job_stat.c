@@ -1,4 +1,13 @@
-/* per_job_stat.c - Per-job /proc/<pid>/stat sampler */
+/* per_job_stat.c - Per-job /proc/<pid>/stat sampler
+ *
+ * This plugin uses the per_job_sampler_base library to handle all the
+ * complex job lifecycle, event handling, and threading concerns.
+ *
+ * Plugin author only needs to:
+ * - Define PID metrics
+ * - Parse /proc/<pid>/stat
+ * - Implement sampling callback
+ */
 
 #define _GNU_SOURCE
 #include <stdio.h>
@@ -9,59 +18,73 @@
 
 #include "per_job_sampler_base.h"
 
-/* Plugin instance */
-typedef struct per_job_stat_s
-{
-	per_job_base_t base;
+/* ============================================================================
+ * Plugin Data Structures
+ * ============================================================================ */
+
+/* Plugin instance - simple! */
+typedef struct per_job_stat_s {
+	per_job_sampler_base_t base;  /* Base handles everything */
 	ovis_log_t log;
 } *per_job_stat_t;
 
+/* Per-job context (cached indices for fast access) */
+struct stat_job_ctxt_s {
+	/* Cached PID record metric indices */
+	int pid_midx;
+	int comm_midx;
+	int state_midx;
+	int ppid_midx;
+	int pgrp_midx;
+	int session_midx;
+	int utime_midx;
+	int stime_midx;
+	int cutime_midx;
+	int cstime_midx;
+	int num_threads_midx;
+	int vsize_midx;
+	int rss_midx;
+	int processor_midx;
+};
+
+/* ============================================================================
+ * PID Metrics Definition
+ * ============================================================================ */
+
 /* Define PID metrics from /proc/<pid>/stat */
 static struct ldms_metric_template_s pid_metrics[] = {
-		{"pid", 0, LDMS_V_U64, "", 1},	     /* Always include PID */
-		{"comm", 0, LDMS_V_CHAR_ARRAY, "", 16},  /* Command name */
-		{"state", 0, LDMS_V_CHAR, "", 1},	     /* Process state */
-		{"ppid", 0, LDMS_V_U64, "", 1},	     /* Parent PID */
-		{"pgrp", 0, LDMS_V_U64, "", 1},	     /* Process group ID */
-		{"session", 0, LDMS_V_U64, "", 1},	     /* Session ID */
-		{"utime", 0, LDMS_V_U64, "jiffies", 1},  /* User time */
-		{"stime", 0, LDMS_V_U64, "jiffies", 1},  /* System time */
-		{"cutime", 0, LDMS_V_U64, "jiffies", 1}, /* Children user time */
-		{"cstime", 0, LDMS_V_U64, "jiffies", 1}, /* Children system time */
-		{"num_threads", 0, LDMS_V_U32, "", 1},   /* Number of threads */
-		{"vsize", 0, LDMS_V_U64, "bytes", 1},    /* Virtual memory size */
-		{"rss", 0, LDMS_V_U64, "pages", 1},	     /* Resident set size */
-		{"processor", 0, LDMS_V_U32, "", 1},     /* CPU number */
-		{0}
+	{"pid",         0, LDMS_V_U64,        "",        1},   /* Process ID */
+	{"comm",        0, LDMS_V_CHAR_ARRAY, "",        16},  /* Command name */
+	{"state",       0, LDMS_V_CHAR,       "",        1},   /* Process state */
+	{"ppid",        0, LDMS_V_U64,        "",        1},   /* Parent PID */
+	{"pgrp",        0, LDMS_V_U64,        "",        1},   /* Process group */
+	{"session",     0, LDMS_V_U64,        "",        1},   /* Session ID */
+	{"utime",       0, LDMS_V_U64,        "jiffies", 1},   /* User time */
+	{"stime",       0, LDMS_V_U64,        "jiffies", 1},   /* System time */
+	{"cutime",      0, LDMS_V_U64,        "jiffies", 1},   /* Children user time */
+	{"cstime",      0, LDMS_V_U64,        "jiffies", 1},   /* Children system time */
+	{"num_threads", 0, LDMS_V_U32,        "",        1},   /* Number of threads */
+	{"vsize",       0, LDMS_V_U64,        "bytes",   1},   /* Virtual memory size */
+	{"rss",         0, LDMS_V_U64,        "pages",   1},   /* Resident set size */
+	{"processor",   0, LDMS_V_U32,        "",        1},   /* CPU number */
+	{0}
 };
 
-/* Metric field indices */
-enum {
-	MID_PID = 0,
-	MID_COMM,
-	MID_STATE,
-	MID_PPID,
-	MID_PGRP,
-	MID_SESSION,
-	MID_UTIME,
-	MID_STIME,
-	MID_CUTIME,
-	MID_CSTIME,
-	MID_NUM_THREADS,
-	MID_VSIZE,
-	MID_RSS,
-	MID_PROCESSOR,
-};
+/* ============================================================================
+ * Helper Functions
+ * ============================================================================ */
 
 /**
- * Parse /proc/<pid>/stat and extract metrics.
+ * Parse /proc/<pid>/stat and populate PID record
  *
  * Format of /proc/<pid>/stat:
  * pid (comm) state ppid pgrp session tty_nr tpgid flags minflt cminflt
  * majflt cmajflt utime stime cutime cstime priority nice num_threads
  * itrealvalue starttime vsize rss ... processor ...
  */
-static int parse_proc_stat(uint64_t pid, ldms_mval_t rec, ovis_log_t log)
+static int parse_proc_stat(pid_t pid, ldms_mval_t pid_rec,
+			   struct stat_job_ctxt_s *jctxt,
+			   ovis_log_t log)
 {
 	char path[256];
 	FILE *f;
@@ -71,26 +94,14 @@ static int parse_proc_stat(uint64_t pid, ldms_mval_t rec, ovis_log_t log)
 	uint32_t num_threads, processor;
 	int rc;
 
-	snprintf(path, sizeof(path), "/proc/%lu/stat", pid);
+	snprintf(path, sizeof(path), "/proc/%d/stat", pid);
 	f = fopen(path, "r");
-	if (!f)
-	{
+	if (!f) {
 		/* PID may have exited - not an error */
 		return 0;
 	}
 
-	/* Parse the stat file
-	 * Note: We skip many fields with %*d or %*u
-	 * Fields we parse:
-	 * - comm: command name (in parentheses)
-	 * - state: process state (R, S, D, Z, T, etc.)
-	 * - ppid, pgrp, session: process identifiers
-	 * - utime, stime, cutime, cstime: CPU times
-	 * - num_threads: number of threads
-	 * - vsize: virtual memory size
-	 * - rss: resident set size
-	 * - processor: CPU number
-	 */
+	/* Parse the stat file - skip many fields with %*d or %*u */
 	rc = fscanf(f, "%*d (%15[^)]) %c %lu %lu %lu %*d %*d %*u %*u %*u %*u %*u "
 		       "%lu %lu %lu %lu %*d %*d %u %*d %*u %lu %lu %*u %*u %*u %*u "
 		       "%*u %*u %*u %*u %*u %*u %*u %*u %*d %*d %u",
@@ -100,42 +111,128 @@ static int parse_proc_stat(uint64_t pid, ldms_mval_t rec, ovis_log_t log)
 
 	fclose(f);
 
-	if (rc != 13)
-	{
+	if (rc != 13) {
+		/* Partial parse - log but don't fail */
 		ovis_log(log, OVIS_LDEBUG,
-			 "Failed to parse /proc/%lu/stat (got %d fields)\n", pid, rc);
+			 "Partial parse of /proc/%d/stat (got %d fields)\n", pid, rc);
 		return 0;
 	}
 
-	/* Set metric values in the record */
-	ldms_record_set_u64(rec, MID_PID, pid);
-	ldms_record_array_set_str(rec, MID_COMM, comm);
-	ldms_record_set_char(rec, MID_STATE, state);
-	ldms_record_set_u64(rec, MID_PPID, ppid);
-	ldms_record_set_u64(rec, MID_PGRP, pgrp);
-	ldms_record_set_u64(rec, MID_SESSION, session);
-	ldms_record_set_u64(rec, MID_UTIME, utime);
-	ldms_record_set_u64(rec, MID_STIME, stime);
-	ldms_record_set_u64(rec, MID_CUTIME, cutime);
-	ldms_record_set_u64(rec, MID_CSTIME, cstime);
-	ldms_record_set_u32(rec, MID_NUM_THREADS, num_threads);
-	ldms_record_set_u64(rec, MID_VSIZE, vsize);
-	ldms_record_set_u64(rec, MID_RSS, rss);
-	ldms_record_set_u32(rec, MID_PROCESSOR, processor);
+	/* Set metric values in the PID record */
+	ldms_record_set_u64(pid_rec, jctxt->pid_midx, pid);
+	ldms_record_array_set_str(pid_rec, jctxt->comm_midx, comm);
+	ldms_record_set_char(pid_rec, jctxt->state_midx, state);
+	ldms_record_set_u64(pid_rec, jctxt->ppid_midx, ppid);
+	ldms_record_set_u64(pid_rec, jctxt->pgrp_midx, pgrp);
+	ldms_record_set_u64(pid_rec, jctxt->session_midx, session);
+	ldms_record_set_u64(pid_rec, jctxt->utime_midx, utime);
+	ldms_record_set_u64(pid_rec, jctxt->stime_midx, stime);
+	ldms_record_set_u64(pid_rec, jctxt->cutime_midx, cutime);
+	ldms_record_set_u64(pid_rec, jctxt->cstime_midx, cstime);
+	ldms_record_set_u32(pid_rec, jctxt->num_threads_midx, num_threads);
+	ldms_record_set_u64(pid_rec, jctxt->vsize_midx, vsize);
+	ldms_record_set_u64(pid_rec, jctxt->rss_midx, rss);
+	ldms_record_set_u32(pid_rec, jctxt->processor_midx, processor);
 
 	return 0;
 }
 
+/* ============================================================================
+ * Plugin Callbacks
+ * ============================================================================ */
+
 /**
- * Sample one PID - called by base for each active PID.
+ * Initialize per-job context
+ * Called once when job starts - cache metric indices for fast access
  */
-static int sample_pid(ldms_mval_t rec, uint64_t pid, void *ctxt)
+static int job_init(per_job_base_t job_base, void **job_ctxt_out)
 {
-	per_job_stat_t pjs = (per_job_stat_t)ctxt;
-	return parse_proc_stat(pid, rec, pjs->log);
+	struct stat_job_ctxt_s *jctxt = calloc(1, sizeof(*jctxt));
+	if (!jctxt)
+		return ENOMEM;
+
+	/* Cache all PID metric indices for O(1) access during sampling */
+	jctxt->pid_midx         = per_job_base_get_pid_metric_index(job_base, "pid");
+	jctxt->comm_midx        = per_job_base_get_pid_metric_index(job_base, "comm");
+	jctxt->state_midx       = per_job_base_get_pid_metric_index(job_base, "state");
+	jctxt->ppid_midx        = per_job_base_get_pid_metric_index(job_base, "ppid");
+	jctxt->pgrp_midx        = per_job_base_get_pid_metric_index(job_base, "pgrp");
+	jctxt->session_midx     = per_job_base_get_pid_metric_index(job_base, "session");
+	jctxt->utime_midx       = per_job_base_get_pid_metric_index(job_base, "utime");
+	jctxt->stime_midx       = per_job_base_get_pid_metric_index(job_base, "stime");
+	jctxt->cutime_midx      = per_job_base_get_pid_metric_index(job_base, "cutime");
+	jctxt->cstime_midx      = per_job_base_get_pid_metric_index(job_base, "cstime");
+	jctxt->num_threads_midx = per_job_base_get_pid_metric_index(job_base, "num_threads");
+	jctxt->vsize_midx       = per_job_base_get_pid_metric_index(job_base, "vsize");
+	jctxt->rss_midx         = per_job_base_get_pid_metric_index(job_base, "rss");
+	jctxt->processor_midx   = per_job_base_get_pid_metric_index(job_base, "processor");
+
+	*job_ctxt_out = jctxt;
+	return 0;
 }
 
-/* ========== LDMSD Plugin Interface ========== */
+/**
+ * Clean up per-job context
+ * Called when job ends
+ */
+static void job_cleanup(per_job_base_t job_base, void *job_ctxt)
+{
+	free(job_ctxt);
+}
+
+/**
+ * Initialize a PID record when task starts
+ * Called when new task (PID) appears
+ */
+static int pid_added(per_job_base_t job_base, pid_t pid,
+		     ldms_mval_t pid_rec, void *job_ctxt)
+{
+	struct stat_job_ctxt_s *jctxt = job_ctxt;
+	per_job_stat_t pjs = ldmsd_plug_ctxt_get(
+		ldmsd_plug_handle_get_from_ctxt(per_job_base_get_set(job_base)));
+
+	/* Parse /proc/<pid>/stat and populate record */
+	return parse_proc_stat(pid, pid_rec, jctxt, pjs->log);
+}
+
+/**
+ * PID iterator callback - updates one PID's metrics
+ */
+struct sample_pid_ctxt_s {
+	struct stat_job_ctxt_s *jctxt;
+	ovis_log_t log;
+};
+
+static int sample_pid_callback(per_job_base_t job_base, pid_t pid,
+				ldms_mval_t pid_rec, void *arg)
+{
+	struct sample_pid_ctxt_s *ctx = arg;
+	return parse_proc_stat(pid, pid_rec, ctx->jctxt, ctx->log);
+}
+
+/**
+ * Sample this job
+ * Called for each active job during sample()
+ * Base has already started transaction
+ */
+static int sample_job(per_job_base_t job_base, void *job_ctxt)
+{
+	struct stat_job_ctxt_s *jctxt = job_ctxt;
+	per_job_stat_t pjs = ldmsd_plug_ctxt_get(
+		ldmsd_plug_handle_get_from_ctxt(per_job_base_get_set(job_base)));
+
+	struct sample_pid_ctxt_s ctx = {
+		.jctxt = jctxt,
+		.log = pjs->log,
+	};
+
+	/* Update all PIDs for this job */
+	return per_job_base_foreach_pid(job_base, sample_pid_callback, &ctx);
+}
+
+/* ============================================================================
+ * LDMSD Plugin Interface
+ * ============================================================================ */
 
 static int constructor(ldmsd_plug_handle_t handle)
 {
@@ -154,35 +251,60 @@ static int config(ldmsd_plug_handle_t handle,
 		  struct attr_value_list *avl)
 {
 	per_job_stat_t pjs = ldmsd_plug_ctxt_get(handle);
-	ldms_schema_t schema;
-	char *error = NULL;
+	ldms_record_t pid_rec_def;
 	int rc;
 
-	/* Base handles all config parsing (3 modes) */
-	pjs->base = per_job_base_config(avl, "per_job_stat",
-					"per_job_stat", pjs->log, &error);
-	if (!pjs->base)
-	{
-		ovis_log(pjs->log, OVIS_LERROR, "Config failed: %s\n", error);
-		free(error);
-		return errno;
+	/* Get configuration parameters */
+	char *producer = av_value(avl, "producer");
+	if (!producer) {
+		ovis_log(pjs->log, OVIS_LERROR, "producer is required\n");
+		return EINVAL;
 	}
 
-	/* Create schema with stat metrics */
-	schema = per_job_base_schema_create(pjs->base, pid_metrics, 1024); /* TODO: */
-	if (!schema) {
+	char *schema = av_value(avl, "schema");
+	if (!schema)
+		schema = "per_job_stat";
+
+	char *instance = av_value(avl, "instance");
+	char *tenant = av_value(avl, "tenant");
+	char *key_field = av_value(avl, "key_field");
+
+	char *max_pids_str = av_value(avl, "max_pids");
+	int max_pids = max_pids_str ? atoi(max_pids_str) : 1024;
+
+	/* Create PID record definition */
+	pid_rec_def = ldms_record_from_template("stat_pid_rec", pid_metrics, NULL);
+	if (!pid_rec_def) {
+		ovis_log(pjs->log, OVIS_LERROR,
+			 "Failed to create PID record definition\n");
+		return ENOMEM;
+	}
+
+	/* Set up callbacks */
+	struct per_job_plugin_callbacks_s callbacks = {
+		.job_init = job_init,
+		.job_cleanup = job_cleanup,
+		.pid_added = pid_added,
+		.sample_job = sample_job,
+	};
+
+	/* Create sampler - base handles ALL complexity! */
+	pjs->base = per_job_sampler_create(handle,
+					   producer,
+					   schema,
+					   instance,
+					   tenant,
+					   key_field,
+					   pid_rec_def,
+					   max_pids,
+					   &callbacks,
+					   NULL  /* No global plugin context needed */);
+
+	if (!pjs->base) {
 		rc = errno;
 		ovis_log(pjs->log, OVIS_LERROR,
-			 "Schema creation failed: %d\n", rc);
-		return rc;
-	}
-
-	/* Register our sampling function */
-	rc = per_job_base_set_pid_sampler(pjs->base, sample_pid, pjs);
-	if (rc)
-	{
-		ovis_log(pjs->log, OVIS_LERROR,
-			 "Failed to set sampler: %d\n", rc);
+			 "Failed to create sampler: %d\n", rc);
+		ldms_record_delete(pid_rec_def);
 		return rc;
 	}
 
@@ -194,12 +316,12 @@ static int sample(ldmsd_plug_handle_t handle)
 	per_job_stat_t pjs = ldmsd_plug_ctxt_get(handle);
 
 	/* Base handles everything:
-	 * - Iterate through all active jobs
-	 * - For each job, iterate through all PID records
-	 * - Call our sample_pid() for each PID
-	 * - Handle transactions
+	 * - Iterate all active jobs
+	 * - For each job, start transaction
+	 * - Call our sample_job callback
+	 * - End transaction
 	 */
-	return per_job_base_sample(pjs->base);
+	return per_job_sampler_sample(pjs->base);
 }
 
 static void destructor(ldmsd_plug_handle_t handle)
@@ -209,35 +331,46 @@ static void destructor(ldmsd_plug_handle_t handle)
 	if (!pjs)
 		return;
 
-	/* Base cleans up everything */
-	per_job_base_del(pjs->base);
+	/* Base cleans up everything:
+	 * - All jobs and sets
+	 * - Tenant registration
+	 * - Schema
+	 */
+	per_job_sampler_destroy(pjs->base);
 	free(pjs);
 }
 
 static const char *usage(ldmsd_plug_handle_t handle)
 {
-	return "config name=per_job_stat producer=<name> "
-	       "[tenant=<tenant_def>] [key_field=<field>]\n"
+	return "config name=per_job_stat producer=<name> [schema=<schema>] "
+	       "[instance=<instance>] [tenant=<tenant>] [key_field=<field>] "
+	       "[max_pids=<max_pids>]\n"
 	       "\n"
-	       "    producer   - Producer name (required)\n"
-	       "    tenant     - Name of tenant definition (optional)\n"
-	       "    key_field  - Binding key field name (optional)\n"
+	       "Required:\n"
+	       "    producer    - Producer name\n"
 	       "\n"
-	       "Collects per-PID metrics from /proc/<pid>/stat:\n"
+	       "Optional:\n"
+	       "    schema      - Schema name (default: per_job_stat)\n"
+	       "    instance    - Instance name for self-contained mode\n"
+	       "    tenant      - Tenant definition name (for shared mode)\n"
+	       "    key_field   - Binding key field (default: job_id)\n"
+	       "    max_pids    - Max PIDs per job (default: 1024)\n"
+	       "\n"
+	       "Three deployment modes:\n"
+	       "  1. Self-contained (simplest):\n"
+	       "     config name=per_job_stat producer=node1\n"
+	       "\n"
+	       "  2. Custom binding key:\n"
+	       "     config name=per_job_stat producer=node1 \\\n"
+	       "            key_field=JOB_ID\n"
+	       "\n"
+	       "  3. Shared tenant:\n"
+	       "     config name=per_job_stat producer=node1 \\\n"
+	       "            tenant=job_tenant\n"
+	       "\n"
+	       "Collected metrics from /proc/<pid>/stat:\n"
 	       "  pid, comm, state, ppid, pgrp, session, utime, stime,\n"
-	       "  cutime, cstime, num_threads, vsize, rss, processor\n"
-	       "\n"
-	       "Examples:\n"
-	       "  # Simple self-contained mode\n"
-	       "  config name=per_job_stat producer=node1\n"
-	       "\n"
-	       "  # With custom binding key\n"
-	       "  config name=per_job_stat producer=node1 \\\n"
-	       "         key_field=SLURM_JOB_UUID\n"
-	       "\n"
-	       "  # With shared tenant\n"
-	       "  config name=per_job_stat producer=node1 \\\n"
-	       "         tenant=job_tenant\n";
+	       "  cutime, cstime, num_threads, vsize, rss, processor\n";
 }
 
 struct ldmsd_sampler ldmsd_plugin_interface = {
@@ -247,6 +380,5 @@ struct ldmsd_sampler ldmsd_plugin_interface = {
 	.base.usage = usage,
 	.base.constructor = constructor,
 	.base.destructor = destructor,
-
 	.sample = sample,
 };

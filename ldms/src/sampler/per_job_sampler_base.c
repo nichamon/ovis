@@ -1,623 +1,860 @@
-/* per_job_sampler_base.c */
+/* per_job_sampler_base.c - Base library implementation for per-job samplers
+ *
+ * This library handles all the complex aspects that plugin authors
+ * shouldn't have to worry about.
+ */
 
 #define _GNU_SOURCE
-#include <errno.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
+#include <assert.h>
 #include <pthread.h>
-#include <sys/queue.h>
 
 #include "per_job_sampler_base.h"
+#include "ldmsd_jobmgr_query.h"
+#include "ovis_util/rbt.h"
 
-#define JOB_ID_LEN 512
-#define DEFAULT_MAX_NUM_PIDS 1024
-#define DEFAULT_KEY_NAME "job_id"
+#define BINDING_KEY_MAX_LEN 256
 
-/* Forward declarations */
-static int __create_internal_tenant(per_job_base_t base,
-				    struct attr_value_list *avl,
-				    const char *key_field);
-static int per_job_event_cb(ldmsd_tenant_def_t tdef,
-			    ldmsd_jobmgr_query_event_type_t etype,
-			    ldms_mval_t qrec, void *arg);
+/* ============================================================================
+ * Internal Structures
+ * ============================================================================ */
 
-/* Job set structure */
-typedef struct job_set_s
-{
+/* PID entry in per-job RBT */
+struct pid_entry_s {
+	pid_t pid;
+	ldms_mval_t pid_rec;  /* PID record in the list */
+	struct rbn rbn;       /* RBT node (keyed by pid) */
+};
+
+/* Per-job base instance - one per active job */
+struct per_job_base_s {
+	char job_id[LDMSD_JOBMGR_JOB_ID_LEN];
+	char binding_key[BINDING_KEY_MAX_LEN];
+
+	/* LDMS set for this job */
 	ldms_set_t set;
-	int is_exited;
-	TAILQ_ENTRY(job_set_s)
-	entry;
-} *job_set_t;
+	char set_name[256];
 
-TAILQ_HEAD(job_set_list, job_set_s);
+	/* Cached metric indices (set-level) */
+	int job_id_midx;
+	int binding_key_midx;
+	int pid_list_midx;
+	int pid_recdef_midx;
 
-/* Base structure */
-struct per_job_base_s
-{
-	/* Configuration */
+	/* Plugin-defined per-job metrics */
+	int *per_job_metric_midx;
+	int num_per_job_metrics;
+
+	/* PID tracking for this job */
+	struct rbt pid_rbt;  /* pid_t → pid_entry_s */
+	int num_pids;
+
+	/* Plugin's per-job context */
+	void *job_ctxt;
+
+	/* Back-reference to parent sampler */
+	struct per_job_sampler_s *sampler;
+
+	/* RBT linkage (in sampler's job_rbt) */
+	struct rbn rbn;
+};
+
+/* Per-job sampler - master controller */
+struct per_job_sampler_s {
+	ldmsd_plug_handle_t pi;
 	ovis_log_t log;
-	const char *plugin_name;
-	const char *producer;
-	const char *schema_name;
+
+	/* Schema (shared across all jobs) */
+	ldms_schema_t schema;
+	char *schema_name;
+	char *producer;
+	char *instance;  /* For self-contained mode */
+
+	/* PID record definition */
+	ldms_record_t pid_rec_def;
+	int max_pids_per_job;
+	size_t pid_list_heap_sz;
+
+	/* Plugin callbacks and context */
+	struct per_job_plugin_callbacks_s callbacks;
+	void *plugin_ctxt;
 
 	/* Tenant integration */
-	ldmsd_tenant_def_t tdef;
-	ldmsd_tenant_event_consumer_t event_handle;
-	uint8_t owns_tenant;
+	ldmsd_tenant_def_t tenant_def;
+	ldmsd_tenant_event_consumer_t event_consumer;
+	int owns_tenant;  /* True if we created internal tenant */
 
-	/* Field index cache */
-	int job_id_midx;
-	int key_midx;
-	int task_pid_midx;
+	/* Job tracking */
+	struct rbt job_rbt;  /* job_id → per_job_base_t */
+	pthread_mutex_t job_mutex;
 
-	/* Schema and metrics */
-	ldms_schema_t schema;
-	int *mids;	      /* Metric IDs for standard fields */
-	ldms_record_t recdef; /* PID record definition */
-	int recdef_mid;	      /* Metric ID of record definition */
-	int mlist_mid;	      /* Metric ID of PID record list */
-	int *rec_ent_mids;    /* Metric IDs within record */
-	int rec_ent_count;    /* Number of entries in record */
-
-	/* Per-job set management */
-	pthread_mutex_t jset_list_lock;
-	struct job_set_list jset_list;
-
-	/* Plugin callback */
-	per_job_base_sample_pid_fn_t sample_pid_fn;
-	void *plugin_ctxt;
+	/* Cached field indices from tenant/jobmgr */
+	int job_id_field_idx;
+	int binding_key_field_idx;
+	int task_pid_field_idx;
 };
 
-/* Default job attributes for self-contained mode */
-static struct ldmsd_str_list *default_job_av = NULL;
+/* ============================================================================
+ * Internal Helper Functions
+ * ============================================================================ */
 
-static void __init_default_job_av()
+static int job_id_cmp(void *a, const void *b)
 {
-	if (default_job_av)
-		return;
-
-	default_job_av = calloc(1, sizeof(*default_job_av));
-	if (!default_job_av)
-		return;
-
-	TAILQ_INIT(default_job_av);
-
-	const char *attrs[] = {"job_id", "step_id", "task_id", "task_pid"};
-	for (int i = 0; i < 4; i++)
-	{
-		struct ldmsd_str_ent *ent = calloc(1, sizeof(*ent));
-		if (!ent)
-			return;
-		ent->str = strdup(attrs[i]);
-		if (!ent->str)
-		{
-			free(ent);
-			return;
-		}
-		TAILQ_INSERT_TAIL(default_job_av, ent, entry);
-	}
+	return strcmp((char *)a, (char *)b);
 }
 
-/* Standard per-job metrics */
-static struct ldms_metric_template_s per_job_std_metrics[] = {
-    {"job_id", 0, LDMS_V_CHAR_ARRAY, "", JOB_ID_LEN},
-    {"binding_key", 0, LDMS_V_CHAR_ARRAY, "", JOB_ID_LEN},
-    {0},
-};
-
-per_job_base_t per_job_base_config(struct attr_value_list *avl,
-				   const char *plugin_name,
-				   const char *def_schema,
-				   ovis_log_t mylog,
-				   char **error)
+static int pid_cmp(void *a, const void *b)
 {
-	int rc;
-	per_job_base_t base;
-	char *producer, *tenant_name, *key_field, *schema_name;
+	pid_t l = *(pid_t *)a;
+	pid_t r = *(pid_t *)b;
+	if (l < r) return -1;
+	if (l > r) return 1;
+	return 0;
+}
 
-	__init_default_job_av();
-
-	base = calloc(1, sizeof(*base));
-	if (!base)
-	{
-		if (error)
-			*error = strdup("Memory allocation failure");
-		errno = ENOMEM;
+/* Find job base by job_id */
+static per_job_base_t find_job_base(per_job_sampler_t sampler, const char *job_id)
+{
+	struct rbn *rbn = rbt_find(&sampler->job_rbt, job_id);
+	if (!rbn)
 		return NULL;
-	}
+	return container_of(rbn, struct per_job_base_s, rbn);
+}
 
-	base->log = mylog;
-	base->plugin_name = strdup(plugin_name);
+/* Create internal tenant for self-contained/custom-key modes */
+static ldmsd_tenant_def_t create_internal_tenant(per_job_sampler_t sampler,
+						  const char *key_field)
+{
+	struct ldmsd_str_list attr_list = TAILQ_HEAD_INITIALIZER(attr_list);
+	struct ldmsd_str_ent *attr;
+	ldmsd_tenant_def_t tdef;
 
-	pthread_mutex_init(&base->jset_list_lock, NULL);
-	TAILQ_INIT(&base->jset_list);
-
-	/* Parse producer (required) */
-	producer = av_value(avl, "producer");
-	if (!producer)
-	{
-		if (error)
-			*error = strdup("'producer' is required");
-		rc = EINVAL;
-		goto err;
-	}
-	base->producer = strdup(producer);
-
-	/* Parse schema name */
-	schema_name = av_value(avl, "schema");
-	if (!schema_name || schema_name[0] == '\0')
-		base->schema_name = strdup(def_schema);
-	else
-		base->schema_name = strdup(schema_name);
-
-	/* Parse key_field (optional) */
-	key_field = av_value(avl, "key_field");
-
-	/* Parse tenant (optional) */
-	tenant_name = av_value(avl, "tenant");
-
-	if (tenant_name)
-	{
-		/* Shared tenant mode */
-		base->tdef = ldmsd_tenant_def_find(tenant_name);
-		if (!base->tdef)
-		{
-			if (error)
-				asprintf(error, "Tenant definition '%s' not found", tenant_name);
-			rc = ENOENT;
-			goto err;
+	/* Build attribute list: job_id, task_pid, [key_field if different] */
+	const char *attrs[] = {"job_id", "task_pid", NULL};
+	for (int i = 0; attrs[i]; i++) {
+		attr = malloc(sizeof(*attr));
+		if (!attr) {
+			/* Clean up */
+			while ((attr = TAILQ_FIRST(&attr_list))) {
+				TAILQ_REMOVE(&attr_list, attr, entry);
+				free((char *)attr->str);
+				free(attr);
+			}
+			return NULL;
 		}
-		base->owns_tenant = 0;
+		attr->str = strdup(attrs[i]);
+		TAILQ_INSERT_TAIL(&attr_list, attr, entry);
 	}
-	else
-	{
-		/* Self-contained mode */
-		rc = __create_internal_tenant(base, avl, key_field);
-		if (rc)
-		{
-			if (error)
-				*error = strdup("Failed to create internal tenant");
+
+	/* Add key field if it's not job_id */
+	if (key_field && strcmp(key_field, "job_id") != 0) {
+		attr = malloc(sizeof(*attr));
+		if (!attr)
 			goto err;
-		}
-		base->owns_tenant = 1;
+		attr->str = strdup(key_field);
+		TAILQ_INSERT_TAIL(&attr_list, attr, entry);
 	}
 
-	/* Get field indices from tenant */
-	const char *key_name;
-	base->job_id_midx = ldmsd_tenant_def_get_key_name(base->tdef, &key_name);
-	if (base->job_id_midx < 0)
-	{
-		if (error)
-			*error = strdup("Tenant has no key field");
-		rc = EINVAL;
-		goto err;
+	/* Create tenant definition */
+	tdef = ldmsd_tenant_def_new(sampler->instance ? sampler->instance : sampler->schema_name,
+				     sampler->producer,
+				     &attr_list,
+				     key_field ? key_field : "job_id",
+				     getuid(), getgid(), 0660);
+
+	/* Clean up attribute list */
+	while ((attr = TAILQ_FIRST(&attr_list))) {
+		TAILQ_REMOVE(&attr_list, attr, entry);
+		free((char *)attr->str);
+		free(attr);
 	}
 
-	/* If key_field specified, find it; otherwise use job_id */
-	if (key_field)
-	{
-		/* TODO: Need API to get specific field index by name */
-		base->key_midx = base->job_id_midx; /* Temporary */
-	}
-	else
-	{
-		base->key_midx = base->job_id_midx;
-	}
-
-	/* Get task_pid index - assume it's at index 3 for now */
-	base->task_pid_midx = 3;
-
-	return base;
+	return tdef;
 
 err:
-	if (base)
-	{
-		free((char *)base->plugin_name);
-		free((char *)base->producer);
-		free((char *)base->schema_name);
-		free(base);
+	while ((attr = TAILQ_FIRST(&attr_list))) {
+		TAILQ_REMOVE(&attr_list, attr, entry);
+		free((char *)attr->str);
+		free(attr);
 	}
-	errno = rc;
 	return NULL;
 }
 
-static int __create_internal_tenant(per_job_base_t base,
-				    struct attr_value_list *avl,
-				    const char *key_field)
+/* Create schema with per-job metrics and PID list */
+static int create_schema(per_job_sampler_t sampler)
 {
-	char tenant_name[256];
-	const char *key = key_field ? key_field : DEFAULT_KEY_NAME;
+	int rc;
+	struct per_job_metric_desc_s *per_job_metrics = NULL;
+	int num_per_job_metrics = 0;
 
-	snprintf(tenant_name, sizeof(tenant_name), "__per_job_%s_internal",
-		 base->plugin_name);
+	sampler->schema = ldms_schema_new(sampler->schema_name);
+	if (!sampler->schema)
+		return ENOMEM;
 
-	base->tdef = ldmsd_tenant_def_new(tenant_name,
-					  base->producer,
-					  default_job_av,
-					  key,
-					  getuid(), getgid(), 0600);
-	if (!base->tdef)
-	{
-		ovis_log(base->log, OVIS_LERROR,
-			 "Failed to create internal tenant definition\n");
-		return errno;
+	/* Add standard per-job metrics */
+	sampler->job_id_midx = ldms_schema_metric_array_add(sampler->schema,
+							     "job_id",
+							     LDMS_V_CHAR_ARRAY,
+							     LDMSD_JOBMGR_JOB_ID_LEN);
+	if (sampler->job_id_midx < 0)
+		return -sampler->job_id_midx;
+
+	sampler->binding_key_midx = ldms_schema_metric_array_add(sampler->schema,
+								  "binding_key",
+								  LDMS_V_CHAR_ARRAY,
+								  BINDING_KEY_MAX_LEN);
+	if (sampler->binding_key_midx < 0)
+		return -sampler->binding_key_midx;
+
+	/* Ask plugin for per-job metrics */
+	if (sampler->callbacks.define_per_job_metrics) {
+		rc = sampler->callbacks.define_per_job_metrics(&per_job_metrics,
+							       &num_per_job_metrics,
+							       sampler->plugin_ctxt);
+		if (rc)
+			return rc;
+
+		/* Add plugin's per-job metrics */
+		if (num_per_job_metrics > 0) {
+			sampler->per_job_metric_midx = calloc(num_per_job_metrics, sizeof(int));
+			if (!sampler->per_job_metric_midx)
+				return ENOMEM;
+
+			for (int i = 0; i < num_per_job_metrics; i++) {
+				if (ldms_type_is_array(per_job_metrics[i].type)) {
+					sampler->per_job_metric_midx[i] =
+						ldms_schema_metric_array_add(sampler->schema,
+									      per_job_metrics[i].name,
+									      per_job_metrics[i].type,
+									      per_job_metrics[i].count);
+				} else {
+					sampler->per_job_metric_midx[i] =
+						ldms_schema_metric_add(sampler->schema,
+								       per_job_metrics[i].name,
+								       per_job_metrics[i].unit,
+								       per_job_metrics[i].type);
+				}
+				if (sampler->per_job_metric_midx[i] < 0)
+					return -sampler->per_job_metric_midx[i];
+			}
+			sampler->num_per_job_metrics = num_per_job_metrics;
+		}
 	}
+
+	/* Add PID record definition to schema */
+	sampler->pid_recdef_midx = ldms_schema_record_add(sampler->schema,
+							   sampler->pid_rec_def);
+	if (sampler->pid_recdef_midx < 0)
+		return -sampler->pid_recdef_midx;
+
+	/* Add PID list */
+	sampler->pid_list_heap_sz = sampler->max_pids_per_job *
+				    ldms_record_heap_size_get(sampler->pid_rec_def);
+
+	sampler->pid_list_midx = ldms_schema_metric_list_add(sampler->schema,
+							      "pid_list",
+							      "",
+							      sampler->pid_list_heap_sz);
+	if (sampler->pid_list_midx < 0)
+		return -sampler->pid_list_midx;
 
 	return 0;
 }
 
-ldms_schema_t per_job_base_schema_create(per_job_base_t base,
-				         struct ldms_metric_template_s *pid_metrics,
-				         int max_num_pids)
+/* Create a per-job base instance */
+static per_job_base_t create_job_base(per_job_sampler_t sampler,
+				       const char *job_id,
+				       const char *binding_key)
 {
-	size_t heap_sz;
+	per_job_base_t job_base;
+	int rc;
 
-	if (!base || !pid_metrics) { /* TODO: consider making pid_metrics optional. Another thing we should pair up pid_metrics with the pid_sample_fn */
-		errno = EINVAL;
+	job_base = calloc(1, sizeof(*job_base));
+	if (!job_base)
+		return NULL;
+
+	snprintf(job_base->job_id, sizeof(job_base->job_id), "%s", job_id);
+	snprintf(job_base->binding_key, sizeof(job_base->binding_key), "%s", binding_key);
+	snprintf(job_base->set_name, sizeof(job_base->set_name), "%s/%s",
+		 sampler->producer, job_id);
+
+	job_base->sampler = sampler;
+	rbt_init(&job_base->pid_rbt, pid_cmp);
+
+	/* Copy cached indices from sampler */
+	job_base->job_id_midx = sampler->job_id_midx;
+	job_base->binding_key_midx = sampler->binding_key_midx;
+	job_base->pid_list_midx = sampler->pid_list_midx;
+	job_base->pid_recdef_midx = sampler->pid_recdef_midx;
+	job_base->num_per_job_metrics = sampler->num_per_job_metrics;
+
+	if (job_base->num_per_job_metrics > 0) {
+		job_base->per_job_metric_midx = malloc(job_base->num_per_job_metrics *
+						       sizeof(int));
+		if (!job_base->per_job_metric_midx) {
+			free(job_base);
+			return NULL;
+		}
+		memcpy(job_base->per_job_metric_midx,
+		       sampler->per_job_metric_midx,
+		       job_base->num_per_job_metrics * sizeof(int));
+	}
+
+	/* Create LDMS set */
+	job_base->set = ldms_set_new(job_base->set_name, sampler->schema);
+	if (!job_base->set) {
+		free(job_base->per_job_metric_midx);
+		free(job_base);
 		return NULL;
 	}
 
-	if (max_num_pids <= 0)
-		max_num_pids = DEFAULT_MAX_NUM_PIDS;
+	/* Initialize set metrics */
+	ldms_metric_array_set_str(job_base->set, job_base->job_id_midx, job_id);
+	ldms_metric_array_set_str(job_base->set, job_base->binding_key_midx, binding_key);
+	ldms_set_producer_name_set(job_base->set, sampler->producer);
 
-	/* Count PID metrics */
-	base->rec_ent_count = 0;
-	while (pid_metrics[base->rec_ent_count].name != NULL)
-		base->rec_ent_count++;
+	/* Publish and register */
+	ldms_set_publish(job_base->set);
+	ldmsd_set_register(job_base->set, ldmsd_plug_cfg_name_get(sampler->pi));
 
-	/* Create record definition */
-	base->rec_ent_mids = calloc(base->rec_ent_count, sizeof(int));
-	if (!base->rec_ent_mids) {
-		ovis_log(base->log, OVIS_LCRIT, "Memory allocation failure.\n");
-		errno = ENOMEM;
-		goto err;
+	/* Call plugin's job_init if provided */
+	if (sampler->callbacks.job_init) {
+		rc = sampler->callbacks.job_init(job_base, &job_base->job_ctxt);
+		if (rc) {
+			ldms_set_delete(job_base->set);
+			free(job_base->per_job_metric_midx);
+			free(job_base);
+			return NULL;
+		}
 	}
 
-	base->recdef = ldms_record_from_template("pid_record",
-						 pid_metrics,
-						 base->rec_ent_mids);
-	if (!base->recdef) {
-		ovis_log(base->log, OVIS_LERROR,
-			 "Failed to create record definition\n");
-		goto err;
-	}
-
-	/* Create schema */
-	base->mids = calloc(3, sizeof(int)); /* job_id, binding_key, terminator */
-	if (!base->mids) {
-		ovis_log(base->log, OVIS_LCRIT, "Memory allocation failure.\n");
-		errno = ENOMEM;
-		goto err;
-	}
-
-	base->schema = ldms_schema_from_template(base->schema_name,
-						 per_job_std_metrics,
-						 base->mids);
-	if (!base->schema) {
-		ovis_log(base->log, OVIS_LERROR, "Failed to create schema\n");
-		goto err;
-	}
-
-	/* Add record definition to schema */
-	base->recdef_mid = ldms_schema_record_add(base->schema, base->recdef);
-	if (base->recdef_mid < 0) {
-		ovis_log(base->log, OVIS_LERROR,
-			 "Failed to add record to schema\n");
-		errno = -base->recdef_mid;
-		goto err;
-	}
-
-	/* Add PID list to schema */
-	heap_sz = ldms_record_heap_size_get(base->recdef) * max_num_pids;
-	base->mlist_mid = ldms_schema_metric_list_add(base->schema,
-						      "pid_list", "", heap_sz);
-	if (base->mlist_mid < 0) {
-		ovis_log(base->log, OVIS_LERROR, "Failed to add list to schema\n");
-		errno = -base->mlist_mid;
-		goto err;
-	}
-
-	/* Register for tenant events */
-	base->event_handle = ldmsd_tenant_event_register(base->tdef,
-							 per_job_event_cb,
-							 base);
-	if (!base->event_handle) {
-		ovis_log(base->log, OVIS_LERROR,
-			 "Failed to register for tenant events\n");
-		goto err;
-	}
-
-	return base->schema;
-
- err:
-	free(base->rec_ent_mids);
-	ldms_record_delete(base->recdef);
-	free(base->mids);
-	ldms_schema_delete(base->schema);
-	return NULL;
+	return job_base;
 }
 
-int per_job_base_set_pid_sampler(per_job_base_t base,
-				 per_job_base_sample_pid_fn_t sample_fn,
-				 void *plugin_ctxt)
+/* Destroy a per-job base instance */
+static void destroy_job_base(per_job_base_t job_base)
 {
-	if (!base || !sample_fn)
+	struct rbn *rbn;
+	struct pid_entry_s *pent;
+
+	/* Call plugin's cleanup */
+	if (job_base->sampler->callbacks.job_cleanup) {
+		job_base->sampler->callbacks.job_cleanup(job_base, job_base->job_ctxt);
+	}
+
+	/* Clean up PIDs */
+	while ((rbn = rbt_min(&job_base->pid_rbt))) {
+		rbt_del(&job_base->pid_rbt, rbn);
+		pent = container_of(rbn, struct pid_entry_s, rbn);
+		free(pent);
+	}
+
+	/* Clean up set */
+	if (job_base->set) {
+		ldmsd_set_deregister(ldms_set_instance_name_get(job_base->set),
+				     ldmsd_plug_cfg_name_get(job_base->sampler->pi));
+		ldms_set_unpublish(job_base->set);
+		ldms_set_delete(job_base->set);
+	}
+
+	free(job_base->per_job_metric_midx);
+	free(job_base);
+}
+
+/* Add a PID to a job */
+static int add_pid_to_job(per_job_base_t job_base, pid_t pid)
+{
+	struct pid_entry_s *pent;
+	ldms_mval_t list_head, pid_rec;
+	int rc;
+
+	/* Check if PID already exists */
+	if (rbt_find(&job_base->pid_rbt, &pid))
+		return 0;  /* Already exists */
+
+	/* Allocate PID entry */
+	pent = calloc(1, sizeof(*pent));
+	if (!pent)
+		return ENOMEM;
+
+	pent->pid = pid;
+	rbn_init(&pent->rbn, &pent->pid);
+
+	/* Allocate PID record in the list */
+	list_head = ldms_metric_get(job_base->set, job_base->pid_list_midx);
+	if (!list_head) {
+		free(pent);
 		return EINVAL;
+	}
 
-	base->sample_pid_fn = sample_fn;
-	base->plugin_ctxt = plugin_ctxt;
+	ldms_transaction_begin(job_base->set);
+
+	pid_rec = ldms_record_alloc(job_base->set, job_base->pid_recdef_midx);
+	if (!pid_rec) {
+		ldms_transaction_end(job_base->set);
+		free(pent);
+		return ENOMEM;
+	}
+
+	rc = ldms_list_append_record(job_base->set, list_head, pid_rec);
+	if (rc) {
+		ldms_transaction_end(job_base->set);
+		free(pent);
+		return rc;
+	}
+
+	pent->pid_rec = pid_rec;
+	rbt_ins(&job_base->pid_rbt, &pent->rbn);
+	job_base->num_pids++;
+
+	/* Call plugin's pid_added callback */
+	if (job_base->sampler->callbacks.pid_added) {
+		job_base->sampler->callbacks.pid_added(job_base, pid, pid_rec,
+						       job_base->job_ctxt);
+	}
+
+	ldms_transaction_end(job_base->set);
 
 	return 0;
 }
 
-/* Helper: Find job set by job_id */
-static job_set_t __jset_find(per_job_base_t base, const char *job_id)
+/* Remove a PID from a job */
+static void remove_pid_from_job(per_job_base_t job_base, pid_t pid)
 {
-	job_set_t jset;
+	struct rbn *rbn;
+	struct pid_entry_s *pent;
+	ldms_mval_t list_head;
+
+	rbn = rbt_find(&job_base->pid_rbt, &pid);
+	if (!rbn)
+		return;  /* Not found */
+
+	pent = container_of(rbn, struct pid_entry_s, rbn);
+
+	/* Call plugin's pid_removed callback */
+	if (job_base->sampler->callbacks.pid_removed) {
+		job_base->sampler->callbacks.pid_removed(job_base, pid,
+							 job_base->job_ctxt);
+	}
+
+	/* Remove from list and RBT */
+	ldms_transaction_begin(job_base->set);
+	list_head = ldms_metric_get(job_base->set, job_base->pid_list_midx);
+	if (list_head) {
+		ldms_list_remove_item(job_base->set, list_head, pent->pid_rec);
+	}
+	ldms_transaction_end(job_base->set);
+
+	rbt_del(&job_base->pid_rbt, rbn);
+	free(pent);
+	job_base->num_pids--;
+}
+
+/* Extract fields from jobmgr query record */
+static void extract_fields(per_job_sampler_t sampler, ldms_mval_t qrec,
+			   char *job_id, char *binding_key, pid_t *pid)
+{
 	ldms_mval_t mv;
-	const char *jid;
 
-	TAILQ_FOREACH(jset, &base->jset_list, entry)
-	{
-		mv = ldms_metric_get(jset->set, base->mids[0]);
-		jid = mv->a_char;
-		if (0 == strcmp(jid, job_id))
-			return jset;
+	if (job_id) {
+		if (sampler->job_id_field_idx >= 0) {
+			mv = ldms_record_metric_get(qrec, sampler->job_id_field_idx);
+			snprintf(job_id, LDMSD_JOBMGR_JOB_ID_LEN, "%s", mv->a_char);
+		} else {
+			job_id[0] = '\0';
+		}
 	}
-	return NULL;
+
+	if (binding_key) {
+		if (sampler->binding_key_field_idx >= 0) {
+			mv = ldms_record_metric_get(qrec, sampler->binding_key_field_idx);
+			snprintf(binding_key, BINDING_KEY_MAX_LEN, "%s", mv->a_char);
+		} else if (job_id) {
+			snprintf(binding_key, BINDING_KEY_MAX_LEN, "%s", job_id);
+		} else {
+			binding_key[0] = '\0';
+		}
+	}
+
+	if (pid) {
+		if (sampler->task_pid_field_idx >= 0) {
+			mv = ldms_record_metric_get(qrec, sampler->task_pid_field_idx);
+			*pid = mv->v_u64;
+		} else {
+			*pid = 0;
+		}
+	}
 }
 
-/* Helper: Create per-job set */
-static ldms_set_t __create_job_set(per_job_base_t base,
-				   const char *job_id,
-				   const char *binding_key)
+/* Event handler - called by tenant infrastructure */
+static int per_job_sampler_event_handler(ldmsd_tenant_def_t tdef,
+					  ldmsd_jobmgr_query_event_type_t event_type,
+					  ldms_mval_t qrec,
+					  void *cb_arg)
 {
-	ldms_set_t set;
-	ldms_mval_t mv;
-	char set_name[512];
+	per_job_sampler_t sampler = cb_arg;
+	char job_id[LDMSD_JOBMGR_JOB_ID_LEN];
+	char binding_key[BINDING_KEY_MAX_LEN];
+	pid_t pid;
+	per_job_base_t job_base;
 
-	snprintf(set_name, sizeof(set_name), "%s/%s", base->producer, job_id);
-
-	set = ldms_set_new(set_name, base->schema);
-	if (!set)
-	{
-		ovis_log(base->log, OVIS_LERROR, "Failed to create set '%s'\n",
-			 set_name);
-		return NULL;
-	}
-
-	/* Initialize job_id and binding_key */
-	ldms_transaction_begin(set);
-	mv = ldms_metric_get(set, base->mids[0]);
-	snprintf(mv->a_char, JOB_ID_LEN, "%s", job_id);
-
-	mv = ldms_metric_get(set, base->mids[1]);
-	snprintf(mv->a_char, JOB_ID_LEN, "%s", binding_key);
-	ldms_transaction_end(set);
-
-	ldms_set_publish(set);
-	ldmsd_set_register(set, base->plugin_name);
-
-	return set;
-}
-
-/* Event handlers */
-static int __job_start_handle(per_job_base_t base, ldms_mval_t qrec)
-{
-	job_set_t jset;
-	ldms_mval_t job_id, binding_key;
-
-	jset = calloc(1, sizeof(*jset));
-	if (!jset) {
-		ovis_log(base->log, OVIS_LCRIT, "Memory allocation failure\n");
-		return ENOMEM;
-	}
-
-	job_id = ldms_record_metric_get(qrec, base->job_id_midx);
-	binding_key = ldms_record_metric_get(qrec, base->key_midx);
-
-	jset->set = __create_job_set(base, job_id->a_char, binding_key->a_char);
-	if (!jset->set) {
-		free(jset);
-		return ENOMEM;
-	}
-
-	pthread_mutex_lock(&base->jset_list_lock);
-	TAILQ_INSERT_TAIL(&base->jset_list, jset, entry);
-	pthread_mutex_unlock(&base->jset_list_lock);
-
-	return 0;
-}
-
-static int __task_start_handle(per_job_base_t base, ldms_mval_t qrec)
-{
-	job_set_t jset;
-	ldms_mval_t job_id, pid, lh, rec;
-
-	job_id = ldms_record_metric_get(qrec, base->job_id_midx);
-	pid = ldms_record_metric_get(qrec, base->task_pid_midx);
-
-	pthread_mutex_lock(&base->jset_list_lock);
-	jset = __jset_find(base, job_id->a_char);
-	pthread_mutex_unlock(&base->jset_list_lock);
-
-	if (!jset) {
-		ovis_log(base->log, OVIS_LINFO,
-			 "Job set for job_id '%s' not found\n", job_id->a_char);
-		return 0;
-	}
-
-	/* Allocate PID record */
-	ldms_transaction_begin(jset->set);
-	rec = ldms_record_alloc(jset->set, base->recdef_mid);
-	if (!rec) {
-		ldms_transaction_end(jset->set);
-		ovis_log(base->log, OVIS_LERROR, "Failed to allocate PID record\n");
-		return ENOMEM;
-	}
-
-	/* Set PID value in first field */
-	ldms_record_set_u64(rec, 0, pid->v_u64);
-
-	/* Add to list */
-	lh = ldms_metric_get(jset->set, base->mlist_mid);
-	ldms_list_append_record(jset->set, lh, rec);
-	ldms_transaction_end(jset->set);
-
-	return 0;
-}
-
-static int __job_end_handle(per_job_base_t base, ldms_mval_t qrec)
-{
-	job_set_t jset;
-	ldms_mval_t job_id;
-
-	job_id = ldms_record_metric_get(qrec, base->job_id_midx);
-
-	pthread_mutex_lock(&base->jset_list_lock);
-	jset = __jset_find(base, job_id->a_char);
-	if (jset)
-		jset->is_exited = 1;
-	/* TODO: Handle when to delete a set of exited jobs */
-	pthread_mutex_unlock(&base->jset_list_lock);
-
-	return 0;
-}
-
-static int per_job_event_cb(ldmsd_tenant_def_t tdef,
-			    ldmsd_jobmgr_query_event_type_t etype,
-			    ldms_mval_t qrec, void *arg)
-{
-	per_job_base_t base = (per_job_base_t)arg;
-
-	switch (etype)
-	{
-	case LDMSD_JOBMGR_QUERY_EVENT_JOB_START:
-		return __job_start_handle(base, qrec);
+	switch (event_type) {
 	case LDMSD_JOBMGR_QUERY_EVENT_TASK_START:
-		return __task_start_handle(base, qrec);
-	case LDMSD_JOBMGR_QUERY_EVENT_JOB_END:
-		return __job_end_handle(base, qrec);
-	case LDMSD_JOBMGR_QUERY_EVENT_STEP_START:
-	case LDMSD_JOBMGR_QUERY_EVENT_STEP_END:
+		extract_fields(sampler, qrec, job_id, binding_key, &pid);
+
+		pthread_mutex_lock(&sampler->job_mutex);
+
+		/* Find or create job base */
+		job_base = find_job_base(sampler, job_id);
+		if (!job_base) {
+			job_base = create_job_base(sampler, job_id, binding_key);
+			if (!job_base) {
+				pthread_mutex_unlock(&sampler->job_mutex);
+				ovis_log(sampler->log, OVIS_LERROR,
+					 "Failed to create job base for %s\n", job_id);
+				return ENOMEM;
+			}
+			rbn_init(&job_base->rbn, job_base->job_id);
+			rbt_ins(&sampler->job_rbt, &job_base->rbn);
+		}
+
+		pthread_mutex_unlock(&sampler->job_mutex);
+
+		/* Add PID to job */
+		add_pid_to_job(job_base, pid);
+		break;
+
 	case LDMSD_JOBMGR_QUERY_EVENT_TASK_END:
-	case LDMSD_JOBMGR_QUERY_EVENT_NO_SPACE:
-	case LDMSD_JOBMGR_QUERY_EVENT_JOB_CLEANUP:
-	case LDMSD_JOBMGR_QUERY_EVENT_CLIENT_CLOSE:
+		extract_fields(sampler, qrec, job_id, NULL, &pid);
+
+		pthread_mutex_lock(&sampler->job_mutex);
+		job_base = find_job_base(sampler, job_id);
+		pthread_mutex_unlock(&sampler->job_mutex);
+
+		if (job_base) {
+			remove_pid_from_job(job_base, pid);
+		}
+		break;
+
+	case LDMSD_JOBMGR_QUERY_EVENT_JOB_END:
+		extract_fields(sampler, qrec, job_id, NULL, NULL);
+
+		pthread_mutex_lock(&sampler->job_mutex);
+		job_base = find_job_base(sampler, job_id);
+		if (job_base) {
+			rbt_del(&sampler->job_rbt, &job_base->rbn);
+		}
+		pthread_mutex_unlock(&sampler->job_mutex);
+
+		if (job_base) {
+			destroy_job_base(job_base);
+		}
+		break;
+
+	default:
+		/* Ignore other events */
 		break;
 	}
 
 	return 0;
 }
 
-int per_job_base_sample(per_job_base_t base)
+/* ============================================================================
+ * Public API Implementation
+ * ============================================================================ */
+
+per_job_sampler_t per_job_sampler_create(
+	ldmsd_plug_handle_t pi,
+	const char *producer,
+	const char *schema_name,
+	const char *instance,
+	const char *tenant_name,
+	const char *key_field,
+	ldms_record_t pid_rec_def,
+	int max_pids,
+	struct per_job_plugin_callbacks_s *callbacks,
+	void *plugin_ctxt)
 {
-	job_set_t jset;
-	ldms_mval_t lh, rec, pid_val;
-	enum ldms_value_type vtype;
-	size_t cnt;
-	uint64_t pid;
+	per_job_sampler_t sampler;
 	int rc;
+	ldmsd_jobmgr_query_t jquery;
 
-	if (!base || !base->sample_pid_fn)
-		return EINVAL;
+	sampler = calloc(1, sizeof(*sampler));
+	if (!sampler)
+		return NULL;
 
-	pthread_mutex_lock(&base->jset_list_lock);
+	sampler->pi = pi;
+	sampler->log = ldmsd_plug_log_get(pi);
+	sampler->callbacks = *callbacks;
+	sampler->plugin_ctxt = plugin_ctxt;
+	sampler->producer = strdup(producer);
+	sampler->schema_name = strdup(schema_name);
+	if (instance)
+		sampler->instance = strdup(instance);
+	sampler->pid_rec_def = pid_rec_def;
+	sampler->max_pids_per_job = max_pids;
 
-	TAILQ_FOREACH(jset, &base->jset_list, entry)
-	{
-		if (jset->is_exited)
-			continue;
+	pthread_mutex_init(&sampler->job_mutex, NULL);
+	rbt_init(&sampler->job_rbt, job_id_cmp);
 
-		ldms_transaction_begin(jset->set);
-
-		lh = ldms_metric_get(jset->set, base->mlist_mid);
-		rec = ldms_list_first(jset->set, lh, &vtype, &cnt);
-
-		while (rec)
-		{
-			if (vtype == LDMS_V_RECORD_INST)
-			{
-				/* Get PID from first field */
-				pid_val = ldms_record_metric_get(rec, 0);
-				pid = pid_val->v_u64;
-
-				/* Call plugin's sampling function */
-				rc = base->sample_pid_fn(rec, pid, base->plugin_ctxt);
-				if (rc)
-				{
-					ovis_log(base->log, OVIS_LDEBUG,
-						 "Failed to sample PID %lu: %d\n", pid, rc);
-				}
-			}
-
-			rec = ldms_list_next(jset->set, rec, &vtype, &cnt);
+	/* Determine mode and get/create tenant */
+	if (tenant_name) {
+		/* Shared tenant mode */
+		sampler->tenant_def = ldmsd_tenant_def_find(tenant_name);
+		if (!sampler->tenant_def) {
+			ovis_log(sampler->log, OVIS_LERROR,
+				 "Tenant '%s' not found\n", tenant_name);
+			goto err;
 		}
-
-		ldms_transaction_end(jset->set);
+		sampler->owns_tenant = 0;
+	} else {
+		/* Self-contained or custom key mode */
+		sampler->tenant_def = create_internal_tenant(sampler, key_field);
+		if (!sampler->tenant_def) {
+			ovis_log(sampler->log, OVIS_LERROR,
+				 "Failed to create internal tenant\n");
+			goto err;
+		}
+		sampler->owns_tenant = 1;
 	}
 
-	pthread_mutex_unlock(&base->jset_list_lock);
+	/* Get jobmgr query from tenant */
+	jquery = ldmsd_tenant_def_get_jquery(sampler->tenant_def);
+	if (!jquery) {
+		ovis_log(sampler->log, OVIS_LERROR,
+			 "Failed to get jobmgr query from tenant\n");
+		goto err;
+	}
+
+	/* Cache field indices */
+	sampler->job_id_field_idx = ldmsd_jobmgr_query_field_index(jquery, "job_id");
+	sampler->task_pid_field_idx = ldmsd_jobmgr_query_field_index(jquery, "task_pid");
+
+	/* Get binding key field index */
+	if (key_field && strcmp(key_field, "job_id") != 0) {
+		sampler->binding_key_field_idx = ldmsd_jobmgr_query_field_index(jquery, key_field);
+		if (sampler->binding_key_field_idx < 0) {
+			ovis_log(sampler->log, OVIS_LERROR,
+				 "Binding key field '%s' not found\n", key_field);
+			goto err;
+		}
+	} else {
+		sampler->binding_key_field_idx = sampler->job_id_field_idx;
+	}
+
+	/* Create schema */
+	rc = create_schema(sampler);
+	if (rc) {
+		ovis_log(sampler->log, OVIS_LERROR,
+			 "Failed to create schema: %d\n", rc);
+		goto err;
+	}
+
+	/* Register for tenant events */
+	sampler->event_consumer = ldmsd_tenant_event_register(sampler->tenant_def,
+							       per_job_sampler_event_handler,
+							       sampler);
+	if (!sampler->event_consumer) {
+		ovis_log(sampler->log, OVIS_LERROR,
+			 "Failed to register for tenant events\n");
+		goto err;
+	}
+
+	return sampler;
+
+err:
+	per_job_sampler_destroy(sampler);
+	return NULL;
+}
+
+void per_job_sampler_destroy(per_job_sampler_t sampler)
+{
+	struct rbn *rbn;
+	per_job_base_t job_base;
+
+	if (!sampler)
+		return;
+
+	/* Unregister from tenant events */
+	if (sampler->event_consumer) {
+		ldmsd_tenant_event_unregister(sampler->event_consumer);
+	}
+
+	/* Clean up all jobs */
+	while ((rbn = rbt_min(&sampler->job_rbt))) {
+		rbt_del(&sampler->job_rbt, rbn);
+		job_base = container_of(rbn, struct per_job_base_s, rbn);
+		destroy_job_base(job_base);
+	}
+
+	/* Clean up tenant if we own it */
+	if (sampler->owns_tenant && sampler->tenant_def) {
+		ldmsd_tenant_def_del(sampler->tenant_def);
+	}
+
+	/* Clean up schema */
+	if (sampler->schema) {
+		ldms_schema_delete(sampler->schema);
+	}
+
+	free(sampler->per_job_metric_midx);
+	free(sampler->producer);
+	free(sampler->schema_name);
+	free(sampler->instance);
+	pthread_mutex_destroy(&sampler->job_mutex);
+	free(sampler);
+}
+
+int per_job_sampler_sample(per_job_sampler_t sampler)
+{
+	struct rbn *rbn;
+	per_job_base_t job_base;
+	int rc = 0;
+
+	pthread_mutex_lock(&sampler->job_mutex);
+
+	RBT_FOREACH(rbn, &sampler->job_rbt) {
+		job_base = container_of(rbn, struct per_job_base_s, rbn);
+
+		/* Begin transaction */
+		ldms_transaction_begin(job_base->set);
+
+		/* Call plugin's sample_job callback */
+		if (sampler->callbacks.sample_job) {
+			rc = sampler->callbacks.sample_job(job_base, job_base->job_ctxt);
+		}
+
+		/* End transaction */
+		ldms_transaction_end(job_base->set);
+
+		if (rc) {
+			ovis_log(sampler->log, OVIS_LERROR,
+				 "Failed to sample job %s: %d\n", job_base->job_id, rc);
+		}
+	}
+
+	pthread_mutex_unlock(&sampler->job_mutex);
 
 	return 0;
 }
 
-void per_job_base_del(per_job_base_t base)
+/* Per-job base APIs */
+
+ldms_set_t per_job_base_get_set(per_job_base_t job_base)
 {
-	job_set_t jset;
-
-	if (!base)
-		return;
-
-	/* Unregister from events */
-	if (base->event_handle)
-	{
-		ldmsd_tenant_event_unregister(base->event_handle);
-	}
-
-	/* Delete all job sets */
-	while ((jset = TAILQ_FIRST(&base->jset_list)))
-	{
-		TAILQ_REMOVE(&base->jset_list, jset, entry);
-		if (jset->set)
-		{
-			ldmsd_set_deregister(ldms_set_instance_name_get(jset->set),
-					     base->plugin_name);
-			ldms_set_unpublish(jset->set);
-			ldms_set_delete(jset->set);
-		}
-		free(jset);
-	}
-
-	/* Delete tenant if we own it */
-	if (base->owns_tenant && base->tdef)
-	{
-		ldmsd_tenant_def_del(base->tdef);
-	}
-	else if (base->tdef)
-	{
-		ldmsd_tenant_def_find_put(base->tdef);
-	}
-
-	/* Cleanup schema and other resources */
-	if (base->schema)
-		ldms_schema_delete(base->schema);
-	if (base->recdef)
-		ldms_record_delete(base->recdef);
-
-	free((char *)base->plugin_name);
-	free((char *)base->producer);
-	free((char *)base->schema_name);
-	free(base->mids);
-	free(base->rec_ent_mids);
-
-	pthread_mutex_destroy(&base->jset_list_lock);
-
-	free(base);
+	return job_base->set;
 }
 
-const char *per_job_base_producer_get(per_job_base_t base)
+ldms_schema_t per_job_base_get_schema(per_job_base_t job_base)
 {
-	return base ? base->producer : NULL;
+	return job_base->sampler->schema;
+}
+
+const char *per_job_base_get_job_id(per_job_base_t job_base)
+{
+	return job_base->job_id;
+}
+
+const char *per_job_base_get_binding_key(per_job_base_t job_base)
+{
+	return job_base->binding_key;
+}
+
+int per_job_base_get_job_metric_index(per_job_base_t job_base, const char *metric_name)
+{
+	return ldms_metric_by_name(job_base->set, metric_name);
+}
+
+int per_job_base_get_pid_metric_index(per_job_base_t job_base, const char *metric_name)
+{
+	return ldms_record_metric_find(job_base->sampler->pid_rec_def, metric_name);
+}
+
+void per_job_base_set_u64(per_job_base_t job_base, int metric_idx, uint64_t value)
+{
+	ldms_metric_set_u64(job_base->set, metric_idx, value);
+}
+
+void per_job_base_set_u32(per_job_base_t job_base, int metric_idx, uint32_t value)
+{
+	ldms_metric_set_u32(job_base->set, metric_idx, value);
+}
+
+void per_job_base_set_s64(per_job_base_t job_base, int metric_idx, int64_t value)
+{
+	ldms_metric_set_s64(job_base->set, metric_idx, value);
+}
+
+void per_job_base_set_d64(per_job_base_t job_base, int metric_idx, double value)
+{
+	ldms_metric_set_double(job_base->set, metric_idx, value);
+}
+
+ldms_mval_t per_job_base_get_metric(per_job_base_t job_base, int metric_idx)
+{
+	return ldms_metric_get(job_base->set, metric_idx);
+}
+
+int per_job_base_foreach_pid(per_job_base_t job_base,
+			      per_job_pid_iterator_fn_t callback,
+			      void *arg)
+{
+	struct rbn *rbn;
+	struct pid_entry_s *pent;
+	int rc = 0;
+
+	RBT_FOREACH(rbn, &job_base->pid_rbt) {
+		pent = container_of(rbn, struct pid_entry_s, rbn);
+		rc = callback(job_base, pent->pid, pent->pid_rec, arg);
+		if (rc)
+			break;
+	}
+
+	return rc;
+}
+
+ldms_mval_t per_job_base_get_pid_record(per_job_base_t job_base, pid_t pid)
+{
+	struct rbn *rbn = rbt_find(&job_base->pid_rbt, &pid);
+	if (!rbn)
+		return NULL;
+
+	struct pid_entry_s *pent = container_of(rbn, struct pid_entry_s, rbn);
+	return pent->pid_rec;
+}
+
+int per_job_base_get_pid_count(per_job_base_t job_base)
+{
+	return job_base->num_pids;
+}
+
+int per_job_sampler_add_list(per_job_sampler_t sampler,
+			      const char *list_name,
+			      ldms_record_t rec_def,
+			      int max_entries)
+{
+	int rec_mid, list_mid;
+	size_t heap_sz;
+
+	if (!sampler->schema) {
+		ovis_log(sampler->log, OVIS_LERROR,
+			 "Schema not created yet\n");
+		return -EINVAL;
+	}
+
+	/* Add record definition to schema */
+	rec_mid = ldms_schema_record_add(sampler->schema, rec_def);
+	if (rec_mid < 0)
+		return rec_mid;
+
+	/* Add list metric */
+	heap_sz = max_entries * ldms_record_heap_size_get(rec_def);
+	list_mid = ldms_schema_metric_list_add(sampler->schema, list_name, "", heap_sz);
+	if (list_mid < 0)
+		return list_mid;
+
+	return list_mid;
 }
