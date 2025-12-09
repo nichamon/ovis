@@ -24,7 +24,7 @@
 
 /* Plugin instance - simple! */
 typedef struct per_job_stat_s {
-	per_job_sampler_base_t base;  /* Base handles everything */
+	per_job_base_t base;  /* Base handles everything */
 	ovis_log_t log;
 } *per_job_stat_t;
 
@@ -298,7 +298,7 @@ static int config(ldmsd_plug_handle_t handle,
 					   pid_rec_def,
 					   max_pids,
 					   &callbacks,
-					   NULL  /* No global plugin context needed */);
+					   pjs);
 
 	if (!pjs->base) {
 		rc = errno;

@@ -26,17 +26,6 @@ typedef struct per_job_base_s *per_job_base_t;
 typedef struct per_job_sampler_s *per_job_sampler_t;
 
 /* ============================================================================
- * Per-Job Metric Descriptor (for plugins to define per-job metrics)
- * ============================================================================ */
-
-struct per_job_metric_desc_s {
-	const char *name;
-	enum ldms_value_type type;
-	const char *unit;
-	size_t count;  /* For arrays, 1 for scalars */
-};
-
-/* ============================================================================
  * Plugin Callbacks
  * ============================================================================
  *
@@ -44,21 +33,21 @@ struct per_job_metric_desc_s {
  * All callbacks are optional unless marked as required.
  */
 
-/**
- * Define per-job metrics to add to schema
- *
- * Called once during schema creation.
- * Plugin should return array of metric descriptors.
- *
- * \param metrics_out  [out] Pointer to array of metric descriptors
- * \param count_out    [out] Number of metrics in array
- * \param plugin_ctxt  Plugin's global context
- * \return 0 on success, error code on failure
- */
-typedef int (*per_job_define_metrics_fn_t)(
-	struct per_job_metric_desc_s **metrics_out,
-	int *count_out,
-	void *plugin_ctxt);
+// /**
+//  * Define per-job metrics to add to schema
+//  *
+//  * Called once during schema creation.
+//  * Plugin should return array of metric descriptors.
+//  *
+//  * \param metrics_out  [out] Pointer to array of metric descriptors
+//  * \param count_out    [out] Number of metrics in array
+//  * \param plugin_ctxt  Plugin's global context
+//  * \return 0 on success, error code on failure
+//  */
+// typedef int (*per_job_define_metrics_fn_t)(
+// 	struct ldms_metric_template_s **metrics_out,
+// 	int *count_out,
+// 	void *plugin_ctxt);
 
 /**
  * Initialize per-job context when a job starts
@@ -144,7 +133,7 @@ typedef int (*per_job_sample_fn_t)(
 /* Plugin callbacks structure */
 struct per_job_plugin_callbacks_s {
 	/* Schema definition (optional) */
-	per_job_define_metrics_fn_t define_per_job_metrics;
+	// per_job_define_metrics_fn_t define_per_job_metrics;
 
 	/* Job lifecycle (optional) */
 	per_job_init_fn_t job_init;
