@@ -141,6 +141,8 @@ LDMSD_CTRL_CMD_MAP = {'usage': {'req_attr': [], 'opt_attr': ['name']},
                       ##### Plugin #####
                       'plugn_sets': {'req_attr': [], 'opt_attr': ['name']},
                       'plugn_status': {'req_attr': [], 'opt_attr': ['name']},
+                      ##### Sampler Plugin #####
+                      'smplr_status': {'req_attr': [], 'opt_attr': ['name']},
                       ##### Streams ###
                       'publish': {'req_attr': ['name'], 'opt_attr': []},
                       'subscribe': {'req_attr': ['name'], 'opt_attr': []},
@@ -621,6 +623,7 @@ class LDMSD_Request(object):
     SMPLR_DEL = 0X400 + 1
     SMPLR_START = 0X400 + 2
     SMPLR_STOP = 0X400 + 3
+    SMPLR_STATUS = 0x400 + 4
 
     PLUGN_ADD = 0X500
     PLUGN_DEL = 0X500 + 1
@@ -812,6 +815,8 @@ class LDMSD_Request(object):
             'qgroup_start'      : {'id' : QGROUP_START      },
             'qgroup_stop'       : {'id' : QGROUP_STOP       },
             'qgroup_info'       : {'id' : QGROUP_INFO       },
+
+	    'smplr_status'      : {'id' : SMPLR_STATUS      },
     }
 
     TYPE_CONFIG_CMD = 1
@@ -2404,7 +2409,7 @@ class Communicator(object):
             self.close()
             return errno.ENOTCONN, str(e)
 
-    def smplr_status(self):
+    def smplr_status(self, name=None):
         """
         Query a LDMSD for the status of all sampler plugins.
 
@@ -2418,7 +2423,7 @@ class Communicator(object):
         if name:
             attrs = [ LDMSD_Req_Attr(attr_id=LDMSD_Req_Attr.NAME, value=name) ]
         try:
-            req = LDMSD_Request(command_id=LDMSD_Request.PLUGN_STATUS, attrs=attrs)
+            req = LDMSD_Request(command_id=LDMSD_Request.SMPLR_STATUS, attrs=attrs)
             req.send(self)
             resp = req.receive(self)
             return resp['errcode'], resp['msg']

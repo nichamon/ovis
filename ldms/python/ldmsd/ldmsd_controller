@@ -1678,6 +1678,25 @@ class LdmsdCmdParser(cmd.Cmd):
                 plugn['name'], plugn['plugin'], plugn['type'],
                 plugn['libpath']))
 
+    def do_smplr_status(self, arg):
+        """
+	Report the sampler plugin instance status: name, state, sample interval and offset
+
+	[name=]   Sampler plugin instance name
+	"""
+        arg = self.handle_args('smplr_status', arg)
+        if not arg:
+            return
+        rc, msg = self.comm.smplr_status(arg['name'])
+        if rc != 0:
+            print(f"Error {rc}: {msg}")
+            return
+        samplers = fmt_status(msg)
+        print(f"{'Config Name':24} {'State':15} {'Interval (us)':14} {'Offset (us)':12}")
+        print(f"{'-'*24} {'-'*15} {'-'*14} {'-'*12}")
+        for smplr in samplers:
+            print(f"{smplr['name']:24} {smplr['state']:>15} {smplr['interval_us']:14} {smplr['offset_us']:12}")
+
     def do_plugn_sets(self, arg):
         """
         List the sets by the plugin that provides the sets

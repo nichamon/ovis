@@ -266,6 +266,9 @@ static int profiling_handler(ldmsd_req_ctxt_t reqc);
 static int profiling_disable_handler(ldmsd_req_ctxt_t reqc);
 static int profiling_enable_handler(ldmsd_req_ctxt_t reqc);
 
+/* sampler */
+static int sampler_status_handler(ldmsd_req_ctxt_t reqc);
+
 /* these are implemented in ldmsd_failover.c */
 int failover_config_handler(ldmsd_req_ctxt_t req_ctxt);
 int failover_peercfg_start_handler(ldmsd_req_ctxt_t req_ctxt);
@@ -787,6 +790,11 @@ static struct request_handler_entry request_handler[] = {
 	},
 	[LDMSD_QGROUP_INFO_REQ] = {
 		LDMSD_QGROUP_INFO_REQ, qgroup_info_handler, XUG
+	},
+
+	/* Sampler */
+	[LDMSD_SMPLR_STATUS_REQ] = {
+		LDMSD_SMPLR_STATUS_REQ, sampler_status_handler, XALL
 	},
 };
 
@@ -11427,4 +11435,165 @@ static int qgroup_info_handler(ldmsd_req_ctxt_t reqc)
 		ldmsd_send_req_response(reqc, reqc->line_buf);
 	}
 	return rc;
+}
+
+static int
+__sampler_status_json_get(ldmsd_req_ctxt_t reqc, ldmsd_cfgobj_sampler_t samp, int cnt)
+{
+	int rc;
+	json_entity_t d = NULL;
+	json_entity_t name, state, intrvl, offset;
+	jbuf_t jbuf = NULL;
+	name = state = intrvl = offset = NULL;
+
+	d = json_entity_new(JSON_DICT_VALUE);
+	if (!d) {
+		goto enomem;
+	}
+
+	name = json_entity_new(JSON_STRING_VALUE, samp->cfg.name);
+	if (!name) {
+		goto enomem;
+	}
+	rc = json_attr_add(d, "name", name);
+	if (rc) {
+		json_entity_free(name);
+		goto enomem;
+	}
+
+	state = json_entity_new(JSON_STRING_VALUE,
+		               ldmsd_cfgobj_sampler_state_str(samp->state));
+	if (!state)
+		goto enomem;
+	rc = json_attr_add(d, "state", state);
+	if (rc) {
+		json_entity_free(state);
+		goto enomem;
+	}
+
+
+	intrvl = json_entity_new(JSON_INT_VALUE, samp->sample_interval_us);
+	if (!intrvl)
+		goto enomem;
+	rc = json_attr_add(d, "interval_us", intrvl);
+	if (rc) {
+		json_entity_free(intrvl);
+		goto enomem;
+	}
+
+	offset = json_entity_new(JSON_INT_VALUE, samp->sample_offset_us);
+	if (!offset)
+		goto enomem;
+	rc = json_attr_add(d, "offset_us", offset);
+	if (rc) {
+		json_entity_free(offset);
+		goto enomem;
+	}
+
+	jbuf = json_entity_dump(NULL, d);
+	if (!jbuf)
+		goto enomem;
+
+	rc = linebuf_printf(reqc, "%s%s", ((cnt > 0)?",":""), jbuf->buf);
+	if (rc) {
+		if (rc == ENOMEM) {
+			goto enomem;
+		} else {
+			ovis_log(config_log, OVIS_LERROR, "Failed to construct a " \
+				"response of sampler_status with error %d\n", rc);
+			goto out;
+		}
+	}
+
+ out:
+	json_entity_free(d);
+	jbuf_free(jbuf);
+	return rc;
+
+ enomem:
+	reqc->line_off = snprintf(reqc->line_buf, reqc->line_len,
+				 "ldmsd has memory allocation failure");
+	reqc->errcode = rc = ENOMEM;
+	goto out;
+}
+
+static int sampler_status_handler(ldmsd_req_ctxt_t reqc)
+{
+	int rc = 0;
+	char *name = NULL;
+	struct ldmsd_req_attr_s attr;
+	ldmsd_cfgobj_sampler_t samp;
+	int cnt = 0;
+
+	name = ldmsd_req_attr_str_value_get_by_id(reqc, LDMSD_ATTR_NAME);
+	if (name) {
+		samp = ldmsd_sampler_find_get(name);
+		if (!samp) {
+			reqc->line_off = snprintf(reqc->line_buf, reqc->line_len,
+						 "sampler '%s' doesn't exist", name);
+			reqc->errcode = ENOENT;
+			goto send_reply;
+		}
+		ldmsd_sampler_lock(samp);
+		rc = __sampler_status_json_get(reqc, samp, 0);
+		ldmsd_sampler_find_put(samp);
+		ldmsd_sampler_unlock(samp);
+		if (rc)
+			goto enomem;
+	} else {
+		ldmsd_cfg_lock(LDMSD_CFGOBJ_SAMPLER);
+		for (samp = ldmsd_sampler_first(); samp;
+				samp = ldmsd_sampler_next(samp)) {
+			ldmsd_sampler_lock(samp);
+			rc = __sampler_status_json_get(reqc, samp, cnt);
+			ldmsd_sampler_unlock(samp);
+			if (rc) {
+				ldmsd_cfg_unlock(LDMSD_CFGOBJ_SAMPLER);
+				goto enomem;
+			}
+			cnt++;
+		}
+		ldmsd_cfg_unlock(LDMSD_CFGOBJ_SAMPLER);
+	}
+
+	attr.discrim = 1;
+	attr.attr_len = reqc->line_off + 2; /* +2 for '[' and ']' */
+	attr.attr_id = LDMSD_ATTR_JSON;
+	ldmsd_hton_req_attr(&attr);
+	rc = ldmsd_append_reply(reqc, (char *)&attr, sizeof(attr), LDMSD_REQ_SOM_F);
+	if (rc)
+		goto send_fail;
+
+	rc = ldmsd_append_reply(reqc, "[", 1, 0);
+	if (rc)
+		goto send_fail;
+
+	if (reqc->line_off) {
+		rc = ldmsd_append_reply(reqc, reqc->line_buf, reqc->line_off, 0);
+		if (rc)
+			goto send_fail;
+	}
+	rc = ldmsd_append_reply(reqc, "]", 1, 0);
+	if (rc)
+		goto send_fail;
+
+	/* Send the terminating attribute */
+	attr.discrim = 0;
+	rc = ldmsd_append_reply(reqc, (char *)&attr.discrim, sizeof(uint32_t), LDMSD_REQ_EOM_F);
+	if (rc)
+		goto send_fail;
+
+ send_reply:
+	ldmsd_send_req_response(reqc, reqc->line_buf);
+ out:
+	free(name);
+	return rc;
+ enomem:
+	ovis_log(config_log, OVIS_LCRIT, "Memory allocation failure.\n");
+	reqc->line_off = snprintf(reqc->line_buf, reqc->line_len, "ldmsd had a memory allocation failure.");
+	goto send_reply;
+ send_fail:
+	ovis_log(config_log, OVIS_LERROR, "Failed to send a response to sampler_status with error %d.\n", rc);
+	/* We don't send this error back to the requester because a previous send failed. */
+	goto out;
 }

@@ -203,6 +203,16 @@ Stop a sampler plugin
       |
       | The plugin name.
 
+Get status a sampler plugin instance
+------------------------------------
+
+**smplr_status** [**name=\ NAME**]
+
+  **name** *name*
+     |
+     | The sampler plugin instance name
+
+
 AUTHENTICATION COMMAND SYNTAX
 =============================
 
