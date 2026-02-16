@@ -82,6 +82,10 @@ typedef struct base_data_s {
 	int job_start_idx;
 	int job_end_idx;
 
+	/* Tagged the tenant to any sets created by this sampler instance */
+	const char *tenant;
+	uint64_t tenant_uuid;
+
 	ovis_log_t mylog;
 
 	/*

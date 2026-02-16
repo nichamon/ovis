@@ -59,6 +59,7 @@
 #include "ldms.h"
 #include "ldmsd.h"
 #include "sampler_base.h"
+#include "ldmsd_tenant.h"
 
 void base_del(base_data_t base)
 {
@@ -77,6 +78,7 @@ void base_del(base_data_t base)
 	if (base->job_set)
 		ldms_set_put(base->job_set);
 	free(base->job_set_name);
+	free(base->tenant);
 	free(base);
 }
 
@@ -190,6 +192,7 @@ base_data_t base_config(struct attr_value_list *avl,
 {
 	char *job_set_name;
 	char *value;
+	char *tenant = NULL;
 	errno = 0;
 
 	base_data_t base = calloc(1, sizeof(*base));
@@ -249,6 +252,11 @@ base_data_t base_config(struct attr_value_list *avl,
 	if (rc)
 		goto einval;
 
+	base->tenant = av_value(avl, "tenant");
+	if (ldmsd_tenant_def_get_uuid(NULL, base->tenant, &base->tenant_uuid)) {
+		/* TODO: Should we return an error if the given tenant name doesn't exist. */
+	}
+
 	value = av_value(avl, "set_array_card");
 	base->set_array_card = (value)?(strtol(value, NULL, 0)):(1);
 	return base;
@@ -268,6 +276,13 @@ ldms_schema_t base_schema_new(base_data_t base)
 	}
 
 	rc = ldms_schema_meta_add(base->schema, "component_id", LDMS_V_U64);
+	if (rc < 0) {
+		errno = rc;
+		goto err_1;
+	}
+
+	/* TODO: expand this to two u64 to support UUID 5 */
+	rc = ldms_schema_meta_add(base->schema, "tenant_key", LDMS_V_U64);
 	if (rc < 0) {
 		errno = rc;
 		goto err_1;
