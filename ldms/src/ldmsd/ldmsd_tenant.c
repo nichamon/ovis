@@ -386,6 +386,25 @@ int ldmsd_tenant_def_get_key_name(ldmsd_tenant_def_t tdef, const char **key_name
 	return tdef->key_mid;
 }
 
+int ldmsd_tenant_def_get_uuid(ldmsd_tenant_def_t tdef, const char *tenant_name, uint64_t *_uuid)
+{
+	ldmsd_tenant_def_t td;
+	memset(_uuid, 0, sizeof(uint64_t));
+	if (!tdef) {
+		if (!tenant_name) {
+			return EINVAL;
+		}
+		td = ldmsd_tenant_def_find(tenant_name);
+		if (!td)
+			return ENOENT;
+	} else {
+		td = tdef;
+	}
+
+	memcpy(_uuid, &td->uuid, sizeof(uint64_t));
+	return 0;
+}
+
 int ldmsd_tenant_def_attr_index(ldmsd_tenant_def_t tdef, const char *attr_name)
 {
 	if (!tdef->jquery)
