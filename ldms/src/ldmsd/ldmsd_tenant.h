@@ -172,6 +172,7 @@ typedef struct ldmsd_tenant_def_s {
 	/* Key field for binding tenants with sets/metrics */
 	const char *key_field_name;           /**< Name of the binding key field */
 	int key_mid;                          /**< Metric ID of the binding key field */
+	uint64_t uuid;                         /**< UUID represents the tenant */
 
 	/* Multi-tenant Notification */
 	pthread_mutex_t event_consumer_lock;  /**< Mutex protecting event_consumer_list */
@@ -504,6 +505,23 @@ int ldmsd_tenant_def_str(ldmsd_tenant_def_t tdef, int summary, ldmsd_req_ctxt_t 
  * \see ldmsd_tenant_def_new() - Key field is specified at creation time
  */
 int ldmsd_tenant_def_get_key_name(ldmsd_tenant_def_t tdef, const char **key_name);
+
+/**
+ * \brief Return the UUID of the given tenant
+ *
+ * The given tenant definition handle \c tdef takes precedent over the given \c tenant_name.
+ * The function mem-copies the UUID of the tenant definition to the re-entrant \c _uuid.
+ *
+ * If an error occurs, \c _uuid is zero out.
+ *
+ * \param tdef        Tenant definition handle
+ * \param tenant_name String of tenant name
+ *
+ * \return 0 on success
+ *         EINVAL if neither \c tdef nor \c tenant_name is given
+ *         ENOENT if only \c tenant_name is given and there is no tenant definition of the given name
+ */
+int ldmsd_tenant_def_get_uuid(ldmsd_tenant_def_t tdef, const char *tenant_name, uint64_t *_uuid);
 
 /**
  * \brief Get the metric index of an attribute in a tenant definition
