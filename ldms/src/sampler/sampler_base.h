@@ -82,6 +82,10 @@ typedef struct base_data_s {
 	int job_start_idx;
 	int job_end_idx;
 
+	/* Tagged the tenant to any sets created by this sampler instance */
+	const char *tenant;
+	uint64_t tenant_uuid;
+
 	ovis_log_t mylog;
 
 	/*
@@ -106,6 +110,7 @@ typedef struct base_data_s {
 #define BASE_COMPONENT_ID	0
 #define BASE_JOB_ID		1
 #define BASE_APP_ID		2
+#define BASE_TENANT_UUID_ID	3
 #define BASE_CONFIG_SYNOPSIS \
 	"producer=<name> instance=<name> [component_id=<int>] [schema=<name>]\n" \
 	"       [job_set=<name>] [job_id=<name>] [app_id=<name>] [job_start=<name>] [job_end=<name>]\n" \
