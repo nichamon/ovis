@@ -213,6 +213,9 @@ ldmsd_tenant_def_t ldmsd_tenant_def_new(const char *name, const char *dameon_nam
 	size_t heap_sz;
 	size_t template_len = ARRAY_LEN(tenant_metrics) - 1;
 
+	/* TODO: Remove this */
+	static uint64_t uuid = 1;
+
 	ldmsd_tenant_def_t tdef;
 
 	tdef = (ldmsd_tenant_def_t)ldmsd_cfgobj_new_with_auth(name,
@@ -268,6 +271,9 @@ ldmsd_tenant_def_t ldmsd_tenant_def_new(const char *name, const char *dameon_nam
 	if (key_name) {
 		tdef->key_mid = __get_key_index(tdef);
 	}
+
+	/* TODO: Calculate UUID here */
+	tdef->uuid = uuid++;
 
 	tdef->schema = ldms_schema_from_template(schema_name, tenant_metrics, tdef->mids);
 	if (!tdef->schema) {
