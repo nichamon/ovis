@@ -901,14 +901,32 @@ int slurm_spank_job_prolog(spank_t sh, int argc, char *argv[])
 	return ESPANK_SUCCESS;
 }
 
+void ___get_pid(spank_t sh)
+{
+	pid_t pid;
+	_get_item_u32(sh, S_TASK_PID, (uint32_t*)&pid);
+	DEBUG2("S_TASK_PID is %d: ", pid);
+	if (pid == 0 || pid == -1) {
+		pid = getpid();
+		DEBUG2("getpid() = %d: ", pid);
+	}
+	DEBUG2("\n");
+}
+
 int slurm_spank_task_init_privileged(spank_t sh, int argc, char *argv[])
 {
 	stepd_event = "task_init";
 	jbuf_t jb;
-	if (spank_context() != S_CTX_REMOTE)
+	DEBUG2("%s\n", stepd_event);
+	if (spank_context() != S_CTX_REMOTE) {
+		DEBUG2("task_init_priv: spank_context() != S_CTX_REMOTE\n");
 		return ESPANK_SUCCESS;
-	if (!step_is_valid(sh))
+	}
+	if (!step_is_valid(sh)) {
+		DEBUG2("task_init_priv: !step_is_valid(sh)\n");
 		return ESPANK_SUCCESS;
+	}
+	___get_pid(sh);
 	jb = make_task_init_data(sh);
 	if (jb) {
 		DEBUG2("%s", jb->buf);
@@ -922,10 +940,16 @@ int slurm_spank_task_exit(spank_t sh, int argc, char *argv[])
 {
 	stepd_event = "task_exit";
 	jbuf_t jb;
-	if (spank_context() != S_CTX_REMOTE)
+	DEBUG2("%s\n", stepd_event);
+	if (spank_context() != S_CTX_REMOTE) {
+		DEBUG2("task_init_priv: spank_context() != S_CTX_REMOTE\n");
 		return ESPANK_SUCCESS;
-	if (!step_is_valid(sh))
+	}
+	if (!step_is_valid(sh)) {
+		DEBUG2("task_init_priv: !step_is_valid(sh)\n");
 		return ESPANK_SUCCESS;
+	}
+	___get_pid(sh);
 	jb = make_task_exit_data(sh);
 	if (jb) {
 		DEBUG2("%s", jb->buf);
