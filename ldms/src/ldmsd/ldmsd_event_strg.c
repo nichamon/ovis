@@ -456,6 +456,38 @@ void storage_worker_actor(struct ovis_event_s *ev)
 	ldmsd_stat_update(&prdset->store_stages_stat.commit_stat,
 			&queue_stat->end, &prdset->store_stat.end);
 	ldmsd_stat_update(&prdset->store_stat, &event_ctxt->start_ts, &prdset->store_stat.end);
+
+
+	double io_thread_tt = prdset->store_stages_stat.io_thread_stat.avg * prdset->store_stages_stat.io_thread_stat.count;
+	double decomp = prdset->store_stages_stat.decomp_stat.avg * prdset->store_stages_stat.decomp_stat.count;
+	double wait = prdset->store_stages_stat.worker_wait_stat.avg * prdset->store_stages_stat.worker_wait_stat.count;
+	double prep = io_thread_tt - decomp - wait;
+	double total_avg = prdset->store_stages_stat.io_thread_stat.avg +
+				prdset->store_stages_stat.commit_stat.avg +
+				prdset->store_stages_stat.queue_stat.avg;
+	printf("--------------------------------------------------------------\n");
+	printf("Total store time: %lf\n", prdset->store_stat.avg * prdset->store_stat.count);
+	printf("commit: %lf          %lf\n",
+		prdset->store_stages_stat.commit_stat.avg / total_avg,
+		prdset->store_stages_stat.commit_stat.avg * prdset->store_stages_stat.commit_stat.count);
+	printf("decomp: %lf          %lf\n",
+		prdset->store_stages_stat.decomp_stat.avg / total_avg,
+		decomp);
+	printf("queue:  %lf          %lf\n",
+		prdset->store_stages_stat.queue_stat.avg / total_avg,
+		prdset->store_stages_stat.queue_stat.avg * prdset->store_stages_stat.queue_stat.count);
+	printf("wait:   %lf          %lf\n",
+		prdset->store_stages_stat.worker_wait_stat.avg / total_avg,
+		wait);
+	printf("prep:   %lf\n", prep);
+	printf("io_thread: %lf\n", io_thread_tt);
+
+
+
+
+
+
+
 	store_event_ctxt_free(event_ctxt);
 	free(row_list);
 	free(ev);

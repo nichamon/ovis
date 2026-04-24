@@ -1681,7 +1681,7 @@ class LdmsdCmdParser(Cmd.Cmd):
             sorted_stages = sorted(stage_tbl['stages'].items(), key=lambda x: x[1], reverse=True)
             for stage, value in sorted_stages:
                 pct = value/stage_tbl['total_time']*100
-                print(f"   {stage:15}: {pct:>7.2f}%")
+                print(f"   {stage:15}: {pct:>7.2f}%          {value:>7.2f} us")
 
     def complete_store_time_stats(self, text, line, begidx, endidx):
         return self.__complete_attr_list('store_time_stats', text)
