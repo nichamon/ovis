@@ -33,21 +33,45 @@ typedef struct per_job_sampler_s *per_job_sampler_t;
  * All callbacks are optional unless marked as required.
  */
 
-// /**
-//  * Define per-job metrics to add to schema
-//  *
-//  * Called once during schema creation.
-//  * Plugin should return array of metric descriptors.
-//  *
-//  * \param metrics_out  [out] Pointer to array of metric descriptors
-//  * \param count_out    [out] Number of metrics in array
-//  * \param plugin_ctxt  Plugin's global context
-//  * \return 0 on success, error code on failure
-//  */
-// typedef int (*per_job_define_metrics_fn_t)(
-// 	struct ldms_metric_template_s **metrics_out,
-// 	int *count_out,
-// 	void *plugin_ctxt);
+/* ============================================================================
+ * Metric descriptor for define_per_job_metrics callback
+ * ============================================================================ */
+
+/**
+ * Describes one per-job metric to be added to the schema.
+ * Returned as an array from the define_per_job_metrics callback.
+ */
+struct per_job_metric_desc_s {
+	const char *name;          /* Metric name */
+	const char *unit;          /* Unit string (e.g. "usec", "bytes", "") */
+	enum ldms_value_type type; /* LDMS_V_U64, LDMS_V_CHAR_ARRAY, etc. */
+	int count;                 /* Array length (for array types; ignored otherwise) */
+};
+
+/* ============================================================================
+ * Plugin Callbacks
+ * ============================================================================
+ *
+ * Plugins implement these callbacks to define behavior.
+ * All callbacks are optional unless marked as required.
+ */
+
+/**
+ * Define per-job metrics to add to the schema.
+ *
+ * Called once during schema creation (inside per_job_sampler_create).
+ * Plugin returns a heap-allocated array of metric descriptors.
+ * The base library owns the array after this call and frees it.
+ *
+ * \param metrics_out  [out] Pointer to array of metric descriptors
+ * \param count_out    [out] Number of metrics in array
+ * \param plugin_ctxt  Plugin's global context
+ * \return 0 on success, error code on failure
+ */
+typedef int (*per_job_define_metrics_fn_t)(
+	struct per_job_metric_desc_s **metrics_out,
+	int *count_out,
+	void *plugin_ctxt);
 
 /**
  * Initialize per-job context when a job starts
@@ -133,7 +157,7 @@ typedef int (*per_job_sample_fn_t)(
 /* Plugin callbacks structure */
 struct per_job_plugin_callbacks_s {
 	/* Schema definition (optional) */
-	// per_job_define_metrics_fn_t define_per_job_metrics;
+	per_job_define_metrics_fn_t define_per_job_metrics;
 
 	/* Job lifecycle (optional) */
 	per_job_init_fn_t job_init;
@@ -376,5 +400,16 @@ int per_job_sampler_add_list(per_job_sampler_t sampler,
 			      const char *list_name,
 			      ldms_record_t rec_def,
 			      int max_entries);
+
+/**
+ * Get the plugin's global context from a job_base instance.
+ *
+ * Allows sample_job and other callbacks to reach plugin-level state
+ * without storing a redundant pointer in every per-job context.
+ *
+ * \param job_base  Job base instance
+ * \return Plugin's global context (as passed to per_job_sampler_create)
+ */
+void *per_job_base_get_plugin_ctxt(per_job_base_t job_base);
 
 #endif /* __PER_JOB_SAMPLER_BASE_H__ */

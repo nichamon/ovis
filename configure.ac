@@ -259,6 +259,10 @@ OPTION_DEFAULT_DISABLE([rabbitv3], [ENABLE_RABBITV3])
 dnl Options for jobmgr
 OPTION_DEFAULT_ENABLE([jobmgr], [ENABLE_JOBMGR])
 
+dnl Options for per_job
+OPTION_DEFAULT_ENABLE([per_job], [ENABLE_PER_JOB])
+OPTION_DEFAULT_ENABLE([cgroup_sampler], [ENABLE_CGROUP_SAMPLER])
+
 dnl AMQP
 OPTION_DEFAULT_DISABLE([amqp], [ENABLE_AMQP])
 
@@ -1146,6 +1150,7 @@ ldms/src/contrib/sampler/geopm_sampler/Makefile
 ldms/src/jobmgr/Makefile
 ldms/src/jobmgr/slurm/Makefile
 ldms/src/jobmgr/flux/Makefile
+ldms/src/per_job/Makefile
 ldms/src/third-plugins/Makefile
 ldms/src/ldmsd/Makefile
 ldms/src/ldmsd/test/Makefile

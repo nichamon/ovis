@@ -27,6 +27,10 @@ if ENABLE_JOBMGR
 SUBDIRS += jobmgr
 endif
 
+if ENABLE_PER_JOB
+SUBDIRS += per_job
+endif
+
 ac_configure_args=@ac_configure_args@
 
 do_subst = @LDMS_SUBST_RULE@

@@ -297,7 +297,7 @@ SUBDIRS += slingshot_info
 endif
 endif
 
-SUBDIRS += per_job
+#SUBDIRS += per_job
 
 CLEANFILES = $(dist_man7_MANS)
 

@@ -237,4 +237,19 @@ ldms_mval_t ldmsd_jobmgr_qrec_get(ldmsd_jobmgr_query_t q, ldmsd_jobmgr_qrec_key_
 ldms_mval_t ldmsd_jobmgr_qrec_next(ldmsd_jobmgr_query_t q, ldmsd_jobmgr_qrec_key_t k,
 				   ldms_mval_t qrec);
 
+/**
+ * \brief Get the record field index for a named attribute in a query's recdef.
+ *
+ * Returns the index of a named field within the query's record definition.
+ * Used by per_job_sampler_base to cache job_id, task_pid, and binding key
+ * field indices at creation time for fast access during event handling.
+ *
+ * \param q     jobmgr query handle
+ * \param name  Field name to look up (e.g. "job_id", "task_pid")
+ *
+ * \return Non-negative index on success
+ * \return Negative value if the field is not found
+ */
+int ldmsd_jobmgr_query_field_index(ldmsd_jobmgr_query_t q, const char *name);
+
 #endif

@@ -544,6 +544,18 @@ int ldmsd_tenant_def_get_uuid(ldmsd_tenant_def_t tdef, const char *tenant_name, 
  */
 int ldmsd_tenant_def_attr_index(ldmsd_tenant_def_t tdef, const char *attr_name);
 
+/**
+ * \brief Get the jobmgr query handle from a tenant definition
+ *
+ * Returns the underlying ldmsd_jobmgr_query_t handle associated with the
+ * tenant. Used by per_job_sampler_base to cache field indices at creation
+ * time via ldmsd_jobmgr_query_field_index().
+ *
+ * \param tdef  Tenant definition handle
+ * \return jobmgr query handle, or NULL if not initialized
+ */
+ldmsd_jobmgr_query_t ldmsd_tenant_def_get_jquery(ldmsd_tenant_def_t tdef);
+
 /* Multi-tenant Event Notification API */
 
 /**

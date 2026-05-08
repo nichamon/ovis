@@ -246,6 +246,11 @@ void ldmsd_jobmgr_query_close(ldmsd_jobmgr_query_t q)
 	ref_put(&q->ref, "init");
 }
 
+int ldmsd_jobmgr_query_field_index(ldmsd_jobmgr_query_t q, const char *name)
+{
+	return ldms_record_index_get(q->recdef, name);
+}
+
 typedef struct jobmgr_qev_s {
 	struct ldmsd_jobmgr_query_event_s qev;
 	void *ctxt; /* event context from the plugin */

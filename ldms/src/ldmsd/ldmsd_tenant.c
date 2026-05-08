@@ -392,6 +392,11 @@ int ldmsd_tenant_def_get_key_name(ldmsd_tenant_def_t tdef, const char **key_name
 	return tdef->key_mid;
 }
 
+ldmsd_jobmgr_query_t ldmsd_tenant_def_get_jquery(ldmsd_tenant_def_t tdef)
+{
+	return tdef->jquery;
+}
+
 int ldmsd_tenant_def_get_uuid(ldmsd_tenant_def_t tdef, const char *tenant_name, uint64_t *_uuid)
 {
 	ldmsd_tenant_def_t td;

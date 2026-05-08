@@ -38,15 +38,15 @@ struct per_job_base_s {
 	ldms_set_t set;
 	char set_name[256];
 
-	/* Cached metric indices (set-level) */
+	/* Cached metric indices (set-level, copied from sampler at creation) */
 	int job_id_midx;
 	int binding_key_midx;
 	int pid_list_midx;
 	int pid_recdef_midx;
 
-	/* Plugin-defined per-job metrics */
+	/* Plugin-defined per-job metric indices (copied from sampler) */
 	int *per_job_metric_midx;
-	int num_per_job_metrics;
+	int  num_per_job_metrics;
 
 	/* PID tracking for this job */
 	struct rbt pid_rbt;  /* pid_t → pid_entry_s */
@@ -73,20 +73,20 @@ struct per_job_sampler_s {
 	char *producer;
 	char *instance;  /* For self-contained mode */
 
+	/* Cached schema-level metric indices (copied into each job base) */
+	int job_id_midx;
+	int binding_key_midx;
+	int pid_recdef_midx;
+	int pid_list_midx;
+
+	/* Plugin-defined per-job metric indices (copied into each job base) */
+	int *per_job_metric_midx;
+	int  num_per_job_metrics;
+
 	/* PID record definition */
 	ldms_record_t pid_rec_def;
 	int max_pids_per_job;
 	size_t pid_list_heap_sz;
-
-	/* Cached metric indices (set-level) */
-	int job_id_midx;
-	int binding_key_midx;
-	int pid_list_midx;
-	int pid_recdef_midx;
-
-	/* Plugin-defined per-job metrics */
-	int *per_job_metric_midx;
-	int num_per_job_metrics;
 
 	/* Plugin callbacks and context */
 	struct per_job_plugin_callbacks_s callbacks;
@@ -196,9 +196,9 @@ err:
 /* Create schema with per-job metrics and PID list */
 static int create_schema(per_job_sampler_t sampler)
 {
-	// int rc;
-	// struct per_job_metric_desc_s *per_job_metrics = NULL;
-	// int num_per_job_metrics = 0;
+	int rc;
+	struct per_job_metric_desc_s *per_job_metrics = NULL;
+	int num_per_job_metrics = 0;
 
 	sampler->schema = ldms_schema_new(sampler->schema_name);
 	if (!sampler->schema)
@@ -220,56 +220,61 @@ static int create_schema(per_job_sampler_t sampler)
 		return -sampler->binding_key_midx;
 
 	/* Ask plugin for per-job metrics */
-	// if (sampler->callbacks.define_per_job_metrics) {
-	// 	rc = sampler->callbacks.define_per_job_metrics(&per_job_metrics,
-	// 						       &num_per_job_metrics,
-	// 						       sampler->plugin_ctxt);
-	// 	if (rc)
-	// 		return rc;
+	if (sampler->callbacks.define_per_job_metrics) {
+		rc = sampler->callbacks.define_per_job_metrics(&per_job_metrics,
+							       &num_per_job_metrics,
+							       sampler->plugin_ctxt);
+		if (rc)
+			return rc;
 
-	// 	/* Add plugin's per-job metrics */
-	// 	if (num_per_job_metrics > 0) {
-	// 		sampler->per_job_metric_midx = calloc(num_per_job_metrics, sizeof(int));
-	// 		if (!sampler->per_job_metric_midx)
-	// 			return ENOMEM;
+		/* Add plugin's per-job metrics */
+		if (num_per_job_metrics > 0) {
+			sampler->per_job_metric_midx = calloc(num_per_job_metrics, sizeof(int));
+			if (!sampler->per_job_metric_midx)
+				return ENOMEM;
 
-	// 		for (int i = 0; i < num_per_job_metrics; i++) {
-	// 			if (ldms_type_is_array(per_job_metrics[i].type)) {
-	// 				sampler->per_job_metric_midx[i] =
-	// 					ldms_schema_metric_array_add(sampler->schema,
-	// 								      per_job_metrics[i].name,
-	// 								      per_job_metrics[i].type,
-	// 								      per_job_metrics[i].count);
-	// 			} else {
-	// 				sampler->per_job_metric_midx[i] =
-	// 					ldms_schema_metric_add(sampler->schema,
-	// 							       per_job_metrics[i].name,
-	// 							       per_job_metrics[i].unit,
-	// 							       per_job_metrics[i].type);
-	// 			}
-	// 			if (sampler->per_job_metric_midx[i] < 0)
-	// 				return -sampler->per_job_metric_midx[i];
-	// 		}
-	// 		sampler->num_per_job_metrics = num_per_job_metrics;
-	// 	}
-	// }
+			for (int i = 0; i < num_per_job_metrics; i++) {
+				if (ldms_type_is_array(per_job_metrics[i].type)) {
+					sampler->per_job_metric_midx[i] =
+						ldms_schema_metric_array_add(sampler->schema,
+									      per_job_metrics[i].name,
+									      per_job_metrics[i].type,
+									      per_job_metrics[i].count);
+				} else {
+					sampler->per_job_metric_midx[i] =
+						ldms_schema_metric_add_with_unit(sampler->schema,
+										 per_job_metrics[i].name,
+										 per_job_metrics[i].unit,
+										 per_job_metrics[i].type);
+				}
+				if (sampler->per_job_metric_midx[i] < 0)
+					return -sampler->per_job_metric_midx[i];
+			}
+			sampler->num_per_job_metrics = num_per_job_metrics;
+		}
+		free(per_job_metrics);
+	}
 
-	/* Add PID record definition to schema */
-	sampler->pid_recdef_midx = ldms_schema_record_add(sampler->schema,
-							   sampler->pid_rec_def);
-	if (sampler->pid_recdef_midx < 0)
-		return -sampler->pid_recdef_midx;
+	/* Add PID record definition and list only if plugin requested it */
+	if (sampler->pid_rec_def) {
+		sampler->pid_recdef_midx = ldms_schema_record_add(sampler->schema,
+								   sampler->pid_rec_def);
+		if (sampler->pid_recdef_midx < 0)
+			return -sampler->pid_recdef_midx;
 
-	/* Add PID list */
-	sampler->pid_list_heap_sz = sampler->max_pids_per_job *
-				    ldms_record_heap_size_get(sampler->pid_rec_def);
+		sampler->pid_list_heap_sz = sampler->max_pids_per_job *
+					    ldms_record_heap_size_get(sampler->pid_rec_def);
 
-	sampler->pid_list_midx = ldms_schema_metric_list_add(sampler->schema,
-							      "pid_list",
-							      "",
-							      sampler->pid_list_heap_sz);
-	if (sampler->pid_list_midx < 0)
-		return -sampler->pid_list_midx;
+		sampler->pid_list_midx = ldms_schema_metric_list_add(sampler->schema,
+								      "pid_list",
+								      "",
+								      sampler->pid_list_heap_sz);
+		if (sampler->pid_list_midx < 0)
+			return -sampler->pid_list_midx;
+	} else {
+		sampler->pid_recdef_midx = -1;
+		sampler->pid_list_midx   = -1;
+	}
 
 	return 0;
 }
@@ -590,7 +595,7 @@ per_job_sampler_t per_job_sampler_create(
 {
 	per_job_sampler_t sampler;
 	int rc;
-	// ldmsd_jobmgr_query_t jquery;
+	ldmsd_jobmgr_query_t jquery;
 
 	sampler = calloc(1, sizeof(*sampler));
 	if (!sampler)
@@ -631,23 +636,29 @@ per_job_sampler_t per_job_sampler_create(
 		sampler->owns_tenant = 1;
 	}
 
-	/* Cache field indices */
-	// char *binding_key_name; /* TODO: fix this */
-	// sampler->job_id_field_idx = ldmsd_tenant_def_get_key_name(sampler->tenant_def, "job_id");
-	// sampler->task_pid_field_idx = ldmsd_tenant_def_attr_index(sampler->tenant_def, "task_pid");
-	// sampler->binding_key_field_idx = ldmsd_tenant_def_get_key_name(sampler->tenant_def, &binding_key_name);
+	/* Get jobmgr query from tenant */
+	jquery = ldmsd_tenant_def_get_jquery(sampler->tenant_def);
+	if (!jquery) {
+		ovis_log(sampler->log, OVIS_LERROR,
+			 "Failed to get jobmgr query from tenant\n");
+		goto err;
+	}
 
-	// /* Get binding key field index */
-	// if (key_field && strcmp(key_field, "job_id") != 0) {
-	// 	sampler->binding_key_field_idx = ldmsd_jobmgr_query_field_index(jquery, key_field);
-	// 	if (sampler->binding_key_field_idx < 0) {
-	// 		ovis_log(sampler->log, OVIS_LERROR,
-	// 			 "Binding key field '%s' not found\n", key_field);
-	// 		goto err;
-	// 	}
-	// } else {
-	// 	sampler->binding_key_field_idx = sampler->job_id_field_idx;
-	// }
+	/* Cache field indices */
+	sampler->job_id_field_idx = ldmsd_jobmgr_query_field_index(jquery, "job_id");
+	sampler->task_pid_field_idx = ldmsd_jobmgr_query_field_index(jquery, "task_pid");
+
+	/* Get binding key field index */
+	if (key_field && strcmp(key_field, "job_id") != 0) {
+		sampler->binding_key_field_idx = ldmsd_jobmgr_query_field_index(jquery, key_field);
+		if (sampler->binding_key_field_idx < 0) {
+			ovis_log(sampler->log, OVIS_LERROR,
+				 "Binding key field '%s' not found\n", key_field);
+			goto err;
+		}
+	} else {
+		sampler->binding_key_field_idx = sampler->job_id_field_idx;
+	}
 
 	/* Create schema */
 	rc = create_schema(sampler);
@@ -747,6 +758,11 @@ int per_job_sampler_sample(per_job_sampler_t sampler)
 
 /* Per-job base APIs */
 
+void *per_job_base_get_plugin_ctxt(per_job_base_t job_base)
+{
+	return job_base->sampler->plugin_ctxt;
+}
+
 ldms_set_t per_job_base_get_set(per_job_base_t job_base)
 {
 	return job_base->set;
@@ -774,9 +790,7 @@ int per_job_base_get_job_metric_index(per_job_base_t job_base, const char *metri
 
 int per_job_base_get_pid_metric_index(per_job_base_t job_base, const char *metric_name)
 {
-	assert(ENOSYS != 0);
-	return 0;
-	// return ldms_record_metric_find(job_base->sampler->pid_rec_def, metric_name);
+	return ldms_record_index_get(job_base->sampler->pid_rec_def, metric_name);
 }
 
 void per_job_base_set_u64(per_job_base_t job_base, int metric_idx, uint64_t value)
