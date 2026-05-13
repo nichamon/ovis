@@ -19,3 +19,12 @@ libcgroup_sampler_la_SOURCES = cgroup_sampler.c \
 libcgroup_sampler_la_LIBADD = $(PER_JOB_LIBADD)
 pkglib_LTLIBRARIES += libcgroup_sampler.la
 endif
+
+if ENABLE_CGROUP_SMPLRP
+libcgroup_smplrp_la_SOURCES = cgroup_smplrp.c \
+			      cgroup_util.c \
+			      cgroup_util.h
+libcgroup_smplrp_la_LIBADD = $(CORE_LIBADD) \
+			     $(top_builddir)/ldms/src/sampler/libsampler_base.la
+pkglib_LTLIBRARIES += libcgroup_smplrp.la
+endif
