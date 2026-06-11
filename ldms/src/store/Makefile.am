@@ -114,6 +114,7 @@ SUBDIRS += avro_kafka
 endif
 
 SUBDIRS += stream_dump
+SUBDIRS += store_otel
 
 CLEANFILES = $(dist_man7_MANS)
 

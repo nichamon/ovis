@@ -255,6 +255,7 @@ OPTION_DEFAULT_ENABLE([flatfile], [ENABLE_FLATFILE])
 OPTION_DEFAULT_ENABLE([csv], [ENABLE_CSV])
 OPTION_DEFAULT_DISABLE([rabbitkw], [ENABLE_RABBITKW])
 OPTION_DEFAULT_DISABLE([rabbitv3], [ENABLE_RABBITV3])
+OPTION_DEFAULT_ENABLE([store_otel], [ENABLE_STORE_OTEL])
 
 dnl AMQP
 OPTION_DEFAULT_DISABLE([amqp], [ENABLE_AMQP])
@@ -1070,6 +1071,7 @@ ldms/src/store/avro_kafka/Makefile
 ldms/src/store/store_flatfile/Makefile
 ldms/src/store/store_app/Makefile
 ldms/src/store/stream_dump/Makefile
+ldms/src/store/store_otel/Makefile
 ldms/src/contrib/store/Makefile
 ldms/src/contrib/store/tutorial/Makefile
 ldms/src/contrib/store/timescale/Makefile
