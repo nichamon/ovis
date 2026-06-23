@@ -1033,6 +1033,7 @@ lib/src/ovis_auth/Makefile
 lib/src/ovis_ref/Makefile
 lib/src/ovis_log/Makefile
 lib/src/ovis_thrstats/Makefile
+lib/src/ovis_histogram/Makefile
 lib/src/zap/Makefile
 lib/src/zap/rdma/Makefile
 lib/src/zap/fabric/Makefile
