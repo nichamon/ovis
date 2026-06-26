@@ -8,8 +8,8 @@
 
 #include "ovis_json/ovis_json.h"
 
-#define LDMSD_HISTOGRAM_DEFAULT_BINS 12
-#define LDMSD_HISTOGRAM_DEFAULT_WARMUP 10
+#define OVIS_HISTOGRAM_DEFAULT_BINS 12
+#define OVIS_HISTOGRAM_DEFAULT_WARMUP 10
 
 /*
  * Scale mode for bin spacing.
@@ -20,8 +20,8 @@
  * new_n_bins and new_n_warmup parameters.
  */
 enum ovis_histogram_scale {
-	LDMSD_HISTOGRAM_SCALE_LINEAR = 1,  /* equal-width bins -- default */
-	LDMSD_HISTOGRAM_SCALE_LOG    = 2,  /* equal-ratio (geometric) bins;
+	OVIS_HISTOGRAM_SCALE_LINEAR = 1,  /* equal-width bins -- default */
+	OVIS_HISTOGRAM_SCALE_LOG    = 2,  /* equal-ratio (geometric) bins;
 	                                       better resolution for right-skewed,
 	                                       outlier-prone distributions */
 };

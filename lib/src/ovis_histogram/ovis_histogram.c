@@ -28,10 +28,10 @@ int ovis_histogram_init(struct ovis_histogram *h, int n_bins, int n_warmup,
 
 	pthread_mutex_init(&h->lock, NULL);
 	h->bins_ready = 0;
-	h->scale = (scale != 0)?scale:LDMSD_HISTOGRAM_SCALE_LINEAR;
+	h->scale = (scale != 0)?scale:OVIS_HISTOGRAM_SCALE_LINEAR;
 
-	h->n_bins   = (n_bins   > 0)?n_bins:LDMSD_HISTOGRAM_DEFAULT_BINS;
-	h->n_warmup = (n_warmup > 0)?n_warmup:LDMSD_HISTOGRAM_DEFAULT_WARMUP;
+	h->n_bins   = (n_bins   > 0)?n_bins:OVIS_HISTOGRAM_DEFAULT_BINS;
+	h->n_warmup = (n_warmup > 0)?n_warmup:OVIS_HISTOGRAM_DEFAULT_WARMUP;
 
 	h->warmup_buf = calloc(h->n_warmup, sizeof(double));
 	if (!h->warmup_buf)
@@ -118,7 +118,7 @@ static void histogram_fix_bins(struct ovis_histogram *h)
 	double min, max, q1, q3, iqr, width;
 	double log_min, log_max, log_width;
 	int n, lo_mid, hi_mid, m, i;
-	int is_log = (h->scale == LDMSD_HISTOGRAM_SCALE_LOG);
+	int is_log = (h->scale == OVIS_HISTOGRAM_SCALE_LOG);
 
 	n = h->n_warmup;
 
@@ -466,7 +466,7 @@ build_ready_dict:
 
 	underflow = __atomic_load_n(&h->counts[0], __ATOMIC_SEQ_CST);
 	overflow  = __atomic_load_n(&h->counts[h->n_bins + 1], __ATOMIC_SEQ_CST);
-	scale_str = (h->scale == LDMSD_HISTOGRAM_SCALE_LOG) ? "log" : "linear";
+	scale_str = (h->scale == OVIS_HISTOGRAM_SCALE_LOG) ? "log" : "linear";
 
 	/* Build the dict and attach the pre-built lists via json_attr_add.
 	 * json_dict_build() with JSON_LIST_VALUE expects inline elements

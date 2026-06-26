@@ -988,7 +988,7 @@ ldmsd_updtr_new_with_auth(const char *name, char *interval_str, char *offset_str
 	LIST_INIT(&updtr->match_list);
 	rbt_init(&updtr->task_tree, ldmsd_updtr_schedule_cmp);
 	updtr->push_flags = push_flags;
-	ovis_histogram_init(&updtr->hist, 0, 0, LDMSD_HISTOGRAM_SCALE_LINEAR); /* Use the default number of warmup samples and number of bins */
+	ovis_histogram_init(&updtr->hist, 0, 0, OVIS_HISTOGRAM_SCALE_LINEAR); /* Use the default number of warmup samples and number of bins */
 	ldmsd_cfgobj_unlock(&updtr->obj);
 #ifdef _CFG_REF_DUMP_
 	ref_dump(&updtr->obj.ref, updtr->obj.name, stderr);
