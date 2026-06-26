@@ -70,6 +70,7 @@
 #include <ovis_json/ovis_json.h>
 #include <arpa/inet.h>
 #include "ovis_util/os_util.h"
+#include "ovis_histogram/ovis_histogram.h"
 #include "ldms.h"
 #include "ldms_xprt.h"
 #include "ldms_private.h"
@@ -83,6 +84,8 @@ extern ovis_log_t xlog;
 #define XPRT_LOG(x, level, fmt, ...) do { \
 	ovis_log(xlog, level, fmt, ## __VA_ARGS__); \
 } while (0);
+
+static struct ovis_histogram xprt_op_hist[LDMS_XPRT_OP_COUNT];
 
 /* The definition is in ldms_xprt.c. */
 extern int __enable_profiling[LDMS_XPRT_OP_COUNT];
@@ -371,7 +374,6 @@ void __xprt_stats_update(ldms_stats_entry_t e, double dur_us)
 	e->mean_us = (e->count * e->mean_us) + dur_us;
 	e->count += 1;
 	e->mean_us /= e->count;
-	ovis_histogram_update(&e->hist, dur_us);
 }
 
 /* Must be called with the xprt lock held.
@@ -450,6 +452,7 @@ void __ldms_free_ctxt(struct ldms_xprt *x, struct ldms_context *ctxt)
 	int64_t dur_us;
 	struct timespec end;
 	ldms_stats_entry_t e = NULL;
+	enum ldms_xprt_ops_e op_e;
 
 	(void)clock_gettime(CLOCK_REALTIME, &end);
 	dur_us = ldms_timespec_diff_us(&ctxt->start, &end);
@@ -461,12 +464,14 @@ void __ldms_free_ctxt(struct ldms_xprt *x, struct ldms_context *ctxt)
 		break;
 	case LDMS_CONTEXT_LOOKUP_READ:
 		e = &x->stats.ops[LDMS_XPRT_OP_LOOKUP];
+		op_e = LDMS_XPRT_OP_LOOKUP;
 		if (ctxt->lu_read.s)
 			ref_put(&ctxt->lu_read.s->ref, "__ldms_alloc_ctxt");
 		break;
 	case LDMS_CONTEXT_UPDATE:
 	case LDMS_CONTEXT_UPDATE_META:
 		e = &x->stats.ops[LDMS_XPRT_OP_UPDATE];
+		op_e = LDMS_XPRT_OP_UPDATE;
 		if (ctxt->update.s)
 			ref_put(&ctxt->update.s->ref, "__ldms_alloc_ctxt");
 		break;
@@ -476,11 +481,13 @@ void __ldms_free_ctxt(struct ldms_xprt *x, struct ldms_context *ctxt)
 		break;
 	case LDMS_CONTEXT_SET_DELETE:
 		e = &x->stats.ops[LDMS_XPRT_OP_SET_DELETE];
+		op_e = LDMS_XPRT_OP_SET_DELETE;
 		break;
 	case LDMS_CONTEXT_DIR:
 		break;
 	case LDMS_CONTEXT_SEND:
 		e = &x->stats.ops[LDMS_XPRT_OP_SEND];
+		op_e = LDMS_XPRT_OP_SEND;
 		break;
 	case LDMS_CONTEXT_PUSH:
 	case LDMS_CONTEXT_DIR_CANCEL:
@@ -489,6 +496,7 @@ void __ldms_free_ctxt(struct ldms_xprt *x, struct ldms_context *ctxt)
 	(void)clock_gettime(CLOCK_REALTIME, &x->stats.last_op);
 	if (e) {
 		__xprt_stats_update(e, dur_us);
+		ovis_histogram_update(&xprt_op_hist[op_e], dur_us);
 	}
 	ldms_xprt_put(ctxt->x, "alloc_ctxt");
 	if (ctxt->op_ctxt) {
@@ -740,13 +748,9 @@ void ldms_xprt_close(ldms_t x)
 
 void __ldms_xprt_resource_free(struct ldms_xprt *x)
 {
-	ldms_xprt_ops_t op_e;
 	int drop_ep_ref = 0;
 	pthread_mutex_lock(&x->lock);
 	x->remote_dir_xid = x->local_dir_xid = 0;
-
-	for (op_e = 0; op_e < LDMS_XPRT_OP_COUNT; op_e++)
-		ovis_histogram_destroy(&x->stats.ops[op_e].hist);
 
 #ifdef DEBUG
 	XPRT_LOG(x, OVIS_LALWAYS, "xprt_resource_free. zap %p: active_dir = %d.\n",
@@ -1055,6 +1059,7 @@ static void process_dir_request(struct ldms_xprt *x, struct ldms_request *req)
 	(void)clock_gettime(CLOCK_REALTIME, &end);
 	dur_us = ldms_timespec_diff_us(&start, &end);
 	__xprt_stats_update(e, dur_us);
+	ovis_histogram_update(&xprt_op_hist[LDMS_XPRT_OP_DIR_REP], dur_us);
 	return;
 out:
 	if (reply)
@@ -2190,6 +2195,7 @@ out:
 	(void)clock_gettime(CLOCK_REALTIME, &end);
 	dur_us = ldms_timespec_diff_us(&start, &end);
 	__xprt_stats_update(e, dur_us);
+	ovis_histogram_update(&xprt_op_hist[LDMS_XPRT_OP_DIR_REQ], dur_us);
 }
 
 static
@@ -2381,6 +2387,7 @@ static int recv_cb(struct ldms_xprt *x, void *r)
 	dur_us = ldms_timespec_diff_us(&start, &end);
 	(void)clock_gettime(CLOCK_REALTIME, &x->stats.last_op);
 	__xprt_stats_update(e, dur_us);
+	ovis_histogram_update(&xprt_op_hist[LDMS_XPRT_OP_RECV], dur_us);
 	return rc;
 }
 
@@ -3578,10 +3585,8 @@ void __ldms_xprt_init(struct ldms_xprt *x, const char *name, int is_active)
 	x->ops = ldms_xprt_ops;
 
 	ldms_xprt_ops_t op_e;
-	for (op_e = 0; op_e < LDMS_XPRT_OP_COUNT; op_e++) {
+	for (op_e = 0; op_e < LDMS_XPRT_OP_COUNT; op_e++)
 		x->stats.ops[op_e].min_us = LLONG_MAX;
-		ovis_histogram_init(&x->stats.ops[op_e].hist, 0, 0, 0);
-	}
 
 	TAILQ_INIT(&x->ctxt_list);
 	sem_init(&x->sem, 0, 0);
@@ -4128,11 +4133,9 @@ static void __xprt_stats_reset(ldms_t _x, int mask, struct timespec *ts)
 		/* last_op and ops could also be reset by ldms_xprt_rate_data(). */
 		/* don't reset the connect/disconnect time */
 		memset(&_x->stats.last_op, 0, sizeof(_x->stats.last_op));
-		for (op_e = 0; op_e < LDMS_XPRT_OP_COUNT; op_e++) {
-			memset(&x->stats.ops[op_e], 0, offsetof(struct ldms_stats_entry, hist));
+		memset(&_x->stats.ops, 0, sizeof(_x->stats.ops));
+		for (op_e = 0; op_e < LDMS_XPRT_OP_COUNT; op_e++)
 			x->stats.ops[op_e].min_us = LLONG_MAX;
-			ovis_histogram_reset(&x->stats.ops[op_e].hist);
-		}
 	}
 	if (mask & LDMS_PERF_M_PROFILNG) {
 		for (op_e = 0; op_e < LDMS_XPRT_OP_COUNT; op_e++) {
@@ -4252,6 +4255,11 @@ static int __ldms_xprt_stats(ldms_t _x, ldms_xprt_stats_t stats, int mask, int i
 int ldms_xprt_stats(ldms_t _x, ldms_xprt_stats_t stats, int mask, int is_reset)
 {
 	return _x->ops.stats(_x, stats, mask, is_reset);
+}
+
+void ldms_xprt_histogram_recalibrate()
+{
+
 }
 
 const char *ldms_xprt_stats_state(enum ldms_xprt_stats_state state)
@@ -4987,9 +4995,14 @@ void ldms_thrstat_result_free(struct ldms_thrstat_result *res)
 
 static void __attribute__ ((constructor)) cs_init(void)
 {
+	enum ldms_xprt_ops_e op_e;
 	pthread_mutex_init(&xprt_list_lock, 0);
 	pthread_mutex_init(&ldms_zap_list_lock, 0);
 	(void)clock_gettime(CLOCK_REALTIME, &xprt_start);
+	for (op_e = 0; op_e < LDMS_XPRT_OP_COUNT; op_e++) {
+		ovis_histogram_init(&xprt_op_hist[op_e], 0, 0,
+					OVIS_HISTOGRAM_SCALE_LINEAR);
+	}
 }
 
 static void __attribute__ ((destructor)) cs_term(void)

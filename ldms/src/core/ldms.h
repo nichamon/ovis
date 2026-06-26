@@ -70,7 +70,6 @@
 #include "ovis_log/ovis_log.h"
 #include "ovis_ref/ref.h"
 #include "ovis_json/ovis_json.h"
-#include "ovis_histogram/ovis_histogram.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -2171,7 +2170,6 @@ typedef struct ldms_stats_entry {
 	uint64_t min_us;
 	uint64_t max_us;
 	uint64_t mean_us;
-	struct ovis_histogram hist;
 } *ldms_stats_entry_t;
 
 typedef enum ldms_xprt_ops_e {

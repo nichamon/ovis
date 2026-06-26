@@ -117,7 +117,7 @@ static int stream_enabled = 0;
 static int cleanup_requested = 0;
 
 static char * __thread_stats_as_json(size_t *json_sz);
-static char * __xprt_stats_as_json(size_t *json_sz, int reset, int level);
+static char *__xprt_stats_as_json(size_t *json_sz, int reset, int level, int reset_hist);
 extern const char *prdcr_state_str(enum ldmsd_prdcr_state state);
 
 extern int ldmsd_quota; /* defined in ldmsd.c */
@@ -7213,11 +7213,10 @@ struct op_summary {
 	uint64_t op_total_us;
 	uint64_t op_min_us;
 	struct ldms_xprt_stats_s *op_min_ep;
-	// struct ldms_xprt *op_min_xprt;
 	uint64_t op_max_us;
 	struct ldms_xprt_stats_s *op_max_ep;
-	// struct ldms_xprt *op_max_xprt;
 	uint64_t op_mean_us;
+	struct ovis_histogram hist; /* Aggregate histogram across all endpoints */
 };
 
 #define __APPEND_SZ 4096
@@ -7295,7 +7294,7 @@ struct op_summary {
  *      }
  */
 
-static char *__xprt_stats_as_json(size_t *json_sz, int reset, int level)
+static char *__xprt_stats_as_json(size_t *json_sz, int reset, int level, int reset_hist)
 {
 	char *buff;
 	char *s;
@@ -7328,8 +7327,10 @@ static char *__xprt_stats_as_json(size_t *json_sz, int reset, int level)
 	s = buff;
 
 	memset(op_sum, 0, sizeof(op_sum));
-	for (op_e = 0; op_e < LDMS_XPRT_OP_COUNT; op_e++)
+	for (op_e = 0; op_e < LDMS_XPRT_OP_COUNT; op_e++) {
 		op_sum[op_e].op_min_us = LLONG_MAX;
+		ovis_histogram_init(&op_sum[op_e].hist, 0, 0, 0);
+	}
 
 	__APPEND("{");
 	__APPEND(" \"level\" : %d,", level);
@@ -7444,24 +7445,30 @@ static char *__xprt_stats_as_json(size_t *json_sz, int reset, int level)
 		} else {
 			__APPEND("    \"min_peer\": \"%s:%hu\",\n", ip_str, 0);
 		}
-		__APPEND("    \"min_peer_type\": \"%s\",\n", xprt_type);
+		__APPEND("    \"max_peer_type\": \"%s\",\n", xprt_type);
 
-		__APPEND("    \"max_us\": %ld,\n", (op->op_count ? op->op_max_us : 0));
+		__APPEND("    \"mean_us\": %ld,\n", op->op_mean_us);
 
-		strncpy(ip_str, "0.0.0.0:0", sizeof(ip_str));
-		strncpy(xprt_type, "????", sizeof(xprt_type));
-
-		if (op->op_max_ep) {
-			sin = (struct sockaddr_in *)&op->op_max_ep->ep.ss_remote;
-			memccpy(xprt_type, op->op_max_ep->name, 0, sizeof(xprt_type)-1);
-			inet_ntop(sin->sin_family, &sin->sin_addr, ip_str, sizeof(ip_str));
-			__APPEND("    \"max_peer\": \"%s:%hu\",\n", ip_str, ntohs(sin->sin_port));
+		json_doc_t jdoc = json_doc_new();
+		if (jdoc) {
+			json_entity_t hist_dict = ovis_histogram2dict(jdoc, &xprt_op_hist[op_e]);
+			if (hist_dict) {
+				jbuf_t jbuf = json_entity_dump(NULL, hist_dict);
+				json_doc_free(jdoc);
+				if (jbuf) {
+					__APPEND("    \"hist\": %s\n", jbuf->buf);
+					jbuf_free(jbuf);
+				} else {
+					__APPEND("    \"hist\": null\n");
+				}
+			} else {
+				json_doc_free(jdoc);
+				__APPEND("    \"hist\": null\n");
+			}
 		} else {
-			__APPEND("    \"max_peer\": \"%s:%hu\",\n", ip_str, 0);
+			__APPEND("    \"hist\": null\n");
 		}
 
-		__APPEND("    \"max_peer_type\": \"%s\",\n", xprt_type);
-		__APPEND("    \"mean_us\": %ld\n", op->op_mean_us);
 		if (op_e < LDMS_XPRT_OP_COUNT - 1)
 			__APPEND(" },\n");
 		else
@@ -7469,6 +7476,12 @@ static char *__xprt_stats_as_json(size_t *json_sz, int reset, int level)
 	}
 	__APPEND(" }\n"); /* op_stats */
 	__APPEND("}");
+
+	if (reset_hist) {
+		for (op_e = 0; op_e < LDMS_XPRT_OP_COUNT; op_e++)
+			ovis_histogram_recalibrate(&xprt_op_hist[op_e], 0, 0, 0);
+	}
+
 	*json_sz = s - buff + 1;
 	ldms_xprt_stats_result_free(res);
 	return buff;
@@ -7483,6 +7496,7 @@ static int xprt_stats_handler(ldmsd_req_ctxt_t req)
 	char *s, *json_s;
 	size_t json_sz;
 	int reset = 0;
+	int reset_hist = 0;
 	int level = 0;
 	struct ldmsd_req_attr_s attr;
 
@@ -7494,13 +7508,22 @@ static int xprt_stats_handler(ldmsd_req_ctxt_t req)
 		free(s);
 	}
 
+	s = ldmsd_req_attr_str_value_get_by_id(req, LDMSD_ATTR_HIST_RECAL);
+	if (s) {
+		if (0 != strcasecmp(s, "false")) {
+			reset_hist = 1;
+			reset = 1; /* hist_recalibrate is a superset of reset */
+		}
+		free(s);
+	}
+
 	s = ldmsd_req_attr_str_value_get_by_id(req, LDMSD_ATTR_LEVEL);
 	if (s) {
 		level = atoi(s);
 		free(s);
 	}
 
-	json_s = __xprt_stats_as_json(&json_sz, reset, level);
+	json_s = __xprt_stats_as_json(&json_sz, reset, level, reset_hist);
 	if (!json_s)
 		goto err;
 
