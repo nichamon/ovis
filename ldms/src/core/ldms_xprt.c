@@ -361,6 +361,19 @@ void __ldms_op_ctxt_dequeue(struct ldms_op_ctxt_list *list, struct ldms_op_ctxt 
 	ref_put(&op_ctxt->ref, "enqueue");
 }
 
+void __xprt_stats_update(ldms_stats_entry_t e, double dur_us)
+{
+	if (e->min_us > dur_us)
+		e->min_us = dur_us;
+	if (e->max_us < dur_us)
+		e->max_us = dur_us;
+	e->total_us += dur_us;
+	e->mean_us = (e->count * e->mean_us) + dur_us;
+	e->count += 1;
+	e->mean_us /= e->count;
+	ovis_histogram_update(&e->hist, dur_us);
+}
+
 /* Must be called with the xprt lock held.
  * Keeps, rather than copies, string and other pointers in varargs. */
 struct ldms_context *__ldms_alloc_ctxt(struct ldms_xprt *x, size_t sz,
@@ -475,14 +488,7 @@ void __ldms_free_ctxt(struct ldms_xprt *x, struct ldms_context *ctxt)
 	}
 	(void)clock_gettime(CLOCK_REALTIME, &x->stats.last_op);
 	if (e) {
-		if (e->min_us > dur_us)
-			e->min_us = dur_us;
-		if (e->max_us < dur_us)
-			e->max_us = dur_us;
-		e->total_us += dur_us;
-		e->mean_us = (e->count * e->mean_us) + dur_us;
-		e->count += 1;
-		e->mean_us /= e->count;
+		__xprt_stats_update(e, dur_us);
 	}
 	ldms_xprt_put(ctxt->x, "alloc_ctxt");
 	if (ctxt->op_ctxt) {
@@ -734,9 +740,13 @@ void ldms_xprt_close(ldms_t x)
 
 void __ldms_xprt_resource_free(struct ldms_xprt *x)
 {
+	ldms_xprt_ops_t op_e;
 	int drop_ep_ref = 0;
 	pthread_mutex_lock(&x->lock);
 	x->remote_dir_xid = x->local_dir_xid = 0;
+
+	for (op_e = 0; op_e < LDMS_XPRT_OP_COUNT; op_e++)
+		ovis_histogram_destroy(&x->stats.ops[op_e].hist);
 
 #ifdef DEBUG
 	XPRT_LOG(x, OVIS_LALWAYS, "xprt_resource_free. zap %p: active_dir = %d.\n",
@@ -1044,14 +1054,7 @@ static void process_dir_request(struct ldms_xprt *x, struct ldms_request *req)
 	__ldms_empty_name_list(&name_list);
 	(void)clock_gettime(CLOCK_REALTIME, &end);
 	dur_us = ldms_timespec_diff_us(&start, &end);
-	if (e->min_us > dur_us)
-		e->min_us = dur_us;
-	if (e->max_us < dur_us)
-		e->max_us = dur_us;
-	e->total_us += dur_us;
-	e->mean_us = (e->count * e->mean_us) + dur_us;
-	e->count += 1;
-	e->mean_us /= e->count;
+	__xprt_stats_update(e, dur_us);
 	return;
 out:
 	if (reply)
@@ -2186,14 +2189,7 @@ out:
 		ldms_xprt_dir_free(x, dir);
 	(void)clock_gettime(CLOCK_REALTIME, &end);
 	dur_us = ldms_timespec_diff_us(&start, &end);
-	if (e->min_us > dur_us)
-		e->min_us = dur_us;
-	if (e->max_us < dur_us)
-		e->max_us = dur_us;
-	e->total_us += dur_us;
-	e->mean_us = (e->count * e->mean_us) + dur_us;
-	e->count += 1;
-	e->mean_us /= e->count;
+	__xprt_stats_update(e, dur_us);
 }
 
 static
@@ -2384,14 +2380,7 @@ static int recv_cb(struct ldms_xprt *x, void *r)
 	(void)clock_gettime(CLOCK_REALTIME, &end);
 	dur_us = ldms_timespec_diff_us(&start, &end);
 	(void)clock_gettime(CLOCK_REALTIME, &x->stats.last_op);
-	if (e->min_us > dur_us)
-		e->min_us = dur_us;
-	if (e->max_us < dur_us)
-		e->max_us = dur_us;
-	e->total_us += dur_us;
-	e->mean_us = (e->count * e->mean_us) + dur_us;
-	e->count += 1;
-	e->mean_us /= e->count;
+	__xprt_stats_update(e, dur_us);
 	return rc;
 }
 
@@ -3589,8 +3578,10 @@ void __ldms_xprt_init(struct ldms_xprt *x, const char *name, int is_active)
 	x->ops = ldms_xprt_ops;
 
 	ldms_xprt_ops_t op_e;
-	for (op_e = 0; op_e < LDMS_XPRT_OP_COUNT; op_e++)
+	for (op_e = 0; op_e < LDMS_XPRT_OP_COUNT; op_e++) {
 		x->stats.ops[op_e].min_us = LLONG_MAX;
+		ovis_histogram_init(&x->stats.ops[op_e].hist, 0, 0, 0);
+	}
 
 	TAILQ_INIT(&x->ctxt_list);
 	sem_init(&x->sem, 0, 0);
@@ -4137,9 +4128,11 @@ static void __xprt_stats_reset(ldms_t _x, int mask, struct timespec *ts)
 		/* last_op and ops could also be reset by ldms_xprt_rate_data(). */
 		/* don't reset the connect/disconnect time */
 		memset(&_x->stats.last_op, 0, sizeof(_x->stats.last_op));
-		memset(&_x->stats.ops, 0, sizeof(_x->stats.ops));
-		for (op_e = 0; op_e < LDMS_XPRT_OP_COUNT; op_e++)
+		for (op_e = 0; op_e < LDMS_XPRT_OP_COUNT; op_e++) {
+			memset(&x->stats.ops[op_e], 0, offsetof(struct ldms_stats_entry, hist));
 			x->stats.ops[op_e].min_us = LLONG_MAX;
+			ovis_histogram_reset(&x->stats.ops[op_e].hist);
+		}
 	}
 	if (mask & LDMS_PERF_M_PROFILNG) {
 		for (op_e = 0; op_e < LDMS_XPRT_OP_COUNT; op_e++) {
