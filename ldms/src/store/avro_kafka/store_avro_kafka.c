@@ -458,81 +458,6 @@ static int __kafka_stats_cb(rd_kafka_t *rk, char *json, size_t json_len, void *o
 	return 0;
 }
 
-static aks_handle_t __handle_new(ldmsd_plug_handle_t handle, ldmsd_strgp_t strgp)
-{
-	store_kafka_t sk = ldmsd_plug_ctxt_get(handle);
-	char err_str[512];
-	rd_kafka_conf_res_t res;
-
-	aks_handle_t sh = calloc(1, sizeof(*sh));
-	if (!sh) {
-		ovis_log(sk->log, OVIS_LERROR, "Memory allocation failure @%s:%d\n", __func__, __LINE__);
-		goto err_0;
-	}
-        sh->sf = sk;
-	rbt_init(&sh->schema_tree, schema_cmp);
-	sh->encoding = sk->g_serdes_encoding;
-	sh->topic_fmt = strdup(sk->g_topic_fmt);
-	if (!sh->topic_fmt)
-		goto err_1;
-
-	sh->rd_conf = rd_kafka_conf_dup(sk->g_rd_conf);
-	if (!sh->rd_conf)
-		goto err_1;
-
-	sh->serdes_conf = serdes_conf_copy(sk->g_serdes_conf);
-	if (!sh->serdes_conf) {
-		ovis_log(sk->log, OVIS_LERROR, "%s creating serdes configuration\n", err_str);
-		goto err_2;
-	}
-
-	sh->serdes = serdes_new(sh->serdes_conf, err_str, sizeof(err_str));
-	if (!sh->serdes) {
-		ovis_log(sk->log, OVIS_LERROR, "%s creating serdes\n", err_str);
-		goto err_3;
-	}
-
-	/* strgp->container is the CSV list of brokers */
-	if (strgp->container && strgp->container[0] != '\0') {
-		const char *param = "bootstrap.servers";
-		res = rd_kafka_conf_set(sh->rd_conf, param,
-					strgp->container, err_str, sizeof(err_str));
-		if (res != RD_KAFKA_CONF_OK) {
-			errno = EINVAL;
-			ovis_log(sk->log, OVIS_LERROR, "rd_kafka_conf_set() error: %s\n", err_str);
-			goto err_2;
-		}
-	}
-
-	sh->kafka_enabled_stats = sk->kafka_enabled_stats;
-	if (sk->kafka_enabled_stats) {
-		/* Register the stats callback on the conf */
-		rd_kafka_conf_set_stats_cb(sh->rd_conf, __kafka_stats_cb);
-
-		/* Make sure the callback can reach sh */
-		rd_kafka_conf_set_opaque(sh->rd_conf, sh);
-	}
-
-	sh->rd = rd_kafka_new(RD_KAFKA_PRODUCER, sh->rd_conf, err_str, sizeof(err_str));
-	if (!sh->rd) {
-		ovis_log(sk->log, OVIS_LERROR, "rd_kafka_new() error: %s\n", err_str);
-		goto err_3;
-	}
-	sh->rd_conf = NULL; /* rd_kafka_new consumed and freed the conf */
-
-	return sh;
-
-err_3:
-	serdes_conf_destroy(sh->serdes_conf);
-err_2:
-	rd_kafka_conf_destroy(sh->rd_conf);
-err_1:
-	free(sh->topic_fmt);
-	free(sh);
-err_0:
-	return NULL;
-}
-
 static int set_avro_value_from_col(avro_value_t *col_value,
 				   ldmsd_col_t col)
 {
@@ -993,6 +918,82 @@ out1:
 }
 
 /* protected by strgp->lock */
+static ldmsd_store_handle_t
+open_decomp_store(ldmsd_plug_handle_t handle, ldmsd_strgp_t strgp)
+{
+	store_kafka_t sk = ldmsd_plug_ctxt_get(handle);
+	char err_str[512];
+	rd_kafka_conf_res_t res;
+
+	aks_handle_t sh = calloc(1, sizeof(*sh));
+	if (!sh) {
+		ovis_log(sk->log, OVIS_LERROR, "Memory allocation failure @%s:%d\n", __func__, __LINE__);
+		goto err_0;
+	}
+        sh->sf = sk;
+	rbt_init(&sh->schema_tree, schema_cmp);
+	sh->encoding = sk->g_serdes_encoding;
+	sh->topic_fmt = strdup(sk->g_topic_fmt);
+	if (!sh->topic_fmt)
+		goto err_1;
+
+	sh->rd_conf = rd_kafka_conf_dup(sk->g_rd_conf);
+	if (!sh->rd_conf)
+		goto err_1;
+
+	sh->serdes_conf = serdes_conf_copy(sk->g_serdes_conf);
+	if (!sh->serdes_conf) {
+		ovis_log(sk->log, OVIS_LERROR, "%s creating serdes configuration\n", err_str);
+		goto err_2;
+	}
+
+	sh->serdes = serdes_new(sh->serdes_conf, err_str, sizeof(err_str));
+	if (!sh->serdes) {
+		ovis_log(sk->log, OVIS_LERROR, "%s creating serdes\n", err_str);
+		goto err_3;
+	}
+
+	/* strgp->container is the CSV list of brokers */
+	if (strgp->container && strgp->container[0] != '\0') {
+		const char *param = "bootstrap.servers";
+		res = rd_kafka_conf_set(sh->rd_conf, param,
+					strgp->container, err_str, sizeof(err_str));
+		if (res != RD_KAFKA_CONF_OK) {
+			errno = EINVAL;
+			ovis_log(sk->log, OVIS_LERROR, "rd_kafka_conf_set() error: %s\n", err_str);
+			goto err_2;
+		}
+	}
+
+	sh->kafka_enabled_stats = sk->kafka_enabled_stats;
+	if (sk->kafka_enabled_stats) {
+		/* Register the stats callback on the conf */
+		rd_kafka_conf_set_stats_cb(sh->rd_conf, __kafka_stats_cb);
+
+		/* Make sure the callback can reach sh */
+		rd_kafka_conf_set_opaque(sh->rd_conf, sh);
+	}
+
+	sh->rd = rd_kafka_new(RD_KAFKA_PRODUCER, sh->rd_conf, err_str, sizeof(err_str));
+	if (!sh->rd) {
+		ovis_log(sk->log, OVIS_LERROR, "rd_kafka_new() error: %s\n", err_str);
+		goto err_3;
+	}
+	sh->rd_conf = NULL; /* rd_kafka_new consumed and freed the conf */
+
+	return (ldmsd_store_handle_t)sh;
+
+err_3:
+	serdes_conf_destroy(sh->serdes_conf);
+err_2:
+	rd_kafka_conf_destroy(sh->rd_conf);
+err_1:
+	free(sh->topic_fmt);
+	free(sh);
+err_0:
+	return NULL;
+}
+
 static int
 commit_rows(ldmsd_plug_handle_t handle, ldmsd_strgp_t strgp, ldms_set_t set, ldmsd_row_list_t row_list,
 	    int row_count)
@@ -1003,19 +1004,11 @@ commit_rows(ldmsd_plug_handle_t handle, ldmsd_strgp_t strgp, ldms_set_t set, ldm
 	int rc;
 
 	sh = strgp->store_handle;
-	if (!sh)
-	{
-		sh = __handle_new(handle, strgp);
-		if (!sh)
-			return errno;
-		strgp->store_handle = sh;
-	}
-
 	TAILQ_FOREACH(row, row_list, entry)
 	{
 		void *ser_buf = NULL;
 		size_t ser_buf_size;
-                int ser_size;
+		int ser_size;
 
 		char *topic_name = get_topic_name(sh, set, row);
 		if (!topic_name) {
@@ -1033,7 +1026,7 @@ commit_rows(ldmsd_plug_handle_t handle, ldmsd_strgp_t strgp, ldms_set_t set, ldm
 		}
 		switch (sh->encoding) {
 		case AKS_ENCODING_AVRO:
-                        rc = row_to_avro_payload(sh, row, &ser_buf, &ser_buf_size);
+			rc = row_to_avro_payload(sh, row, &ser_buf, &ser_buf_size);
 			if (rc) {
 				ovis_log(sh->sf->log, OVIS_LERROR, "Failed to serialize row as AVRO object, error: %d", rc);
 				goto skip_row_1;
@@ -1058,8 +1051,8 @@ commit_rows(ldmsd_plug_handle_t handle, ldmsd_strgp_t strgp, ldms_set_t set, ldm
 				      ser_buf, ser_buf_size, NULL, 0, NULL);
 		if (rc) {
 			ovis_log(sh->sf->log, OVIS_LERROR,
-                                 "rd_kafka_produce(\"%s\") failed, \"%s\"\n",
-                                 topic_name, rd_kafka_err2str(rd_kafka_last_error()));
+				 "rd_kafka_produce(\"%s\") failed, \"%s\"\n",
+				 topic_name, rd_kafka_err2str(rd_kafka_last_error()));
 			free(ser_buf);
 		}
 	skip_row_1:
@@ -1135,4 +1128,5 @@ struct ldmsd_store ldmsd_plugin_interface = {
 	.close       = close_store,
 	.commit      = commit_rows,
 	.stats_get   = stats_get,
+	.open_decomp = open_decomp_store,
 };

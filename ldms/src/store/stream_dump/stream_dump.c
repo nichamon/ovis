@@ -423,6 +423,12 @@ __store(ldmsd_plug_handle_t handle, ldmsd_store_handle_t sh, ldms_set_t set, int
 	return ENOTSUP;
 }
 
+static ldmsd_store_handle_t
+__open_decomp(ldmsd_plug_handle_t handle, ldmsd_strgp_t strgp)
+{
+	return __open(handle, strgp->container, strgp->schema, NULL);
+}
+
 static int
 __commit(ldmsd_plug_handle_t handle, ldmsd_strgp_t strgp, ldms_set_t set, ldmsd_row_list_t row_list,
 	 int row_count)
@@ -483,4 +489,5 @@ struct ldmsd_store ldmsd_plugin_interface = {
 	.flush = __flush,
 	.close = __close,
 	.commit = __commit,
+	.open_decomp = __open_decomp,
 };

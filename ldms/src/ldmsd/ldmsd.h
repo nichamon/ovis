@@ -1026,15 +1026,74 @@ typedef struct ldmsd_plugin {
 /* This struct is owned by the plugin. ldmsd should never modify the contents. */
 struct ldmsd_store {
 	struct ldmsd_plugin base;
+
+	/* Legacy mode APIs */
+	/*
+	 * ldmsd calls open() in the legacy path. ldmsd calls open() if and only if
+	 * the storage policy has been started and there is a producer set that matches
+	 * the storage policy configuration, e.g., its schema and its producer.
+	 *
+	 * This call is protected by strgp->lock
+	 */
 	ldmsd_store_handle_t (*open)(ldmsd_plug_handle_t handle,
 				     const char *container, const char *schema,
 				     struct ldmsd_strgp_metric_list *metric_list);
-	void (*close)(ldmsd_plug_handle_t handle, ldmsd_store_handle_t sh);
 	int (*flush)(ldmsd_plug_handle_t handle, ldmsd_store_handle_t sh);
+	/*
+	 * ldmsd calls store() only in the legacy mode, i.e.,
+	 * storage policy doesn't use any decomposition definition.
+	 *
+	 * This call is not protected by strgp->lock.
+	 *
+	 * store() may be called by multiple threads.
+	 * Storage plugins are responsible for protecting their own objects
+	 * that can be modified by mulitple threads.
+	 */
 	int (*store)(ldmsd_plug_handle_t handle, ldmsd_store_handle_t sh,
 		     ldms_set_t set, int *, size_t count);
+
+	/* Decomposition mode APIs */
+	/*
+	 * This is a handle for store to initialize a plugin context in the decomp mode.
+	 * At this time, strgp has been configured and running.
+	 *
+	 * \return a ldmsd_store_handle. On failure, return NULL, log a message, and set the errno.
+	 *
+	 * Storage plugins are expected to create a handle (context) that
+	 * corresponds to a storage policy.
+	 *
+	 * ldmsd calls open_decomp() once when a storage policy starts, which is
+	 * different from the legacy path.
+	 *
+	 * Storage plugins are responsible for managing a map between
+	 * row schema and plugins' object corresponding to each row schema.
+	 *
+	 * This call is protected by strgp->lock
+	 */
+	ldmsd_store_handle_t (*open_decomp)(ldmsd_plug_handle_t handle, ldmsd_strgp_t strgp);
+	/*
+	 * When ldmsd calls commit(), it guarantees that strgp->store_handle exists.
+	 *
+	 * The call is not protected by strgp->lock.
+	 *
+	 * store() may be called by multiple threads.
+	 * Storage plugins are responsible for protecting their own objects
+	 * that can be modified by mulitple threads.
+	 */
 	int (*commit)(ldmsd_plug_handle_t handle, ldmsd_strgp_t strgp, ldms_set_t set,
 		      ldmsd_row_list_t row_list, int row_count);
+
+	/* APIs called in both modes */
+	/*
+	 * Storage plugins are expected to cleanup the object its handle is returned
+	 * by either open() or open_decomp().
+	 *
+	 * ldmsd calls close() when it receives a strgp_stop config command and
+	 * the storage policy is in the RUNNING state.
+	 *
+	 * This call is protected by strgp->lock
+	 */
+	void (*close)(ldmsd_plug_handle_t handle, ldmsd_store_handle_t sh);
 	char *(*stats_get)(ldmsd_plug_handle_t handle, ldmsd_strgp_t strgp);
 };
 

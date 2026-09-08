@@ -764,6 +764,18 @@ int __ldmsd_strgp_start(ldmsd_strgp_t strgp, ldmsd_sec_ctxt_t ctxt)
 		rc = EBUSY;
 		goto out;
 	}
+
+	if (strgp->decomp_path) {
+		/*
+		 * The check of (open_decomp != NULL) is in strgp_add_handler().
+		 * Thus, it is guarantee that api->open_decomp isn't NULL.
+		 */
+		strgp->store_handle = strgp->store->api->open_decomp((ldmsd_plug_handle_t)strgp->store, strgp);
+		if (!strgp->store_handle) {
+			rc = errno;
+			goto out;
+		}
+	}
 	strgp->state = LDMSD_STRGP_STATE_RUNNING;
 	clock_gettime(CLOCK_REALTIME, &strgp->last_flush);
 	strgp->obj.perm |= LDMSD_PERM_DSTART;

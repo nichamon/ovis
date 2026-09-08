@@ -283,19 +283,22 @@ static void close_store(ldmsd_plug_handle_t handle, ldmsd_store_handle_t _sh)
 	free(sh);
 }
 
-static store_kafka_handle_t __handle_new(ldmsd_strgp_t strgp, const char *plugin_name)
+/* protected by strgp->lock */
+static ldmsd_store_handle_t
+open_decomp_store(ldmsd_plug_handle_t handle, ldmsd_strgp_t strgp)
 {
 	char err_str[512];
 	rd_kafka_conf_res_t res;
+	const char *plugin_name = ldmsd_plug_name_get(handle);
 
-        if (!strgp->container) {
-                LOG_ERROR(
-                     "Plugin %s requires \"container=\" to be set in the "
-                     "strgp_add command\n",
-                     plugin_name);
-                goto err_0;
-        }
-        store_kafka_handle_t sh = calloc(1, sizeof(*sh));
+	if (!strgp->container) {
+		LOG_ERROR(
+		"Plugin %s requires \"container=\" to be set in the "
+		"strgp_add command\n",
+		plugin_name);
+		goto err_0;
+	}
+	store_kafka_handle_t sh = calloc(1, sizeof(*sh));
 	if (!sh)
 		goto err_0;
 	sh->rconf = rd_kafka_conf_dup(common_rconf);
@@ -329,7 +332,6 @@ static store_kafka_handle_t __handle_new(ldmsd_strgp_t strgp, const char *plugin
 	return NULL;
 }
 
-/* protected by strgp->lock */
 static int
 commit_rows(ldmsd_plug_handle_t handle, ldmsd_strgp_t strgp, ldms_set_t set, ldmsd_row_list_t row_list,
 	    int row_count)
@@ -341,13 +343,6 @@ commit_rows(ldmsd_plug_handle_t handle, ldmsd_strgp_t strgp, ldms_set_t set, ldm
 	int rc, len;
 
 	sh = strgp->store_handle;
-	if (!sh) {
-		sh = __handle_new(strgp, ldmsd_plug_name_get(handle));
-		if (!sh)
-			return errno;
-		strgp->store_handle = sh;
-	}
-
 	TAILQ_FOREACH(row, row_list, entry) {
 		rc = ldmsd_row_to_json_object(row, &buf, &len);
 		if (rc) {
@@ -402,4 +397,5 @@ struct ldmsd_store ldmsd_plugin_interface = {
         .base.destructor = destructor,
 	.close = close_store,
 	.commit = commit_rows,
+	.open_decomp = open_decomp_store,
 };

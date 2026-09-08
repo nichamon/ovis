@@ -1515,55 +1515,6 @@ static void close_store(ldmsd_plug_handle_t handle, ldmsd_store_handle_t _sh)
 	free(si);
 }
 
-static int init_store_instance(ldmsd_plug_handle_t handle, ldmsd_strgp_t strgp)
-{
-	struct sos_instance *si;
-	store_sos_t ss = ldmsd_plug_ctxt_get(handle);
-	int len, rc;
-
-        if (!strgp->container) {
-                LOG_(ss, OVIS_LERROR,
-                     "Plugin %s requires \"container=\" to be set in the "
-                     "strgp_add command\n",
-                     ldmsd_plug_name_get(handle));
-                rc = EINVAL;
-                goto err_0;
-        }
-
-	si = calloc(1, sizeof(*si));
-	if (!si) {
-		rc = errno;
-		goto err_0;
-	}
-	si->log = ss->log;
-	rbt_init(&si->schema_rbt, row_schema_rbn_cmp);
-	si->mode = ss->mode;
-	si->backend = ss->backend;
-	len = asprintf(&si->path, "%s/%s", ss->root_path, strgp->container);
-	if (len < 0) {
-		rc = errno;
-		goto err_1;
-	}
-	si->sos_handle = get_container(si);
-	if (!si->sos_handle) {
-		rc = errno;
-		goto err_2;
-	}
-	strgp->store_handle = si;
-	pthread_mutex_init(&si->lock, NULL);
-	pthread_mutex_lock(&ss->cfg_lock);
-	LIST_INSERT_HEAD(&ss->inst_list, si, entry);
-	pthread_mutex_unlock(&ss->cfg_lock);
-	return 0;
-
- err_2:
-	free(si->path);
- err_1:
-	free(si);
- err_0:
-	return rc;
-}
-
 static sos_schema_t
 create_row_schema(ldmsd_strgp_t strgp, ldmsd_row_t row)
 {
@@ -1682,6 +1633,58 @@ get_row_schema(ldmsd_strgp_t strgp, ldmsd_row_t row)
 	return NULL;
 }
 
+/* protected by strgp->lock */
+static ldmsd_store_handle_t
+init_store_instance(ldmsd_plug_handle_t handle, ldmsd_strgp_t strgp)
+{
+	struct sos_instance *si = NULL;
+	store_sos_t ss = ldmsd_plug_ctxt_get(handle);
+	int len, rc;
+
+        if (!strgp->container) {
+                LOG_(ss, OVIS_LERROR,
+                     "Plugin %s requires \"container=\" to be set in the "
+                     "strgp_add command\n",
+                     ldmsd_plug_name_get(handle));
+                rc = EINVAL;
+                goto err_0;
+        }
+
+	si = calloc(1, sizeof(*si));
+	if (!si) {
+		rc = errno;
+		goto err_0;
+	}
+	si->log = ss->log;
+	rbt_init(&si->schema_rbt, row_schema_rbn_cmp);
+	si->mode = ss->mode;
+	si->backend = ss->backend;
+	len = asprintf(&si->path, "%s/%s", ss->root_path, strgp->container);
+	if (len < 0) {
+		rc = errno;
+		goto err_1;
+	}
+	si->sos_handle = get_container(si);
+	if (!si->sos_handle) {
+		rc = errno;
+		goto err_2;
+	}
+	strgp->store_handle = si;
+	pthread_mutex_init(&si->lock, NULL);
+	pthread_mutex_lock(&ss->cfg_lock);
+	LIST_INSERT_HEAD(&ss->inst_list, si, entry);
+	pthread_mutex_unlock(&ss->cfg_lock);
+	return si;
+
+ err_2:
+	free(si->path);
+ err_1:
+	free(si);
+ err_0:
+	errno = rc;
+	return NULL;
+}
+
 static int
 commit_rows(ldmsd_plug_handle_t handle, ldmsd_strgp_t strgp,
 	    ldms_set_t set, ldmsd_row_list_t row_list, int row_count)
@@ -1698,12 +1701,8 @@ commit_rows(ldmsd_plug_handle_t handle, ldmsd_strgp_t strgp,
 	sos_attr_t sos_attr;
 	int i, esz, array_len, count;
 
-	if (!strgp->store_handle) { /* protected by strgp->lock */
-		rc = init_store_instance(handle, strgp);
-		if (rc)
-			goto out;
-	}
 	si = strgp->store_handle;
+	pthread_mutex_lock(&si->lock);
 	if (!si->sos_handle) {
 		/* rare; only in the case of store_sos reconfig */
 		si->sos_handle = get_container(si);
@@ -1802,6 +1801,7 @@ commit_rows(ldmsd_plug_handle_t handle, ldmsd_strgp_t strgp,
 	}
 	sos_end_x(si->sos_handle->sos);
  out:
+	pthread_mutex_unlock(&si->lock);
 	return rc;
 }
 
@@ -1840,6 +1840,7 @@ struct ldmsd_store ldmsd_plugin_interface = {
 	.flush       = flush_store,
 	.close       = close_store,
 	.commit      = commit_rows,
+	.open_decomp = init_store_instance,
 };
 
 static void __attribute__ ((constructor)) store_sos_init();
