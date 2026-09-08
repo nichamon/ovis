@@ -614,3 +614,24 @@ err:
 	ldmsd_worker_thrstat_free(res);
 	return NULL;
 }
+
+int ldmsd_strg_worker_pool_q_depth_get(int *num_workers_out,
+                                        int *max_q_depth_out,
+                                        int **q_depths_out)
+{
+	int i, n;
+	int *depths;
+
+	n = ldmsd_strg_worker_pool.num_workers;
+	depths = malloc(n * sizeof(int));
+	if (!depths)
+		return ENOMEM;
+
+	for (i = 0; i < n; i++)
+		depths[i] = ldmsd_strg_worker_pool.workers[i].q_depth;
+
+	*num_workers_out = n;
+	*max_q_depth_out = ldmsd_strg_worker_pool.max_q_depth;
+	*q_depths_out    = depths;
+	return 0;
+}
