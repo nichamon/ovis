@@ -208,6 +208,7 @@ struct csv_row_schema_rbn_s {
 
 /* This is `strgp->store_handle` in the new decomposition path. */
 struct csv_row_store_handle {
+	pthread_rwlock_t rwlock;
 	csv_store_handle_type_t type;
 	struct rbt row_schema_rbt;
 };
@@ -1781,18 +1782,6 @@ static void close_store(ldmsd_plug_handle_t handle, ldmsd_store_handle_t _s_hand
 	pthread_mutex_unlock(&sc->cfg_lock);
 }
 
-static struct csv_row_store_handle *
-row_store_new()
-{
-	struct csv_row_store_handle *rs_handle;
-	rs_handle = calloc(1, sizeof(*rs_handle));
-	if (!rs_handle)
-		return NULL;
-	rs_handle->type = CSV_ROW_STORE_HANDLE;
-	rbt_init(&rs_handle->row_schema_rbt, csv_row_schema_key_cmp);
-	return rs_handle;
-}
-
 /*
  * - caller MUST hold cfg_lock
  * - `store_key` is "<CONTAINER>/<SCHEMA>"
@@ -1961,7 +1950,7 @@ csv_store_handle_get(store_csv_t sc, const char *container, const char *schema)
 	return NULL;
 }
 
-/* protected by strgp->lock */
+/* protected by rs_handle->rwlock */
 static struct csv_row_schema_rbn_s *
 csv_row_schema_get(ldmsd_plug_handle_t handle, ldmsd_strgp_t strgp,
 		   struct csv_row_store_handle *rs_handle,
@@ -2290,7 +2279,19 @@ store_row(ldmsd_strgp_t strgp, ldms_set_t set, struct csv_store_handle *s_handle
 	return rc;
 }
 
-/* This function is protected by strgp->lock */
+/* Protected by strgp->lock */
+static ldmsd_store_handle_t
+open_decomp_store(ldmsd_plug_handle_t handle, ldmsd_strgp_t strgp)
+{
+	struct csv_row_store_handle *rs_handle;
+	rs_handle = calloc(1, sizeof(*rs_handle));
+	if (!rs_handle)
+		return NULL;
+	rs_handle->type = CSV_ROW_STORE_HANDLE;
+	rbt_init(&rs_handle->row_schema_rbt, csv_row_schema_key_cmp);
+	return rs_handle;
+}
+
 static int
 commit_rows(ldmsd_plug_handle_t handle, ldmsd_strgp_t strgp, ldms_set_t set,
 	    ldmsd_row_list_t row_list, int row_count)
@@ -2301,12 +2302,6 @@ commit_rows(ldmsd_plug_handle_t handle, ldmsd_strgp_t strgp, ldms_set_t set,
 	ldmsd_row_t row;
 
 	rs_handle = strgp->store_handle;
-	if (!rs_handle) {
-		rs_handle = strgp->store_handle = row_store_new();
-		if (!rs_handle)
-			return ENOMEM;
-	}
-
 	if (rs_handle->type != CSV_ROW_STORE_HANDLE) {
 		ERR_LOG("Invalid handle type\n");
 		assert(0 == "Invalid handle type");
@@ -2317,10 +2312,19 @@ commit_rows(ldmsd_plug_handle_t handle, ldmsd_strgp_t strgp, ldms_set_t set,
 		/* get schema */
 		key.digest = row->schema_digest;
 		key.name = row->schema_name;
-		/* protected by strgp->lock */
+		/* fast path: row schema already exists. */
+		pthread_rwlock_rdlock(&rs_handle->rwlock);
 		rbn = (void*)rbt_find(&rs_handle->row_schema_rbt, &key);
+		pthread_rwlock_unlock(&rs_handle->rwlock);
 		if (!rbn) {
-			rbn = csv_row_schema_get(handle, strgp, rs_handle, &key);
+			/* slow path: take wrlock, double-check, create */
+			pthread_rwlock_wrlock(&rs_handle->rwlock);
+			rbn = (void*)rbt_find(&rs_handle->row_schema_rbt, &key);
+			if (!rbn) {
+				rbn = csv_row_schema_get(handle, strgp,
+							 rs_handle, &key);
+			}
+			pthread_rwlock_unlock(&rs_handle->rwlock);
 			if (!rbn) {
 				/* csv_row_schema_get() already log the error */
 				continue;
@@ -2382,6 +2386,7 @@ struct ldmsd_store ldmsd_plugin_interface = {
 	.flush       = flush_store,
 	.close       = close_store,
 	.commit      = commit_rows,
+	.open_decomp = open_decomp_store,
 };
 
 static void __attribute__ ((constructor)) store_csv_init();

@@ -102,7 +102,7 @@ extern ovis_log_t store_log;
  * - strgp_ref: Storage policy reference (tracks data source for statistics)
  * - prdset: Producer set reference
  * - row_list: For decomposed storage, the rows extracted from the snapshot
- * - type: Whether to use legacy store() API or decomposed commit() API
+ * - type: Whether to use non-decomposition store() API or decomposed commit() API
  *
  * Timestamps enable latency breakdown by stage:
  * - start_ts: When update callback began (before decomposition)
@@ -119,7 +119,7 @@ struct store_event_ctxt {
 	struct timespec start_ts;
 	struct timespec post_ts;
 	enum {
-		STORE_T_LEGACY = 1,
+		STORE_T_NONDECOMP = 1,
 		STORE_T_DECOMP = 2
 	} type;
 	struct strg_worker *w;
@@ -177,7 +177,7 @@ struct store_event_ctxt *store_event_ctxt_new(ldmsd_strgp_ref_t strgp_ref, ldms_
 		ctxt->row_list = row_list;
 		ctxt->row_count = row_count;
 	} else {
-		ctxt->type = STORE_T_LEGACY;
+		ctxt->type = STORE_T_NONDECOMP;
 		ctxt->row_count = 0;
 		ctxt->row_list = NULL;
 	}
@@ -388,7 +388,7 @@ void strg_worker_release(struct strg_worker *w)
  * Worker thread callback - processes a storage event.
  *
  * Calls the appropriate storage plugin API:
- *   - Legacy storage: store() API with the snapshot
+ *   - Non-decomposed storage: store() API with the snapshot
  *   - Decomposed storage: commit() API with the row_list
  *
  * Updates statistics and releases all references when complete.
@@ -412,7 +412,7 @@ void storage_worker_actor(struct ovis_event_s *ev)
 	queue_stat->end = start;
 	ldmsd_stat_update(queue_stat, &event_ctxt->post_ts, &queue_stat->end);
 
-	if (event_ctxt->type == STORE_T_LEGACY) {
+	if (event_ctxt->type == STORE_T_NONDECOMP) {
 		strgp->store->api->store((ldmsd_plug_handle_t)strgp->store,
 					 strgp->store_handle, set,
 					 strgp->metric_arry, strgp->metric_count);

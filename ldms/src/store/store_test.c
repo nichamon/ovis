@@ -217,6 +217,12 @@ static int store(ldmsd_plug_handle_t handle, ldmsd_store_handle_t sh,
 	return 0;
 }
 
+/* protected by strgp->lock */
+static ldmsd_store_handle_t open_decomp(ldmsd_plug_handle_t handle, ldmsd_strgp_t strgp)
+{
+	return open_store(handle, strgp->container, strgp->schema, NULL);
+}
+
 static int commit_rows(ldmsd_plug_handle_t handle, ldmsd_strgp_t strgp,
 			ldms_set_t set, ldmsd_row_list_t row_list, int row_count)
 {
@@ -266,4 +272,5 @@ struct ldmsd_store ldmsd_plugin_interface = {
 	.flush  = flush_store,
 	.close  = close_store,
 	.commit = commit_rows,
+	.open_decomp = open_decomp,
 };
