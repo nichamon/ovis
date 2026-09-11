@@ -625,6 +625,16 @@ err:
 	return NULL;
 }
 
+void ldmsd_storage_worker_thrstat_reset(struct timespec *now)
+{	int i;
+	struct strg_worker *w;
+
+	for (i = 0; i < ldmsd_strg_worker_pool.num_workers; i++) {
+		w = &ldmsd_strg_worker_pool.workers[i];
+		ovis_scheduler_thrstats_reset(w->worker, now);
+	}
+}
+
 int ldmsd_strg_worker_pool_q_depth_get(int *num_workers_out,
                                         int *max_q_depth_out,
                                         int **q_depths_out)
