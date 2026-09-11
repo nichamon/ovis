@@ -703,8 +703,10 @@ __msg_deliver(struct __msg_buf_s *sbuf, uint64_t msg_gn,
 			rc = json_parse_buffer((void*)data, data_len, &jdoc);
 			_ev.pub.recv.json = json_doc_root(jdoc);
 			if (rc) {
+				pthread_rwlock_wrlock(&c->rwlock);
 				__counters_update(&sce->drops, &now, data_len);
 				__counters_update(&c->drops, &now, data_len);
+				pthread_rwlock_unlock(&c->rwlock);
 				goto cleanup;
 			}
 		}
@@ -1752,7 +1754,11 @@ void __msg_stats_free(struct ldms_msg_ch_stats_s *ss)
 	free(ss);
 }
 
-/* readlock already taken */
+/*
+ * The caller must hold s->rwlock: the read lock when is_reset is 0, the
+ * write lock when is_reset is 1, because a reset modifies s->rx and the
+ * per-source statistics tree.
+ */
 struct ldms_msg_ch_stats_s * __msg_get_stats(struct ldms_msg_ch_s *s, int is_reset)
 {
 	/* s->tag_len already includes '\0' */
@@ -1792,11 +1798,22 @@ struct ldms_msg_ch_stats_s * __msg_get_stats(struct ldms_msg_ch_s *s, int is_res
 		memcpy((char*)ps->client_match, sce->cli->match,
 				sce->cli->match_len + sce->cli->desc_len);
 		ps->is_regex = sce->cli->is_regex;
+		/*
+		 * sce->tx and sce->drops are updated under the client's lock
+		 * in __msg_deliver(), not under the channel's lock.
+		 */
+		if (is_reset)
+			pthread_rwlock_wrlock(&sce->cli->rwlock);
+		else
+			pthread_rwlock_rdlock(&sce->cli->rwlock);
 		ps->tx = sce->tx;
 		ps->drops = sce->drops;
-		TAILQ_INSERT_TAIL(&ss->stats_tq, ps, entry);
-		if (is_reset)
+		if (is_reset) {
 			LDMS_MSG_COUNTERS_INIT(&sce->tx);
+			LDMS_MSG_COUNTERS_INIT(&sce->drops);
+		}
+		pthread_rwlock_unlock(&sce->cli->rwlock);
+		TAILQ_INSERT_TAIL(&ss->stats_tq, ps, entry);
 	}
 	if (is_reset)
 		LDMS_MSG_COUNTERS_INIT(&s->rx);
@@ -1850,7 +1867,10 @@ ldms_msg_ch_stats_tq_get(const char *match, int is_regex, int is_reset)
 		if (!rbn)
 			goto done;
 		ch = container_of(rbn, struct ldms_msg_ch_s, rbn);
-		pthread_rwlock_rdlock(&ch->rwlock);
+		if (is_reset)
+			pthread_rwlock_wrlock(&ch->rwlock);
+		else
+			pthread_rwlock_rdlock(&ch->rwlock);
 		stats = __msg_get_stats(ch, is_reset);
 		pthread_rwlock_unlock(&ch->rwlock);
 		if (!stats)
@@ -1865,7 +1885,10 @@ ldms_msg_ch_stats_tq_get(const char *match, int is_regex, int is_reset)
 			if (rc)
 				continue;
 		}
-		pthread_rwlock_rdlock(&ch->rwlock);
+		if (is_reset)
+			pthread_rwlock_wrlock(&ch->rwlock);
+		else
+			pthread_rwlock_rdlock(&ch->rwlock);
 		stats = __msg_get_stats(ch, is_reset);
 		pthread_rwlock_unlock(&ch->rwlock);
 		if (!stats)
@@ -2128,7 +2151,10 @@ ldms_msg_client_get_stats(ldms_msg_client_t cli, int is_reset)
 	memcpy((char*)cs->match, cli->match, cli->match_len + cli->desc_len);
 	TAILQ_INIT(&cs->stats_tq);
 
-	pthread_rwlock_rdlock(&cli->rwlock);
+	if (is_reset)
+		pthread_rwlock_wrlock(&cli->rwlock);
+	else
+		pthread_rwlock_rdlock(&cli->rwlock);
 	cs->dest = cli->dest;
 	cs->drops = cli->drops;
 	cs->tx = cli->tx;
