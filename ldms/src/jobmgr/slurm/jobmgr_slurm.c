@@ -157,7 +157,8 @@ jobmgr_slurm_mdesc_find(const char *name)
 
 static int job_id_str(char *buf, size_t bufsz, uint64_t job_id)
 {
-	return snprintf(buf, bufsz, "slurm_%lu", job_id);
+/*	return snprintf(buf, bufsz, "slurm_%lu", job_id); */
+	return snprintf(buf, bufsz, "%lu", job_id);
 }
 
 static int step_id_str(char *buf, size_t bufsz, uint64_t job_id, uint64_t step_id)
