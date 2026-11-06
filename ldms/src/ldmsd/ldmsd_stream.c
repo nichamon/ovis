@@ -1060,8 +1060,11 @@ void ldmsd_stream_stats_reset_all()
 	pthread_mutex_lock(&s_tree_lock);
 	RBT_FOREACH(rbn, &s_tree) {
 		s = container_of(rbn, struct ldmsd_stream_s, s_ent);
+		/* Lock order: s_tree_lock, s_lock (same as __find_stream()) */
+		pthread_mutex_lock(&s->s_lock);
 		memset(&s->s_recv_info, 0, sizeof(s->s_recv_info));
 		memset(&s->s_pub_info, 0, sizeof(s->s_pub_info));
+		pthread_mutex_unlock(&s->s_lock);
 	}
 	pthread_mutex_unlock(&s_tree_lock);
 }

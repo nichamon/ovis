@@ -7910,14 +7910,19 @@ static void __prdset_stats_reset(struct timespec *now, int reset_flags)
 	ldmsd_prdcr_set_t prdset;
 	struct rbn *rbn;
 
+	/* Lock order: prdcr config, prdcr, prdset (as in the other stats handlers) */
+	ldmsd_cfg_lock(LDMSD_CFGOBJ_PRDCR);
 	for (prdcr = ldmsd_prdcr_first(); prdcr; prdcr = ldmsd_prdcr_next(prdcr)) {
 		ldmsd_prdcr_lock(prdcr);
 		RBT_FOREACH(rbn, &prdcr->set_tree) {
 			prdset = container_of(rbn, struct ldmsd_prdcr_set, rbn);
+			pthread_mutex_lock(&prdset->lock);
 			ldmsd_prdcr_set_stats_reset(prdset, now, reset_flags);
+			pthread_mutex_unlock(&prdset->lock);
 		}
 		ldmsd_prdcr_unlock(prdcr);
 	}
+	ldmsd_cfg_unlock(LDMSD_CFGOBJ_PRDCR);
 }
 
 /**
